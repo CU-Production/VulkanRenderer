@@ -13,3 +13,8 @@
 [ci-url]: https://github.com/CU-Production/VulkanRenderer/actions
 [star-img]: https://img.shields.io/github/stars/CU-Production/VulkanRenderer?logo=github&style=flat-square
 [star-url]: .
+
+# links
+
+- https://github.com/PacktPublishing/Mastering-Graphics-Programming-with-Vulkan
+- https://github.com/KhronosGroup/glTF-Sample-Models

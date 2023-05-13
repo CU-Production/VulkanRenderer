@@ -64,7 +64,6 @@ cmake-build-*
 /[Dd]ebug/
 /[Rr]elease/
 /**/.vs/
-/**/x64/
 
 # MSVC user extensions
 *.opensdf
@@ -77,8 +76,6 @@ cmake-build-*
 *.log
 *.tlog
 *.lastbuildstate
-*.dll
-*.lib
 *.exp
 *.opendb
 *.ini

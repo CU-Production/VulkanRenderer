@@ -9,7 +9,7 @@
 [license-url]: https://opensource.org/licenses/MIT
 [last-commit-img]: https://img.shields.io/github/last-commit/CU-Production/VulkanRenderer/main?style=flat-square&logo=git
 [last-commit-url]: https://github.com/CU-Production/VulkanRenderer
-[ci-img]: https://img.shields.io/github/workflow/status/CU-Production/VulkanRenderer/Build%20with%20CMake?style=flat-square&logo=github
+[ci-img]: https://img.shields.io/github/actions/workflow/status/CU-Production/VulkanRenderer/build-cpp.yml?style=flat-square&logo=github
 [ci-url]: https://github.com/CU-Production/VulkanRenderer/actions
 [star-img]: https://img.shields.io/github/stars/CU-Production/VulkanRenderer?logo=github&style=flat-square
 [star-url]: .

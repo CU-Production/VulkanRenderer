@@ -14,7 +14,11 @@
 [star-img]: https://img.shields.io/github/stars/CU-Production/VulkanRenderer?logo=github&style=flat-square
 [star-url]: .
 
-# links
+# Features
+
+1. [ ] Bindless texture
+
+# Links
 
 - https://github.com/PacktPublishing/Mastering-Graphics-Programming-with-Vulkan
 - https://github.com/KhronosGroup/glTF-Sample-Models

@@ -1,6 +1,6 @@
 project(Chapter1)
 
-add_executable(Chapter1
+add_executable(VulkanRenderer
     graphics/command_buffer.cpp
     graphics/command_buffer.hpp
     graphics/gpu_device.cpp
@@ -19,42 +19,42 @@ add_executable(Chapter1
     main.cpp
 )
 
-set_property(TARGET Chapter1 PROPERTY CXX_STANDARD 20)
+set_property(TARGET VulkanRenderer PROPERTY CXX_STANDARD 20)
 
 if (WIN32)
-    target_compile_definitions(Chapter1 PRIVATE
+    target_compile_definitions(VulkanRenderer PRIVATE
         _CRT_SECURE_NO_WARNINGS
         WIN32_LEAN_AND_MEAN
         NOMINMAX)
 endif()
 
-target_compile_definitions(Chapter1 PRIVATE
+target_compile_definitions(VulkanRenderer PRIVATE
     TRACY_ENABLE
     TRACY_ON_DEMAND
     TRACY_NO_SYSTEM_TRACING
 )
 
-target_include_directories(Chapter1 PRIVATE
+target_include_directories(VulkanRenderer PRIVATE
     .
     ..
-    ../raptor
+    raptor
     ${Vulkan_INCLUDE_DIRS}
 )
 
 if (WIN32)
-    target_include_directories(Chapter1 PRIVATE
-        ../../binaries/SDL2-2.0.18/include)
+    target_include_directories(VulkanRenderer PRIVATE
+        ../binaries/SDL2-2.0.18/include)
 
-    target_link_directories(Chapter1 PRIVATE
-        ../../binaries/SDL2-2.0.18/lib/x64
+    target_link_directories(VulkanRenderer PRIVATE
+        ../binaries/SDL2-2.0.18/lib/x64
     )
 else()
-    target_include_directories(Chapter1 PRIVATE
+    target_include_directories(VulkanRenderer PRIVATE
         ${SDL2_INCLUDE_DIRS})
 
 endif()
 
-target_link_libraries(Chapter1 PRIVATE
+target_link_libraries(VulkanRenderer PRIVATE
     RaptorFoundation
     RaptorExternal
     RaptorApp
@@ -62,10 +62,10 @@ target_link_libraries(Chapter1 PRIVATE
 )
 
 if (WIN32)
-    target_link_libraries(Chapter1 PRIVATE
+    target_link_libraries(VulkanRenderer PRIVATE
         SDL2)
 else()
-    target_link_libraries(Chapter1 PRIVATE
+    target_link_libraries(VulkanRenderer PRIVATE
         dl
         pthread
         SDL2::SDL2)
@@ -73,11 +73,11 @@ endif()
 
 if (WIN32)
     set(DLLS_TO_COPY
-        ${CMAKE_CURRENT_SOURCE_DIR}/../../binaries/SDL2-2.0.18/lib/x64/SDL2.dll
+        ${CMAKE_CURRENT_SOURCE_DIR}/../binaries/SDL2-2.0.18/lib/x64/SDL2.dll
     )
 
     foreach(DLL ${DLLS_TO_COPY})
-        add_custom_command(TARGET Chapter1 POST_BUILD
+        add_custom_command(TARGET VulkanRenderer POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy ${DLL} "${CMAKE_CURRENT_BINARY_DIR}"
             VERBATIM
         )

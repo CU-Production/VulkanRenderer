@@ -182,5 +182,5 @@ endif()
 
 set_property(TARGET RaptorExternal PROPERTY CXX_STANDARD 20)
 
-add_subdirectory(source/chapter1)
+add_subdirectory(source)
 

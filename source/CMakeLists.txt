@@ -12,6 +12,8 @@ add_executable(VulkanRenderer
     graphics/gpu_resources.hpp
     graphics/renderer.cpp
     graphics/renderer.hpp
+    graphics/spirv_parser.cpp
+    graphics/spirv_parser.hpp
 
     graphics/raptor_imgui.cpp
     graphics/raptor_imgui.hpp
@@ -83,3 +85,22 @@ if (WIN32)
         )
     endforeach()
 endif()
+
+file(GLOB GLSL_SHADERS
+    shaders/*.vert
+    shaders/*.frag)
+
+add_custom_target(ShadersSpv
+    SOURCES ${GLSL_SHADERS}
+)
+
+foreach (GLSL_SHADER ${GLSL_SHADERS})
+    add_custom_command(TARGET ShadersSpv
+        COMMAND $ENV{VULKAN_SDK}/bin/glslc ${GLSL_SHADER}
+        DEPENDS ${GLSL_SHADER}
+    )
+endforeach()
+
+add_dependencies(VulkanRenderer
+    ShadersSpv
+)

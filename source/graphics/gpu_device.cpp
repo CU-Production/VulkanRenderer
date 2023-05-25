@@ -1,5 +1,6 @@
 #include "graphics/gpu_device.hpp"
 #include "graphics/command_buffer.hpp"
+#include "graphics/spirv_parser.hpp"
 
 #include "foundation/memory.hpp"
 #include "foundation/hash_map.hpp"
@@ -95,15 +96,20 @@ void CommandBufferRing::init( GpuDevice* gpu_ ) {
         cmd.commandBufferCount = 1;
         check( vkAllocateCommandBuffers( gpu->vulkan_device, &cmd, &command_buffers[ i ].vk_command_buffer ) );
 
-        command_buffers[ i ].device = gpu;
+        // TODO(marco): move to have a ring per queue per thread
+        command_buffers[ i ].gpu_device = gpu;
+        command_buffers[ i ].init( QueueType::Enum::Graphics, 0, 0, false );
         command_buffers[ i ].handle = i;
-        command_buffers[ i ].reset();
     }
 }
 
 void CommandBufferRing::shutdown() {
     for ( u32 i = 0; i < k_max_swapchain_images * k_max_threads; i++ ) {
         vkDestroyCommandPool( gpu->vulkan_device, vulkan_command_pools[ i ], gpu->vulkan_allocation_callbacks );
+    }
+
+    for ( u32 i = 0; i < k_max_buffers; i++ ) {
+        command_buffers[ i ].terminate();
     }
 }
 
@@ -189,23 +195,17 @@ static const char* s_requested_layers[] = {
 
 #ifdef VULKAN_DEBUG_REPORT
 
-// Old debug callback.
-//static VKAPI_ATTR VkBool32 VKAPI_CALL debug_callback( VkDebugReportFlagsEXT flags, VkDebugReportObjectTypeEXT objectType, u64 object, size_t location, int32_t messageCode, const char* pLayerPrefix, const char* pMessage, void* pUserData ) {
-//    (void)flags; (void)object; (void)location; (void)messageCode; (void)pUserData; (void)pLayerPrefix; // Unused arguments
-//    rprint( "[vulkan] ObjectType: %i\nMessage: %s\n\n", objectType, pMessage );
-//    return VK_FALSE;
-//}
-
 static VkBool32 debug_utils_callback( VkDebugUtilsMessageSeverityFlagBitsEXT severity,
                                                             VkDebugUtilsMessageTypeFlagsEXT types,
                                                             const VkDebugUtilsMessengerCallbackDataEXT* callback_data,
                                                             void* user_data ) {
-    rprint( " MessageID: %s %i\nMessage: %s\n\n", callback_data->pMessageIdName, callback_data->messageIdNumber, callback_data->pMessage );
+    bool triggerBreak = severity & ( VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT );
 
-    if ( severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT ) {
-        // __debugbreak();
+    if ( triggerBreak ) {
+       // __debugbreak();
     }
 
+    rprint( " MessageID: %s %i\nMessage: %s\n\n", callback_data->pMessageIdName, callback_data->messageIdNumber, callback_data->pMessage );
     return VK_FALSE;
 }
 

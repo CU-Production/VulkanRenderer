@@ -81,7 +81,6 @@ static const char* g_fragment_shader_code_bindless = {
     "layout (location = 1) in vec4 Frag_Color;\n"
     "layout (location = 2) flat in uint texture_id;\n"
     "layout (location = 0) out vec4 Out_Color;\n"
-    "#extension GL_EXT_nonuniform_qualifier : enable\n"
     "layout (set = 1, binding = 10) uniform sampler2D textures[];\n"
     "void main()\n"
     "{\n"

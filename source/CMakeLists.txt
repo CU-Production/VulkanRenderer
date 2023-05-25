@@ -31,6 +31,10 @@ if (WIN32)
 endif()
 
 target_compile_definitions(VulkanRenderer PRIVATE
+    RAPTOR_SHADER_FOLDER="${CMAKE_CURRENT_SOURCE_DIR}/shaders/"
+)
+
+target_compile_definitions(VulkanRenderer PRIVATE
     TRACY_ENABLE
     TRACY_ON_DEMAND
     TRACY_NO_SYSTEM_TRACING

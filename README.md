@@ -16,7 +16,9 @@
 
 # Features
 
-1. [ ] Bindless texture
+## 20230525
+- [x] bindless texture
+- [x] pipeline cache
 
 # Links
 

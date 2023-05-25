@@ -209,8 +209,6 @@ static VkBool32 debug_utils_callback( VkDebugUtilsMessageSeverityFlagBitsEXT sev
     return VK_FALSE;
 }
 
-
-// TODO:
 // GPU Timestamps ///////////////////////////////////////////////////
 
 VkDebugUtilsMessengerCreateInfoEXT create_debug_utils_messenger_info() {
@@ -329,19 +327,6 @@ void GpuDevice::init( const DeviceCreation& creation ) {
         if ( !debug_utils_extension_present ) {
             rprint( "Extension %s for debugging non present.", VK_EXT_DEBUG_UTILS_EXTENSION_NAME );
         } else {
-            //// Create debug callback
-            //auto vkCreateDebugReportCallbackEXT = ( PFN_vkCreateDebugReportCallbackEXT )vkGetInstanceProcAddr( vulkan_instance, "vkCreateDebugReportCallbackEXT" );
-            //RASSERT( vkCreateDebugReportCallbackEXT != NULL, "" );
-
-            //// Setup the debug report callback
-            /*VkDebugReportCallbackCreateInfoEXT debug_report_ci = {};
-            debug_report_ci.sType = VK_STRUCTURE_TYPE_DEBUG_REPORT_CALLBACK_CREATE_INFO_EXT;
-            debug_report_ci.flags = VK_DEBUG_REPORT_ERROR_BIT_EXT | VK_DEBUG_REPORT_WARNING_BIT_EXT | VK_DEBUG_REPORT_PERFORMANCE_WARNING_BIT_EXT;
-            debug_report_ci.pfnCallback = debug_callback;
-            debug_report_ci.pUserData = NULL;
-            result = vkCreateDebugReportCallbackEXT( vulkan_instance, &debug_report_ci, vulkan_allocation_callbacks, &vulkan_debug_callback );
-            check( result );*/
-
             // Create new debug utils callback
             PFN_vkCreateDebugUtilsMessengerEXT vkCreateDebugUtilsMessengerEXT = ( PFN_vkCreateDebugUtilsMessengerEXT )vkGetInstanceProcAddr( vulkan_instance, "vkCreateDebugUtilsMessengerEXT" );
             VkDebugUtilsMessengerCreateInfoEXT debug_messenger_create_info = create_debug_utils_messenger_info();
@@ -424,21 +409,32 @@ void GpuDevice::init( const DeviceCreation& creation ) {
     // as some entries in the bindless array will be empty, and SpirV runtime descriptors.
     bindless_supported = indexing_features.descriptorBindingPartiallyBound && indexing_features.runtimeDescriptorArray;
     // TODO: remove when finished with bindless
-//    bindless_supported = false;
+    //bindless_supported = false;
 
     //////// Create logical device
     u32 queue_family_count = 0;
     vkGetPhysicalDeviceQueueFamilyProperties( vulkan_physical_device, &queue_family_count, nullptr );
 
-    VkQueueFamilyProperties* queue_families = ( VkQueueFamilyProperties* )ralloca( sizeof(VkQueueFamilyProperties) * queue_family_count, allocator );
+    VkQueueFamilyProperties* queue_families = ( VkQueueFamilyProperties* )ralloca( sizeof( VkQueueFamilyProperties ) * queue_family_count, allocator );
     vkGetPhysicalDeviceQueueFamilyProperties( vulkan_physical_device, &queue_family_count, queue_families );
 
     u32 family_index = 0;
-    for (  ; family_index < queue_family_count; family_index++ ) {
-        VkQueueFamilyProperties queue_family = queue_families[family_index];
+    for ( ; family_index < queue_family_count; ++family_index ) {
+        VkQueueFamilyProperties queue_family = queue_families[ family_index ];
         if ( queue_family.queueCount > 0 && queue_family.queueFlags & ( VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT ) ) {
+            //indices.graphicsFamily = i;
             break;
         }
+
+        //VkBool32 presentSupport = false;
+        //vkGetPhysicalDeviceSurfaceSupportKHR( vulkan_physical_device, i, _surface, &presentSupport );
+        //if ( queue_family.queueCount && presentSupport ) {
+        //    indices.presentFamily = i;
+        //}
+
+        //if ( indices.isComplete() ) {
+        //    break;
+        //}
     }
 
     rfree( queue_families, allocator );
@@ -448,7 +444,6 @@ void GpuDevice::init( const DeviceCreation& creation ) {
     const float queue_priority[] = { 1.0f };
     VkDeviceQueueCreateInfo queue_info[ 1 ] = {};
     queue_info[ 0 ].sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-//    queue_info[ 0 ].queueFamilyIndex = vulkan_queue_family;
     queue_info[ 0 ].queueFamilyIndex = family_index;
     queue_info[ 0 ].queueCount = 1;
     queue_info[ 0 ].pQueuePriorities = queue_priority;
@@ -484,7 +479,6 @@ void GpuDevice::init( const DeviceCreation& creation ) {
         pfnCmdEndDebugUtilsLabelEXT = ( PFN_vkCmdEndDebugUtilsLabelEXT )vkGetDeviceProcAddr( vulkan_device, "vkCmdEndDebugUtilsLabelEXT" );
     }
 
-//    vkGetDeviceQueue( vulkan_device, vulkan_queue_family, 0, &vulkan_queue );
     vkGetDeviceQueue( vulkan_device, family_index, 0, &vulkan_queue );
 
     vulkan_queue_family = family_index;
@@ -545,7 +539,7 @@ void GpuDevice::init( const DeviceCreation& creation ) {
     result = vmaCreateAllocator( &allocatorInfo, &vma_allocator );
     check( result );
 
-    ////////  Create pools
+    ////////  Create Descriptor Pools
     static const u32 k_global_pool_elements = 128;
     VkDescriptorPoolSize pool_sizes[] =
     {
@@ -582,9 +576,9 @@ void GpuDevice::init( const DeviceCreation& creation ) {
         // Update after bind is needed here, for each binding and in the descriptor set layout creation.
         pool_info.flags = VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT;
         pool_info.maxSets = k_max_bindless_resources * ArraySize( pool_sizes_bindless );
-        pool_info.poolSizeCount = (u32)ArraySize( pool_sizes_bindless );
+        pool_info.poolSizeCount = ( u32 )ArraySize( pool_sizes_bindless );
         pool_info.pPoolSizes = pool_sizes_bindless;
-        result = vkCreateDescriptorPool( vulkan_device, &pool_info, vulkan_allocation_callbacks, &vulkan_bindless_descriptor_pool );
+        result = vkCreateDescriptorPool( vulkan_device, &pool_info, vulkan_allocation_callbacks, &vulkan_bindless_descriptor_pool);
         check( result );
 
         const u32 pool_count = ( u32 )ArraySize( pool_sizes_bindless );
@@ -636,17 +630,18 @@ void GpuDevice::init( const DeviceCreation& creation ) {
         count_info.descriptorSetCount = 1;
         // This number is the max allocatable count
         count_info.pDescriptorCounts = &max_binding;
-//        alloc_info.pNext = &count_info;
+        //alloc_info.pNext = &count_info;
 
         check_result( vkAllocateDescriptorSets( vulkan_device, &alloc_info, &vulkan_bindless_descriptor_set ) );
     }
+
 
     // Create timestamp query pool used for GPU timings.
     VkQueryPoolCreateInfo vqpci{ VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, nullptr, 0, VK_QUERY_TYPE_TIMESTAMP, creation.gpu_time_queries_per_frame * 2u * k_max_frames, 0 };
     vkCreateQueryPool( vulkan_device, &vqpci, vulkan_allocation_callbacks, &vulkan_timestamp_query_pool );
 
     //// Init pools
-    buffers.init( allocator, 4096, sizeof( Buffer ) );
+    buffers.init( allocator, 1024, sizeof( Buffer ) );
     textures.init( allocator, 512, sizeof( Texture ) );
     render_passes.init( allocator, 256, sizeof( RenderPass ) );
     descriptor_set_layouts.init( allocator, 128, sizeof( DesciptorSetLayout ) );
@@ -690,6 +685,7 @@ void GpuDevice::init( const DeviceCreation& creation ) {
 
     resource_deletion_queue.init( allocator, 16 );
     descriptor_set_updates.init( allocator, 16 );
+    texture_to_update_bindless.init( allocator, 16 );
 
     //
     // Init primitive resources
@@ -857,6 +853,7 @@ void GpuDevice::shutdown() {
 
     vmaDestroyAllocator( vma_allocator );
 
+    texture_to_update_bindless.shutdown();
     resource_deletion_queue.shutdown();
     descriptor_set_updates.shutdown();
 
@@ -871,12 +868,15 @@ void GpuDevice::shutdown() {
     render_passes.shutdown();
 #ifdef VULKAN_DEBUG_REPORT
     // Remove the debug report callback
-    //auto vkDestroyDebugReportCallbackEXT = (PFN_vkDestroyDebugReportCallbackEXT)vkGetInstanceProcAddr( vulkan_instance, "vkDestroyDebugReportCallbackEXT" );
-    //vkDestroyDebugReportCallbackEXT( vulkan_instance, vulkan_debug_callback, vulkan_allocation_callbacks );
-
     auto vkDestroyDebugUtilsMessengerEXT = ( PFN_vkDestroyDebugUtilsMessengerEXT )vkGetInstanceProcAddr( vulkan_instance, "vkDestroyDebugUtilsMessengerEXT" );
     vkDestroyDebugUtilsMessengerEXT( vulkan_instance, vulkan_debug_utils_messenger, vulkan_allocation_callbacks );
 #endif // IMGUI_VULKAN_DEBUG_REPORT
+
+    // [TAG: BINDLESS]
+    if ( bindless_supported ) {
+        vkDestroyDescriptorSetLayout( vulkan_device, vulkan_bindless_descriptor_layout, vulkan_allocation_callbacks );
+        vkDestroyDescriptorPool( vulkan_device, vulkan_bindless_descriptor_pool, vulkan_allocation_callbacks );
+    }
 
     vkDestroyDescriptorPool( vulkan_device, vulkan_descriptor_pool, vulkan_allocation_callbacks );
     vkDestroyQueryPool( vulkan_device, vulkan_timestamp_query_pool, vulkan_allocation_callbacks );
@@ -888,46 +888,6 @@ void GpuDevice::shutdown() {
     string_buffer.shutdown();
 
     rprint( "Gpu Device shutdown\n" );
-}
-
-
-static void transition_image_layout( VkCommandBuffer command_buffer, VkImage image, VkFormat format, VkImageLayout oldLayout, VkImageLayout newLayout, bool is_depth ) {
-
-    VkImageMemoryBarrier barrier = {};
-    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    barrier.oldLayout = oldLayout;
-    barrier.newLayout = newLayout;
-
-    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-
-    barrier.image = image;
-    barrier.subresourceRange.aspectMask = is_depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
-    barrier.subresourceRange.baseMipLevel = 0;
-    barrier.subresourceRange.levelCount = 1;
-    barrier.subresourceRange.baseArrayLayer = 0;
-    barrier.subresourceRange.layerCount = 1;
-
-    VkPipelineStageFlags sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
-    VkPipelineStageFlags destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-
-    if ( oldLayout == VK_IMAGE_LAYOUT_UNDEFINED && newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL ) {
-        barrier.srcAccessMask = 0;
-        barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-
-        sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
-        destinationStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
-    } else if ( oldLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL && newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ) {
-        barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-        barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-
-        sourceStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
-        destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-    } else {
-        //hy_assertm( false, "Unsupported layout transition!\n" );
-    }
-
-    vkCmdPipelineBarrier( command_buffer, sourceStage, destinationStage, 0, 0, nullptr, 0, nullptr, 1, &barrier );
 }
 
 // Resource Creation ////////////////////////////////////////////////////////////
@@ -971,7 +931,7 @@ static void vulkan_create_texture( GpuDevice& gpu, const TextureCreation& creati
         image_info.usage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
 
     } else {
-        image_info.usage |= VK_IMAGE_USAGE_TRANSFER_DST_BIT; // TODO
+        image_info.usage |= VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT; // TODO
         image_info.usage |= is_render_target ? VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT : 0;
     }
 
@@ -1009,10 +969,34 @@ static void vulkan_create_texture( GpuDevice& gpu, const TextureCreation& creati
 
     texture->vk_image_layout = VK_IMAGE_LAYOUT_UNDEFINED;
 
+    // Add deferred bindless update.
     if ( gpu.bindless_supported ) {
-        ResourceUpdate resource_update { ResourceDeletionType::Texture, texture->handle.index, gpu.current_frame };
+        ResourceUpdate resource_update{ ResourceDeletionType::Texture, texture->handle.index, gpu.current_frame };
         gpu.texture_to_update_bindless.push( resource_update );
     }
+}
+
+static void add_image_barrier( VkCommandBuffer command_buffer, VkImage image, ResourceState old_state, ResourceState new_state, u32 base_mip_level, u32 mip_count, bool is_depth ) {
+    VkImageMemoryBarrier barrier{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER };
+    barrier.image = image;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.subresourceRange.aspectMask = is_depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier.subresourceRange.baseArrayLayer = 0;
+    barrier.subresourceRange.layerCount = 1;
+    barrier.subresourceRange.levelCount = mip_count;
+
+    barrier.subresourceRange.baseMipLevel = base_mip_level;
+    barrier.oldLayout = util_to_vk_image_layout( old_state );
+    barrier.newLayout = util_to_vk_image_layout( new_state );
+    barrier.srcAccessMask = util_to_vk_access_flags( old_state );
+    barrier.dstAccessMask = util_to_vk_access_flags( new_state );
+
+    const VkPipelineStageFlags source_stage_mask = util_determine_pipeline_stage_flags( barrier.srcAccessMask, QueueType::Graphics );
+    const VkPipelineStageFlags destination_stage_mask = util_determine_pipeline_stage_flags( barrier.dstAccessMask, QueueType::Graphics );
+
+    vkCmdPipelineBarrier( command_buffer, source_stage_mask, destination_stage_mask, 0,
+                          0, nullptr, 0, nullptr, 1, &barrier );
 }
 
 TextureHandle GpuDevice::create_texture( const TextureCreation& creation ) {
@@ -1072,12 +1056,49 @@ TextureHandle GpuDevice::create_texture( const TextureCreation& creation ) {
         region.imageOffset = { 0, 0, 0 };
         region.imageExtent = { creation.width, creation.height, creation.depth };
 
-        // Transition
-        transition_image_layout( command_buffer->vk_command_buffer, texture->vk_image, texture->vk_format, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, false );
-        // Copy
+        // Copy from the staging buffer to the image
+        add_image_barrier( command_buffer->vk_command_buffer, texture->vk_image, RESOURCE_STATE_UNDEFINED, RESOURCE_STATE_COPY_DEST, 0, 1, false );
+
         vkCmdCopyBufferToImage( command_buffer->vk_command_buffer, staging_buffer, texture->vk_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region );
+        // Prepare first mip to create lower mipmaps
+        if ( creation.mipmaps > 1 ) {
+            add_image_barrier( command_buffer->vk_command_buffer, texture->vk_image, RESOURCE_STATE_COPY_DEST, RESOURCE_STATE_COPY_SOURCE, 0, 1, false );
+        }
+
+        i32 w = creation.width;
+        i32 h = creation.height;
+
+        for ( int mip_index = 1; mip_index < creation.mipmaps; ++mip_index ) {
+            add_image_barrier( command_buffer->vk_command_buffer, texture->vk_image, RESOURCE_STATE_UNDEFINED, RESOURCE_STATE_COPY_DEST, mip_index, 1, false );
+
+            VkImageBlit blit_region{ };
+            blit_region.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            blit_region.srcSubresource.mipLevel = mip_index - 1;
+            blit_region.srcSubresource.baseArrayLayer = 0;
+            blit_region.srcSubresource.layerCount = 1;
+
+            blit_region.srcOffsets[0] = { 0, 0, 0 };
+            blit_region.srcOffsets[1] = { w, h, 1 };
+
+            w /= 2;
+            h /= 2;
+
+            blit_region.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            blit_region.dstSubresource.mipLevel = mip_index;
+            blit_region.dstSubresource.baseArrayLayer = 0;
+            blit_region.dstSubresource.layerCount = 1;
+
+            blit_region.dstOffsets[0] = { 0, 0, 0 };
+            blit_region.dstOffsets[1] = { w, h, 1 };
+
+            vkCmdBlitImage( command_buffer->vk_command_buffer, texture->vk_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, texture->vk_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit_region, VK_FILTER_LINEAR );
+
+            // Prepare current mip for next level
+            add_image_barrier( command_buffer->vk_command_buffer, texture->vk_image, RESOURCE_STATE_COPY_DEST, RESOURCE_STATE_COPY_SOURCE, mip_index, 1, false );
+        }
+
         // Transition
-        transition_image_layout( command_buffer->vk_command_buffer, texture->vk_image, texture->vk_format, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, false );
+        add_image_barrier( command_buffer->vk_command_buffer, texture->vk_image, (creation.mipmaps > 1) ? RESOURCE_STATE_COPY_SOURCE : RESOURCE_STATE_COPY_DEST, RESOURCE_STATE_SHADER_RESOURCE, 0, creation.mipmaps, false );
 
         vkEndCommandBuffer( command_buffer->vk_command_buffer );
 
@@ -1139,15 +1160,6 @@ VkShaderModuleCreateInfo GpuDevice::compile_shader( cstring code, u32 code_size,
 
     VkShaderModuleCreateInfo shader_create_info = { VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO };
 
-    // Compile from glsl to SpirV.
-    // TODO: detect if input is HLSL.
-    const char* temp_filename = "temp.shader";
-
-    // Write current shader to file.
-    FILE* temp_shader_file = fopen( temp_filename, "w" );
-    fwrite( code, code_size, 1, temp_shader_file );
-    fclose( temp_shader_file );
-
     sizet current_marker = temporary_allocator->get_marker();
     StringBuffer temp_string_buffer;
     temp_string_buffer.init( rkilo( 1 ), temporary_allocator );
@@ -1158,6 +1170,17 @@ VkShaderModuleCreateInfo GpuDevice::compile_shader( cstring code, u32 code_size,
     for ( u32 i = 0; i < stage_define_length; ++i ) {
         stage_define[ i ] = toupper( stage_define[ i ] );
     }
+
+    // Compile from glsl to SpirV.
+    // TODO: detect if input is HLSL.
+    // const char* temp_filename = "temp.shader";
+    const char* temp_filename = stage_define;
+
+    // Write current shader to file.
+    FILE* temp_shader_file = fopen( temp_filename, "w" );
+    fwrite( code, code_size, 1, temp_shader_file );
+    fclose( temp_shader_file );
+
     // Compile to SPV
 #if defined(_MSC_VER)
     char* glsl_compiler_path = temp_string_buffer.append_use_f( "%sglslangValidator.exe", vulkan_binaries_path );
@@ -1226,6 +1249,13 @@ ShaderStateHandle GpuDevice::create_shader_state( const ShaderStateCreation& cre
 
     sizet current_temporary_marker = temporary_allocator->get_marker();
 
+    StringBuffer name_buffer;
+    name_buffer.init( 4096, temporary_allocator );
+
+    // Parse result needs to be always in memory as its used to free descriptor sets.
+    shader_state->parse_result = ( spirv::ParseResult* )allocator->allocate( sizeof( spirv::ParseResult ), 64 );
+    memset( shader_state->parse_result, 0, sizeof( spirv::ParseResult ) );
+
     for ( compiled_shaders = 0; compiled_shaders < creation.stages_count; ++compiled_shaders ) {
         const ShaderStage& stage = creation.stages[ compiled_shaders ];
 
@@ -1255,6 +1285,7 @@ ShaderStateHandle GpuDevice::create_shader_state( const ShaderStateCreation& cre
             break;
         }
 
+        spirv::parse_binary( shader_create_info.pCode, shader_create_info.codeSize, name_buffer, shader_state->parse_result );
         // Not needed anymore - temp allocator freed at the end.
         //if ( compiled ) {
         //    rfree( ( void* )createInfo.pCode, allocator );
@@ -1287,10 +1318,39 @@ ShaderStateHandle GpuDevice::create_shader_state( const ShaderStateCreation& cre
     return handle;
 }
 
-PipelineHandle GpuDevice::create_pipeline( const PipelineCreation& creation ) {
+PipelineHandle GpuDevice::create_pipeline( const PipelineCreation& creation, const char* cache_path ) {
     PipelineHandle handle = { pipelines.obtain_resource() };
     if ( handle.index == k_invalid_index ) {
         return handle;
+    }
+
+    VkPipelineCache pipeline_cache = VK_NULL_HANDLE;
+    VkPipelineCacheCreateInfo pipeline_cache_create_info { VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO };
+
+    bool cache_exists = file_exists( cache_path );
+    if ( cache_path != nullptr && cache_exists ) {
+        FileReadResult read_result = file_read_binary( cache_path, allocator );
+
+        VkPipelineCacheHeaderVersionOne* cache_header = (VkPipelineCacheHeaderVersionOne*)read_result.data;
+
+        if ( cache_header->deviceID == vulkan_physical_properties.deviceID &&
+             cache_header->vendorID == vulkan_physical_properties.vendorID &&
+             memcmp( cache_header->pipelineCacheUUID, vulkan_physical_properties.pipelineCacheUUID, VK_UUID_SIZE ) == 0 )
+        {
+            pipeline_cache_create_info.initialDataSize = read_result.size;
+            pipeline_cache_create_info.pInitialData = read_result.data;
+        }
+        else
+        {
+            cache_exists = false;
+        }
+
+        check( vkCreatePipelineCache( vulkan_device, &pipeline_cache_create_info, vulkan_allocation_callbacks, &pipeline_cache ) );
+
+        allocator->deallocate( read_result.data );
+    }
+    else {
+        check( vkCreatePipelineCache( vulkan_device, &pipeline_cache_create_info, vulkan_allocation_callbacks, &pipeline_cache ) );
     }
 
     ShaderStateHandle shader_state = create_shader_state( creation.shaders );
@@ -1310,23 +1370,34 @@ PipelineHandle GpuDevice::create_pipeline( const PipelineCreation& creation ) {
 
     VkDescriptorSetLayout vk_layouts[ k_max_descriptor_set_layouts ];
 
-    // Create VkPipelineLayout
-    for ( u32 l = 0; l < creation.num_active_layouts; ++l ) {
-        pipeline->descriptor_set_layout[ l ] = access_descriptor_set_layout( creation.descriptor_set_layout[ l ] );
-        pipeline->descriptor_set_layout_handle[ l ] = creation.descriptor_set_layout[ l ];
+    u32 num_active_layouts = shader_state_data->parse_result->set_count;
 
-        vk_layouts[ l ] = pipeline->descriptor_set_layout[ l ]->vk_descriptor_set_layout;
+    // Create VkPipelineLayout
+    for ( u32 l = 0; l < shader_state_data->parse_result->set_count; ++l ) {
+        pipeline->descriptor_set_layout_handle[ l ] = create_descriptor_set_layout( shader_state_data->parse_result->sets[ l ] );
+        pipeline->descriptor_set[ l ] = access_descriptor_set_layout( pipeline->descriptor_set_layout_handle[ l ] );
+
+        vk_layouts[ l ] = pipeline->descriptor_set[ l ]->vk_descriptor_set_layout;
+    }
+
+    // TODO: improve.
+    // Add bindless resource layout after other layouts.
+    // [TAG: BINDLESS]
+    u32 bindless_active = 0;
+    if ( bindless_supported ) {
+        vk_layouts[ num_active_layouts ] = vulkan_bindless_descriptor_layout;
+        bindless_active = 1;
     }
 
     VkPipelineLayoutCreateInfo pipeline_layout_info = { VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO };
     pipeline_layout_info.pSetLayouts = vk_layouts;
-    pipeline_layout_info.setLayoutCount = creation.num_active_layouts;
+    pipeline_layout_info.setLayoutCount = num_active_layouts + bindless_active;
 
     VkPipelineLayout pipeline_layout;
     check( vkCreatePipelineLayout( vulkan_device, &pipeline_layout_info, vulkan_allocation_callbacks, &pipeline_layout ) );
     // Cache pipeline layout
     pipeline->vk_pipeline_layout = pipeline_layout;
-    pipeline->num_active_layouts = creation.num_active_layouts;
+    pipeline->num_active_layouts = num_active_layouts;
 
     // Create full pipeline
     if ( shader_state_data->graphics_pipeline ) {
@@ -1500,7 +1571,7 @@ PipelineHandle GpuDevice::create_pipeline( const PipelineCreation& creation ) {
 
         pipeline_info.pDynamicState = &dynamic_state;
 
-        vkCreateGraphicsPipelines( vulkan_device, VK_NULL_HANDLE, 1, &pipeline_info, vulkan_allocation_callbacks, &pipeline->vk_pipeline );
+        check( vkCreateGraphicsPipelines( vulkan_device, pipeline_cache, 1, &pipeline_info, vulkan_allocation_callbacks, &pipeline->vk_pipeline ) );
 
         pipeline->vk_bind_point = VkPipelineBindPoint::VK_PIPELINE_BIND_POINT_GRAPHICS;
     } else {
@@ -1509,10 +1580,24 @@ PipelineHandle GpuDevice::create_pipeline( const PipelineCreation& creation ) {
         pipeline_info.stage = shader_state_data->shader_stage_info[ 0 ];
         pipeline_info.layout = pipeline_layout;
 
-        vkCreateComputePipelines( vulkan_device, VK_NULL_HANDLE, 1, &pipeline_info, vulkan_allocation_callbacks, &pipeline->vk_pipeline );
+        check( vkCreateComputePipelines( vulkan_device, pipeline_cache, 1, &pipeline_info, vulkan_allocation_callbacks, &pipeline->vk_pipeline ) );
 
         pipeline->vk_bind_point = VkPipelineBindPoint::VK_PIPELINE_BIND_POINT_COMPUTE;
     }
+
+    if ( cache_path != nullptr && !cache_exists ) {
+        sizet cache_data_size = 0;
+        check( vkGetPipelineCacheData( vulkan_device, pipeline_cache, &cache_data_size, nullptr ) );
+
+        void* cache_data = allocator->allocate( cache_data_size, 64 );
+        check( vkGetPipelineCacheData( vulkan_device, pipeline_cache, &cache_data_size, cache_data ) );
+
+        file_write_binary( cache_path, cache_data, cache_data_size );
+
+        allocator->deallocate( cache_data );
+    }
+
+    vkDestroyPipelineCache( vulkan_device, pipeline_cache, vulkan_allocation_callbacks );
 
     return handle;
 }
@@ -1600,12 +1685,12 @@ SamplerHandle GpuDevice::create_sampler( const SamplerCreation& creation ) {
     create_info.compareEnable = 0;
     create_info.unnormalizedCoordinates = 0;
     create_info.borderColor = VkBorderColor::VK_BORDER_COLOR_INT_OPAQUE_WHITE;
+    create_info.minLod = 0;
+    create_info.maxLod = 16;
     // TODO:
     /*float                   mipLodBias;
     float                   maxAnisotropy;
     VkCompareOp             compareOp;
-    float                   minLod;
-    float                   maxLod;
     VkBorderColor           borderColor;
     VkBool32                unnormalizedCoordinates;*/
 
@@ -1643,6 +1728,12 @@ DescriptorSetLayoutHandle GpuDevice::create_descriptor_set_layout( const Descrip
         binding.type = input_binding.type;
         binding.name = input_binding.name;
 
+        // [TAG: BINDLESS]
+        // Skip bindings for images and textures as they are bindless, thus bound in the global bindless arrays (one for images, one for textures).
+        if ( bindless_supported && (binding.type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER || binding.type == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE) ) {
+            continue;
+        }
+
         VkDescriptorSetLayoutBinding& vk_binding = descriptor_set_layout->vk_binding[ used_bindings ];
         ++used_bindings;
 
@@ -1668,9 +1759,9 @@ DescriptorSetLayoutHandle GpuDevice::create_descriptor_set_layout( const Descrip
 
 //
 //
-static void vulkan_fill_write_descriptor_sets( GpuDevice& gpu, const DesciptorSetLayout* descriptor_set_layout, VkDescriptorSet vk_descriptor_set,
-                                               VkWriteDescriptorSet* descriptor_write, VkDescriptorBufferInfo* buffer_info, VkDescriptorImageInfo* image_info,
-                                               VkSampler vk_default_sampler, u32& num_resources, const ResourceHandle* resources, const SamplerHandle* samplers, const u16* bindings ) {
+void GpuDevice::fill_write_descriptor_sets( GpuDevice& gpu, const DesciptorSetLayout* descriptor_set_layout, VkDescriptorSet vk_descriptor_set,
+                                            VkWriteDescriptorSet* descriptor_write, VkDescriptorBufferInfo* buffer_info, VkDescriptorImageInfo* image_info,
+                                            VkSampler vk_default_sampler, u32& num_resources, const ResourceHandle* resources, const SamplerHandle* samplers, const u16* bindings ) {
 
     u32 used_resources = 0;
     for ( u32 r = 0; r < num_resources; r++ ) {
@@ -1680,6 +1771,12 @@ static void vulkan_fill_write_descriptor_sets( GpuDevice& gpu, const DesciptorSe
         u32 layout_binding_index = bindings[ r ];
 
         const DescriptorBinding& binding = descriptor_set_layout->bindings[ layout_binding_index ];
+
+        // [TAG: BINDLESS]
+        // Skip bindless descriptors as they are bound in the global bindless arrays.
+        if ( gpu.bindless_supported && (binding.type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER || binding.type == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE) ) {
+            continue;
+        }
 
         u32 i = used_resources;
         ++used_resources;
@@ -1827,8 +1924,8 @@ DescriptorSetHandle GpuDevice::create_descriptor_set( const DescriptorSetCreatio
     Sampler* vk_default_sampler = access_sampler( default_sampler );
 
     u32 num_resources = creation.num_resources;
-    vulkan_fill_write_descriptor_sets( *this, descriptor_set_layout, descriptor_set->vk_descriptor_set, descriptor_write, buffer_info, image_info, vk_default_sampler->vk_sampler,
-                                       num_resources, creation.resources, creation.samplers, creation.bindings );
+    fill_write_descriptor_sets( *this, descriptor_set_layout, descriptor_set->vk_descriptor_set, descriptor_write, buffer_info, image_info, vk_default_sampler->vk_sampler,
+                                num_resources, creation.resources, creation.samplers, creation.bindings );
 
     // Cache resources
     for ( u32 r = 0; r < creation.num_resources; r++ ) {
@@ -1936,7 +2033,7 @@ static void vulkan_create_swapchain_pass( GpuDevice& gpu, const RenderPassCreati
 
     // Transition
     for ( size_t i = 0; i < gpu.vulkan_swapchain_image_count; i++ ) {
-        transition_image_layout( command_buffer->vk_command_buffer, gpu.vulkan_swapchain_images[ i ], gpu.vulkan_surface_format.format, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, false );
+        add_image_barrier( command_buffer->vk_command_buffer, gpu.vulkan_swapchain_images[ i ], RESOURCE_STATE_UNDEFINED, RESOURCE_STATE_PRESENT, 0, 1, false );
     }
 
     vkEndCommandBuffer( command_buffer->vk_command_buffer );
@@ -2206,6 +2303,7 @@ void GpuDevice::destroy_buffer( BufferHandle buffer ) {
 void GpuDevice::destroy_texture( TextureHandle texture ) {
     if ( texture.index < textures.pool_size ) {
         resource_deletion_queue.push( { ResourceDeletionType::Texture, texture.index, current_frame } );
+        texture_to_update_bindless.push( { ResourceDeletionType::Texture, texture.index, current_frame } );
     } else {
         rprint( "Graphics error: trying to free invalid Texture %u\n", texture.index );
     }
@@ -2216,6 +2314,12 @@ void GpuDevice::destroy_pipeline( PipelineHandle pipeline ) {
         resource_deletion_queue.push( { ResourceDeletionType::Pipeline, pipeline.index, current_frame } );
         // Shader state creation is handled internally when creating a pipeline, thus add this to track correctly.
         Pipeline* v_pipeline = access_pipeline( pipeline );
+
+        ShaderState* shader_state_data = access_shader_state( v_pipeline->shader_state );
+        for ( u32 l = 0; l < shader_state_data->parse_result->set_count; ++l ) {
+            destroy_descriptor_set_layout( v_pipeline->descriptor_set_layout_handle[ l ] );
+        }
+
         destroy_shader_state( v_pipeline->shader_state );
     } else {
         rprint( "Graphics error: trying to free invalid Pipeline %u\n", pipeline.index );
@@ -2257,6 +2361,10 @@ void GpuDevice::destroy_render_pass( RenderPassHandle render_pass ) {
 void GpuDevice::destroy_shader_state( ShaderStateHandle shader ) {
     if ( shader.index < shaders.pool_size ) {
         resource_deletion_queue.push( { ResourceDeletionType::ShaderState, shader.index, current_frame } );
+
+        ShaderState* state = access_shader_state( shader );
+
+        allocator->deallocate( state->parse_result );
     } else {
         rprint( "Graphics error: trying to free invalid Shader %u\n", shader.index );
     }
@@ -2528,6 +2636,7 @@ void GpuDevice::resize_swapchain() {
     TextureHandle texture_to_delete = { textures.obtain_resource() };
     Texture* vk_texture_to_delete = access_texture( texture_to_delete );
     vk_texture_to_delete->handle = texture_to_delete;
+    vk_texture_to_delete->sampler = nullptr;
     Texture* vk_depth_texture = access_texture( depth_texture );
     vulkan_resize_texture( *this, vk_depth_texture, vk_texture_to_delete, swapchain_width, swapchain_height, 1 );
 
@@ -2557,7 +2666,7 @@ void GpuDevice::update_descriptor_set( DescriptorSetHandle descriptor_set ) {
 
 void GpuDevice::update_descriptor_set_instant( const DescriptorSetUpdate& update ) {
 
-    // Use a dummy descriptor set to delete the vulkan descriptor set handle
+    // Use a dummy resource list to delete the vulkan descriptor set handle
     DescriptorSetHandle dummy_delete_descriptor_set_handle = { descriptor_sets.obtain_resource() };
     DesciptorSet* dummy_delete_descriptor_set = access_descriptor_set( dummy_delete_descriptor_set_handle );
 
@@ -2586,8 +2695,8 @@ void GpuDevice::update_descriptor_set_instant( const DescriptorSetUpdate& update
     vkAllocateDescriptorSets( vulkan_device, &allocInfo, &descriptor_set->vk_descriptor_set );
 
     u32 num_resources = descriptor_set_layout->num_bindings;
-    vulkan_fill_write_descriptor_sets( *this, descriptor_set_layout, descriptor_set->vk_descriptor_set, descriptor_write, buffer_info, image_info, vk_default_sampler->vk_sampler,
-                                       num_resources, descriptor_set->resources, descriptor_set->samplers, descriptor_set->bindings );
+    fill_write_descriptor_sets( *this, descriptor_set_layout, descriptor_set->vk_descriptor_set, descriptor_write, buffer_info, image_info, vk_default_sampler->vk_sampler,
+                                num_resources, descriptor_set->resources, descriptor_set->samplers, descriptor_set->bindings );
 
     vkUpdateDescriptorSets( vulkan_device, num_resources, descriptor_write, 0, nullptr );
 }
@@ -2707,7 +2816,7 @@ void GpuDevice::new_frame() {
     dynamic_max_per_frame_size = raptor_max( used_size, dynamic_max_per_frame_size );
     dynamic_allocated_size = dynamic_per_frame_size * current_frame;
 
-    // Descriptor Set Updates
+    // Resource List Updates
     if ( descriptor_set_updates.size ) {
         for ( i32 i = descriptor_set_updates.size - 1; i >= 0; i-- ) {
             DescriptorSetUpdate& update = descriptor_set_updates[ i ];
@@ -2751,7 +2860,7 @@ void GpuDevice::present() {
         vkEndCommandBuffer( command_buffer->vk_command_buffer );
     }
 
-    if ( texture_to_update_bindless.size ) {
+    if (texture_to_update_bindless.size) {
         // Handle deferred writes to bindless textures.
         VkWriteDescriptorSet bindless_descriptor_writes[k_max_bindless_resources];
         VkDescriptorImageInfo bindless_image_info[k_max_bindless_resources];
@@ -2760,7 +2869,7 @@ void GpuDevice::present() {
 
         u32 current_write_index = 0;
         for (i32 it = texture_to_update_bindless.size - 1; it >= 0; it--) {
-            ResourceUpdate &texture_to_update = texture_to_update_bindless[it];
+            ResourceUpdate& texture_to_update = texture_to_update_bindless[it];
 
             //if ( texture_to_update.current_frame == current_frame )
             {
@@ -2781,7 +2890,8 @@ void GpuDevice::present() {
 
                 if (texture->sampler != nullptr) {
                     descriptor_image_info.sampler = texture->sampler->vk_sampler;
-                } else {
+                }
+                else {
                     descriptor_image_info.sampler = vk_default_sampler->vk_sampler;
                 }
 
@@ -3038,7 +3148,7 @@ CommandBuffer* GpuDevice::get_instant_command_buffer() {
     return cb;
 }
 
-// Resource Description Query ///////////////////////////////////////////////////
+// Resource Description Query /////////////////////////////////////////////
 
 void GpuDevice::query_buffer( BufferHandle buffer, BufferDescription& out_description ) {
     if ( buffer.index != k_invalid_index ) {
@@ -3124,7 +3234,7 @@ const RenderPassOutput& GpuDevice::get_render_pass_output( RenderPassHandle rend
     return vulkan_render_pass->output;
 }
 
-// Resource Map/Unmap ///////////////////////////////////////////////////////////
+// Resource Map/Unmap /////////////////////////////////////////////////////
 
 
 void* GpuDevice::map_buffer( const MapBufferParameters& parameters ) {
@@ -3205,7 +3315,7 @@ void check_result( VkResult result ) {
         RASSERTM( false, "Vulkan error: aborting." );
     }
 }
-// Device ////////////////////////////////////////////////////////////////
+// Device /////////////////////////////////////////////////////////////////
 
 BufferHandle GpuDevice::get_fullscreen_vertex_buffer() const {
     return fullscreen_vertex_buffer;
@@ -3231,7 +3341,7 @@ void GpuDevice::resize( u16 width, u16 height ) {
 }
 
 
-// Resource Access //////////////////////////////////////////////////////////////
+// Resource Access ////////////////////////////////////////////////////////
 ShaderState* GpuDevice::access_shader_state( ShaderStateHandle shader ) {
     return (ShaderState*)shaders.access_resource( shader.index );
 }
@@ -3280,6 +3390,20 @@ const DesciptorSetLayout* GpuDevice::access_descriptor_set_layout( DescriptorSet
     return (const DesciptorSetLayout*)descriptor_set_layouts.access_resource( descriptor_set_layout.index );
 }
 
+DescriptorSetLayoutHandle GpuDevice::get_descriptor_set_layout( PipelineHandle pipeline_handle, int layout_index ) {
+    Pipeline* pipeline = access_pipeline( pipeline_handle );
+    RASSERT( pipeline != nullptr );
+
+    return  pipeline->descriptor_set_layout_handle[ layout_index ];
+}
+
+DescriptorSetLayoutHandle GpuDevice::get_descriptor_set_layout( PipelineHandle pipeline_handle, int layout_index ) const {
+    const Pipeline* pipeline = access_pipeline( pipeline_handle );
+    RASSERT( pipeline != nullptr );
+
+    return  pipeline->descriptor_set_layout_handle[ layout_index ];
+}
+
 DesciptorSet* GpuDevice::access_descriptor_set( DescriptorSetHandle descriptor_set ) {
     return (DesciptorSet*)descriptor_sets.access_resource( descriptor_set.index );
 }
@@ -3296,16 +3420,16 @@ const RenderPass* GpuDevice::access_render_pass( RenderPassHandle render_pass ) 
     return (const RenderPass*)render_passes.access_resource( render_pass.index );
 }
 /*
-// Building Helpers /////////////////////////////////////////////////////////////
+// Building Helpers ///////////////////////////////////////////////////////
 
-// SortKey //////////////////////////////////////////////////////////////////////
+// SortKey ////////////////////////////////////////////////////////////////
 static const u64                    k_stage_shift               = (56);
 
 u64 SortKey::get_key( u64 stage_index ) {
     return ( ( stage_index << k_stage_shift ) );
 }*/
 
-// GPU Timestamp Manager ////////////////////////////////////////////////////////
+// GPU Timestamp Manager //////////////////////////////////////////////////
 
 void GPUTimestampManager::init( Allocator* allocator_, u16 queries_per_frame_, u16 max_frames ) {
 

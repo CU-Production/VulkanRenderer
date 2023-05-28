@@ -16,6 +16,12 @@
 
 # Features
 
+## 20230528
+- [x] task manager based on [enkiTS](https://github.com/dougbinks/enkiTS)
+- [x] async loading texture using pinned task
+- [x] transfer queue(or copy queue) for upload texture to GPU
+- [x] recording commandbuffer on multiple threads using second commandbuffer
+
 ## 20230525
 - [x] bindless texture
 - [x] pipeline cache

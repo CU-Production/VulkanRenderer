@@ -40,9 +40,9 @@ struct ImGuiService : public raptor::Service {
     void                            shutdown() override;
 
     void                            new_frame();
-    void                            render( CommandBuffer& commands );
+    void                            render( CommandBuffer& commands, bool use_secondary );
 
-    // Removes the Texture from the Cache and destroy the associated Descriptor Set.
+    // Removes the Texture from the Cache and destroy the associated Resource List.
     void                            remove_cached_texture( TextureHandle& texture );
 
     void                            set_style( ImGuiStyles style );

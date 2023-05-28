@@ -14,9 +14,17 @@ namespace spirv {
 } // namespace spirv
 
 struct Allocator;
-struct GpuDevice;
 
 static const u32                    k_invalid_index = 0xffffffff;
+
+static const u32 k_buffers_pool_size                 = 16384;
+static const u32 k_textures_pool_size                = 512;
+static const u32 k_render_passes_pool_size           = 256;
+static const u32 k_descriptor_set_layouts_pool_size  = 128;
+static const u32 k_pipelines_pool_size               = 128;
+static const u32 k_shaders_pool_size                 = 128;
+static const u32 k_descriptor_sets_pool_size         = 4096;
+static const u32 k_samplers_pool_size                = 32;
 
 typedef u32                         ResourceHandle;
 
@@ -64,7 +72,7 @@ static RenderPassHandle             k_invalid_pass      { k_invalid_index };
 
 
 
-// Consts //////////////////////////////////////////////////////////////////
+// Consts ///////////////////////////////////////////////////////////////////////
 
 static const u8                     k_max_image_outputs = 8;                // Maximum number of images/render_targets/fbo attachments usable.
 static const u8                     k_max_descriptor_set_layouts = 8;       // Maximum number of layouts in the pipeline.
@@ -76,7 +84,7 @@ static const u8                     k_max_vertex_attributes = 16;
 static const u32                    k_submit_header_sentinel = 0xfefeb7ba;
 static const u32                    k_max_resource_deletions = 64;
 
-// Resource creation structs //////////////////////////////////////////////
+// Resource creation structs ////////////////////////////////////////////////////
 
 //
 //
@@ -189,26 +197,30 @@ struct BlendStateCreation {
 //
 struct RasterizationCreation {
 
-    VkCullModeFlagBits              cull_mode = VK_CULL_MODE_NONE;
-    VkFrontFace                     front = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-    FillMode::Enum                  fill = FillMode::Solid;
+    VkCullModeFlagBits              cull_mode   = VK_CULL_MODE_NONE;
+    VkFrontFace                     front       = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    FillMode::Enum                  fill        = FillMode::Solid;
 }; // struct RasterizationCreation
 
 //
 //
 struct BufferCreation {
 
-    VkBufferUsageFlags              type_flags = 0;
-    ResourceUsageType::Enum         usage   = ResourceUsageType::Immutable;
-    u32                             size    = 0;
-    void*                           initial_data = nullptr;
+    VkBufferUsageFlags              type_flags      = 0;
+    ResourceUsageType::Enum         usage           = ResourceUsageType::Immutable;
+    u32                             size            = 0;
+    u32                             persistent      = 0;
+    u32                             device_only     = 0;
+    void*                           initial_data    = nullptr;
 
-    const char*                     name    = nullptr;
+    const char*                     name            = nullptr;
 
     BufferCreation&                 reset();
     BufferCreation&                 set( VkBufferUsageFlags flags, ResourceUsageType::Enum usage, u32 size );
     BufferCreation&                 set_data( void* data );
     BufferCreation&                 set_name( const char* name );
+    BufferCreation&                 set_persistent( bool value );
+    BufferCreation&                 set_device_only( bool value );
 
 }; // struct BufferCreation
 
@@ -673,7 +685,8 @@ struct Buffer {
     BufferHandle                    handle;
     BufferHandle                    parent_buffer;
 
-    const char* name                = nullptr;
+    u8*                             mapped_data     = nullptr;
+    const char*                     name            = nullptr;
 
 }; // struct BufferVulkan
 
@@ -787,7 +800,7 @@ struct Pipeline {
 
     ShaderStateHandle               shader_state;
 
-    const DesciptorSetLayout*       descriptor_set[ k_max_descriptor_set_layouts ];
+    const DesciptorSetLayout*       descriptor_set_layout[ k_max_descriptor_set_layouts ];
     DescriptorSetLayoutHandle       descriptor_set_layout_handle[ k_max_descriptor_set_layouts ];
     u32                             num_active_layouts = 0;
 
@@ -830,46 +843,219 @@ struct RenderPass {
 }; // struct RenderPass
 
 
+// Enum translations. Use tables or switches depending on the case. ////////////
+static cstring to_compiler_extension( VkShaderStageFlagBits value ) {
+    switch ( value ) {
+        case VK_SHADER_STAGE_VERTEX_BIT:
+            return "vert";
+        case VK_SHADER_STAGE_FRAGMENT_BIT:
+            return "frag";
+        case VK_SHADER_STAGE_COMPUTE_BIT:
+            return "comp";
+        default:
+            return "";
+    }
+}
 
-// Enum translations. Use tables or switches depending on the case. ///////
-cstring                     to_compiler_extension( VkShaderStageFlagBits value );
-cstring                     to_stage_defines( VkShaderStageFlagBits value );
-
-VkImageType                 to_vk_image_type( TextureType::Enum type );
-VkImageViewType             to_vk_image_view_type( TextureType::Enum type );
-
-VkFormat                    to_vk_vertex_format( VertexComponentFormat::Enum value );
-
-VkPipelineStageFlags        to_vk_pipeline_stage( PipelineStage::Enum value );
+//
+static cstring to_stage_defines( VkShaderStageFlagBits value ) {
+    switch ( value ) {
+        case VK_SHADER_STAGE_VERTEX_BIT:
+            return "VERTEX";
+        case VK_SHADER_STAGE_FRAGMENT_BIT:
+            return "FRAGMENT";
+        case VK_SHADER_STAGE_COMPUTE_BIT:
+            return "COMPUTE";
+        default:
+            return "";
+    }
+}
+//
+//
+static VkImageType to_vk_image_type( TextureType::Enum type ) {
+    static VkImageType s_vk_target[ TextureType::Count ] = { VK_IMAGE_TYPE_1D, VK_IMAGE_TYPE_2D, VK_IMAGE_TYPE_3D, VK_IMAGE_TYPE_1D, VK_IMAGE_TYPE_2D, VK_IMAGE_TYPE_3D };
+    return s_vk_target[ type ];
+}
 
 //
 //
-VkAccessFlags               util_to_vk_access_flags( ResourceState state );
+static VkImageViewType to_vk_image_view_type( TextureType::Enum type ) {
+    static VkImageViewType s_vk_data[] = { VK_IMAGE_VIEW_TYPE_1D, VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_VIEW_TYPE_3D, VK_IMAGE_VIEW_TYPE_1D_ARRAY, VK_IMAGE_VIEW_TYPE_2D_ARRAY, VK_IMAGE_VIEW_TYPE_CUBE_ARRAY };
+    return s_vk_data[ type ];
+}
 
-VkImageLayout               util_to_vk_image_layout( ResourceState usage );
+//
+//
+static VkFormat to_vk_vertex_format( VertexComponentFormat::Enum value ) {
+    // Float, Float2, Float3, Float4, Mat4, Byte, Byte4N, UByte, UByte4N, Short2, Short2N, Short4, Short4N, Uint, Uint2, Uint4, Count
+    static VkFormat s_vk_vertex_formats[ VertexComponentFormat::Count ] = { VK_FORMAT_R32_SFLOAT, VK_FORMAT_R32G32_SFLOAT, VK_FORMAT_R32G32B32_SFLOAT, VK_FORMAT_R32G32B32A32_SFLOAT, /*MAT4 TODO*/VK_FORMAT_R32G32B32A32_SFLOAT,
+                                                                          VK_FORMAT_R8_SINT, VK_FORMAT_R8G8B8A8_SNORM, VK_FORMAT_R8_UINT, VK_FORMAT_R8G8B8A8_UINT, VK_FORMAT_R16G16_SINT, VK_FORMAT_R16G16_SNORM,
+                                                                          VK_FORMAT_R16G16B16A16_SINT, VK_FORMAT_R16G16B16A16_SNORM, VK_FORMAT_R32_UINT, VK_FORMAT_R32G32_UINT, VK_FORMAT_R32G32B32A32_UINT };
+
+    return s_vk_vertex_formats[ value ];
+}
+
+//
+//
+static VkPipelineStageFlags to_vk_pipeline_stage( PipelineStage::Enum value ) {
+    static VkPipelineStageFlags s_vk_values[] = { VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT, VK_PIPELINE_STAGE_VERTEX_INPUT_BIT, VK_PIPELINE_STAGE_VERTEX_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT };
+    return s_vk_values[ value ];
+}
+
+//
+//
+static VkAccessFlags util_to_vk_access_flags( ResourceState state ) {
+    VkAccessFlags ret = 0;
+    if ( state & RESOURCE_STATE_COPY_SOURCE ) {
+        ret |= VK_ACCESS_TRANSFER_READ_BIT;
+    }
+    if ( state & RESOURCE_STATE_COPY_DEST ) {
+        ret |= VK_ACCESS_TRANSFER_WRITE_BIT;
+    }
+    if ( state & RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER ) {
+        ret |= VK_ACCESS_UNIFORM_READ_BIT | VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT;
+    }
+    if ( state & RESOURCE_STATE_INDEX_BUFFER ) {
+        ret |= VK_ACCESS_INDEX_READ_BIT;
+    }
+    if ( state & RESOURCE_STATE_UNORDERED_ACCESS ) {
+        ret |= VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+    }
+    if ( state & RESOURCE_STATE_INDIRECT_ARGUMENT ) {
+        ret |= VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+    }
+    if ( state & RESOURCE_STATE_RENDER_TARGET ) {
+        ret |= VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    }
+    if ( state & RESOURCE_STATE_DEPTH_WRITE ) {
+        ret |= VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+    }
+    if ( state & RESOURCE_STATE_SHADER_RESOURCE ) {
+        ret |= VK_ACCESS_SHADER_READ_BIT;
+    }
+    if ( state & RESOURCE_STATE_PRESENT ) {
+        ret |= VK_ACCESS_MEMORY_READ_BIT;
+    }
+#ifdef ENABLE_RAYTRACING
+    if ( state & RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE ) {
+        ret |= VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_NV | VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_NV;
+    }
+#endif
+
+    return ret;
+}
+
+static VkImageLayout util_to_vk_image_layout( ResourceState usage ) {
+    if ( usage & RESOURCE_STATE_COPY_SOURCE )
+        return VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+
+    if ( usage & RESOURCE_STATE_COPY_DEST )
+        return VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+
+    if ( usage & RESOURCE_STATE_RENDER_TARGET )
+        return VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+
+    if ( usage & RESOURCE_STATE_DEPTH_WRITE )
+        return VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+    if ( usage & RESOURCE_STATE_DEPTH_READ )
+        return VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+
+    if ( usage & RESOURCE_STATE_UNORDERED_ACCESS )
+        return VK_IMAGE_LAYOUT_GENERAL;
+
+    if ( usage & RESOURCE_STATE_SHADER_RESOURCE )
+        return VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    if ( usage & RESOURCE_STATE_PRESENT )
+        return VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+
+    if ( usage == RESOURCE_STATE_COMMON )
+        return VK_IMAGE_LAYOUT_GENERAL;
+
+    return VK_IMAGE_LAYOUT_UNDEFINED;
+}
 
 // Determines pipeline stages involved for given accesses
-VkPipelineStageFlags        util_determine_pipeline_stage_flags( VkAccessFlags access_flags, QueueType::Enum queue_type );
+static VkPipelineStageFlags util_determine_pipeline_stage_flags( VkAccessFlags accessFlags, QueueType::Enum queueType ) {
+    VkPipelineStageFlags flags = 0;
 
-void util_add_image_barrier( GpuDevice* gpu, VkCommandBuffer command_buffer, Texture* texture, ResourceState old_state, ResourceState new_state,
+    switch ( queueType ) {
+        case QueueType::Graphics:
+        {
+            if ( ( accessFlags & ( VK_ACCESS_INDEX_READ_BIT | VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT ) ) != 0 )
+                flags |= VK_PIPELINE_STAGE_VERTEX_INPUT_BIT;
+
+            if ( ( accessFlags & ( VK_ACCESS_UNIFORM_READ_BIT | VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT ) ) != 0 ) {
+                flags |= VK_PIPELINE_STAGE_VERTEX_SHADER_BIT;
+                flags |= VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+                /*if ( pRenderer->pActiveGpuSettings->mGeometryShaderSupported ) {
+                    flags |= VK_PIPELINE_STAGE_GEOMETRY_SHADER_BIT;
+                }
+                if ( pRenderer->pActiveGpuSettings->mTessellationSupported ) {
+                    flags |= VK_PIPELINE_STAGE_TESSELLATION_CONTROL_SHADER_BIT;
+                    flags |= VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT;
+                }*/
+                flags |= VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+    #ifdef ENABLE_RAYTRACING
+                if ( pRenderer->mVulkan.mRaytracingExtension ) {
+                    flags |= VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_NV;
+                }
+    #endif
+            }
+
+            if ( ( accessFlags & VK_ACCESS_INPUT_ATTACHMENT_READ_BIT ) != 0 )
+                flags |= VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+
+            if ( ( accessFlags & ( VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT ) ) != 0 )
+                flags |= VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+
+            if ( ( accessFlags & ( VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT ) ) != 0 )
+                flags |= VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+
+            break;
+        }
+        case QueueType::Compute:
+        {
+            if ( ( accessFlags & ( VK_ACCESS_INDEX_READ_BIT | VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT ) ) != 0 ||
+                ( accessFlags & VK_ACCESS_INPUT_ATTACHMENT_READ_BIT ) != 0 ||
+                ( accessFlags & ( VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT ) ) != 0 ||
+                ( accessFlags & ( VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT ) ) != 0 )
+                return VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+
+            if ( ( accessFlags & ( VK_ACCESS_UNIFORM_READ_BIT | VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT ) ) != 0 )
+                flags |= VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+
+            break;
+        }
+        case QueueType::CopyTransfer : return VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+        default: break;
+    }
+
+    // Compatible with both compute and graphics queues
+    if ( ( accessFlags & VK_ACCESS_INDIRECT_COMMAND_READ_BIT ) != 0 )
+        flags |= VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT;
+
+    if ( ( accessFlags & ( VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT ) ) != 0 )
+        flags |= VK_PIPELINE_STAGE_TRANSFER_BIT;
+
+    if ( ( accessFlags & ( VK_ACCESS_HOST_READ_BIT | VK_ACCESS_HOST_WRITE_BIT ) ) != 0 )
+        flags |= VK_PIPELINE_STAGE_HOST_BIT;
+
+    if ( flags == 0 )
+        flags = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+
+    return flags;
+}
+
+void util_add_image_barrier( VkCommandBuffer command_buffer, VkImage image, ResourceState old_state, ResourceState new_state,
                              u32 base_mip_level, u32 mip_count, bool is_depth );
 
-void util_add_image_barrier( GpuDevice* gpu, VkCommandBuffer command_buffer, VkImage image, ResourceState old_state, ResourceState new_state,
-                             u32 base_mip_level, u32 mip_count, bool is_depth );
-
-void util_add_image_barrier_ext( GpuDevice* gpu, VkCommandBuffer command_buffer, VkImage image, ResourceState old_state, ResourceState new_state,
-                                 u32 base_mip_level, u32 mip_count, u32 base_array_layer, u32 array_layer_count, bool is_depth, u32 source_family, u32 destination_family,
+void util_add_image_barrier_ext( VkCommandBuffer command_buffer, VkImage image, ResourceState old_state, ResourceState new_state,
+                                 u32 base_mip_level, u32 mip_count, bool is_depth, u32 source_family, u32 destination_family,
                                  QueueType::Enum source_queue_type, QueueType::Enum destination_queue_type );
 
-void util_add_image_barrier_ext( GpuDevice* gpu, VkCommandBuffer command_buffer, Texture* texture, ResourceState old_state, ResourceState new_state,
-                                 u32 base_mip_level, u32 mip_count, u32 base_array_layer, u32 array_layer_count, bool is_depth,
-                                 u32 source_family = VK_QUEUE_FAMILY_IGNORED, u32 destination_family = VK_QUEUE_FAMILY_IGNORED,
-                                 QueueType::Enum source_queue_type = QueueType::Graphics, QueueType::Enum destination_queue_type = QueueType::Graphics );
-
-void util_add_buffer_barrier( GpuDevice* gpu, VkCommandBuffer command_buffer, VkBuffer buffer, ResourceState old_state, ResourceState new_state,
-                              u32 buffer_size );
-
-void util_add_buffer_barrier_ext( GpuDevice* gpu, VkCommandBuffer command_buffer, VkBuffer buffer, ResourceState old_state, ResourceState new_state,
+void util_add_buffer_barrier_ext( VkCommandBuffer command_buffer, VkBuffer buffer, ResourceState old_state, ResourceState new_state,
                                   u32 buffer_size, u32 source_family, u32 destination_family,
                                   QueueType::Enum source_queue_type, QueueType::Enum destination_queue_type );
 

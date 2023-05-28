@@ -15,6 +15,7 @@
 #include "external/cglm/struct/mat4.h"
 #include "external/cglm/struct/cam.h"
 #include "external/cglm/struct/affine.h"
+#include "external/enkiTS/TaskScheduler.h"
 
 #include "foundation/file.hpp"
 #include "foundation/gltf.hpp"
@@ -23,13 +24,19 @@
 #include "foundation/resource_manager.hpp"
 
 #include "external/imgui/imgui.h"
-
+#include "external/stb_image.h"
 #include "external/tracy/tracy/Tracy.hpp"
+
+#include <assimp/cimport.h>        // Plain-C interface
+#include <assimp/scene.h>          // Output data structure
+#include <assimp/postprocess.h>    // Post processing flags
 
 #include <stdio.h>
 #include <stdlib.h>
 
 ///////////////////////////////////////
+
+struct glTFScene;
 
 static const u16 INVALID_TEXTURE_INDEX = ~0u;
 
@@ -45,7 +52,9 @@ struct MeshDraw {
     raptor::BufferHandle    texcoord_buffer;
     raptor::BufferHandle    material_buffer;
 
+    VkIndexType index_type;
     u32         index_offset;
+
     u32         position_offset;
     u32         tangent_offset;
     u32         normal_offset;
@@ -65,6 +74,8 @@ struct MeshDraw {
 
     f32         alpha_cutoff;
     u32         flags;
+
+    raptor::DescriptorSetHandle descriptor_set;
 }; // struct MeshDraw
 
 //
@@ -142,7 +153,7 @@ static void draw_mesh( raptor::Renderer& renderer, raptor::CommandBuffer* gpu_co
     gpu_commands->bind_vertex_buffer( mesh_draw.tangent_buffer, 1, mesh_draw.tangent_offset );
     gpu_commands->bind_vertex_buffer( mesh_draw.normal_buffer, 2, mesh_draw.normal_offset );
     gpu_commands->bind_vertex_buffer( mesh_draw.texcoord_buffer, 3, mesh_draw.texcoord_offset );
-    gpu_commands->bind_index_buffer( mesh_draw.index_buffer, mesh_draw.index_offset );
+    gpu_commands->bind_index_buffer( mesh_draw.index_buffer, mesh_draw.index_offset, VkIndexType::VK_INDEX_TYPE_UINT16);
     gpu_commands->bind_local_descriptor_set( &descriptor_set, 1, nullptr, 0 );
 
     gpu_commands->draw_indexed( raptor::TopologyType::Triangle, mesh_draw.primitive_count, 1, 0, 0, 0 );
@@ -758,7 +769,7 @@ int main( int argc, char** argv ) {
 
             gpu_commands->clear( 0.3, 0.3, 0.3, 1 );
             gpu_commands->clear_depth_stencil( 1.0f, 0 );
-            gpu_commands->bind_pass( gpu.get_swapchain_pass() );
+            gpu_commands->bind_pass( gpu.get_swapchain_pass(), false );
             gpu_commands->set_scissor( nullptr );
             gpu_commands->set_viewport( nullptr );
 
@@ -778,7 +789,7 @@ int main( int argc, char** argv ) {
                 draw_mesh( renderer, gpu_commands, mesh_draw );
             }
 
-            imgui->render( *gpu_commands );
+            imgui->render( *gpu_commands, false );
 
             gpu_commands->pop_marker();
 

@@ -25,6 +25,7 @@ struct Allocator;
 
 // Forward-declarations //////////////////////////////////////////////////
 struct CommandBuffer;
+struct CommandBufferManager;
 struct DeviceRenderFrame;
 struct GPUTimestampManager;
 struct GpuDevice;
@@ -74,7 +75,6 @@ struct GPUTimestampManager {
 
 }; // struct GPUTimestampManager
 
-
 //
 //
 struct DeviceCreation {
@@ -86,12 +86,14 @@ struct DeviceCreation {
     u16                             height          = 1;
 
     u16                             gpu_time_queries_per_frame = 32;
+    u16                             num_threads     = 1;
     bool                            enable_gpu_time_queries = false;
     bool                            debug           = false;
 
     DeviceCreation&                 set_window( u32 width, u32 height, void* handle );
     DeviceCreation&                 set_allocator( Allocator* allocator );
     DeviceCreation&                 set_linear_allocator( StackAllocator* allocator );
+    DeviceCreation&                 set_num_threads( u32 value );
 
 }; // struct DeviceCreation
 
@@ -152,8 +154,6 @@ struct GpuDevice : public Service {
 
     void                            frame_counters_advance();
 
-    bool                            get_family_queue( VkPhysicalDevice physical_device );
-
     VkShaderModuleCreateInfo        compile_shader( cstring code, u32 code_size, VkShaderStageFlagBits stage, cstring name );
 
     // Swapchain //////////////////////////////////////////////////////////
@@ -170,8 +170,8 @@ struct GpuDevice : public Service {
     void                            set_buffer_global_offset( BufferHandle buffer, u32 offset );
 
     // Command Buffers ///////////////////////////////////////////////////
-    CommandBuffer*                  get_command_buffer( QueueType::Enum type, bool begin );
-    CommandBuffer*                  get_instant_command_buffer();
+    CommandBuffer*                  get_command_buffer( u32 thread_index, bool begin );
+    CommandBuffer*                  get_secondary_command_buffer( u32 thread_index );
 
     void                            queue_command_buffer( CommandBuffer* command_buffer );          // Queue command buffer that will not be executed until present is called.
 
@@ -216,6 +216,9 @@ struct GpuDevice : public Service {
     void                            destroy_shader_state_instant( ResourceHandle shader );
 
     void                            update_descriptor_set_instant( const DescriptorSetUpdate& update );
+
+    // Memory Statistics //////////////////////////////////////////////////
+    u32                             get_memory_heap_count();
 
     ResourcePool                    buffers;
     ResourcePool                    textures;
@@ -276,8 +279,10 @@ struct GpuDevice : public Service {
     VkPhysicalDevice                vulkan_physical_device;
     VkPhysicalDeviceProperties      vulkan_physical_properties;
     VkDevice                        vulkan_device;
-    VkQueue                         vulkan_queue;
-    uint32_t                        vulkan_queue_family;
+    VkQueue                         vulkan_main_queue;
+    VkQueue                         vulkan_transfer_queue;
+    u32                             vulkan_main_queue_family;
+    u32                             vulkan_transfer_queue_family;
     VkDescriptorPool                vulkan_descriptor_pool;
 
     // [TAG: BINDLESS]
@@ -323,6 +328,9 @@ struct GpuDevice : public Service {
     f32                             gpu_timestamp_frequency;
     bool                            gpu_timestamp_reset             = true;
     bool                            debug_utils_extension_present   = false;
+
+    sizet                           ubo_alignment                   = 256;
+    sizet                           ssbo_alignemnt                  = 256;
 
     char                            vulkan_binaries_path[ 512 ];
 

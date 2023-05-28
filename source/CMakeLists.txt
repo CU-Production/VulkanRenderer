@@ -44,6 +44,7 @@ target_include_directories(VulkanRenderer PRIVATE
     .
     ..
     raptor
+    ../binaries/assimp/include
     ${Vulkan_INCLUDE_DIRS}
 )
 
@@ -53,11 +54,16 @@ if (WIN32)
 
     target_link_directories(VulkanRenderer PRIVATE
         ../binaries/SDL2-2.0.18/lib/x64
+        ../binaries/assimp/windows/bin
+        ../binaries/assimp/windows/lib
     )
 else()
+    target_link_directories(Chapter3 PRIVATE
+        ../binaries/assimp/linux/lib
+    )
+
     target_include_directories(VulkanRenderer PRIVATE
         ${SDL2_INCLUDE_DIRS})
-
 endif()
 
 target_link_libraries(VulkanRenderer PRIVATE
@@ -69,17 +75,20 @@ target_link_libraries(VulkanRenderer PRIVATE
 
 if (WIN32)
     target_link_libraries(VulkanRenderer PRIVATE
+        assimp-vc142-mt
         SDL2)
 else()
     target_link_libraries(VulkanRenderer PRIVATE
         dl
         pthread
+        assimp
         SDL2::SDL2)
 endif()
 
 if (WIN32)
     set(DLLS_TO_COPY
         ${CMAKE_CURRENT_SOURCE_DIR}/../binaries/SDL2-2.0.18/lib/x64/SDL2.dll
+        ${CMAKE_CURRENT_SOURCE_DIR}/../binaries/assimp/windows/bin/assimp-vc142-mt.dll
     )
 
     foreach(DLL ${DLLS_TO_COPY})

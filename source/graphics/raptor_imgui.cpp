@@ -229,7 +229,7 @@ void ImGuiService::new_frame() {
     ImGui::NewFrame();
 }
 
-void ImGuiService::render( raptor::CommandBuffer& commands ) {
+void ImGuiService::render( raptor::CommandBuffer& commands, bool use_secondary ) {
 
     ImGui::Render();
 
@@ -299,10 +299,10 @@ void ImGuiService::render( raptor::CommandBuffer& commands ) {
     commands.push_marker( "ImGUI" );
 
     // todo: key
-    commands.bind_pass( gpu->get_swapchain_pass() );
+    commands.bind_pass( gpu->get_swapchain_pass(), use_secondary );
     commands.bind_pipeline( g_imgui_pipeline );
     commands.bind_vertex_buffer( g_vb, 0, 0 );
-    commands.bind_index_buffer( g_ib, 0 );
+    commands.bind_index_buffer( g_ib, 0, VK_INDEX_TYPE_UINT16 );
 
     const Viewport viewport = { 0, 0, (u16)fb_width, (u16)fb_height, 0.0f, 1.0f };
     commands.set_viewport( &viewport );

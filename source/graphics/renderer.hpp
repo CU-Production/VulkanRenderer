@@ -5,6 +5,8 @@
 
 #include "foundation/resource_manager.hpp"
 
+#include <mutex>
+
 namespace raptor {
 
 struct Renderer;
@@ -48,7 +50,7 @@ struct SamplerResource : public raptor::Resource {
 
 }; // struct Sampler
 
-// Material/Shaders /////////////////////////////////////////////////////////////
+// Material/Shaders ///////////////////////////////////////////////////////
 
 //
 //
@@ -113,7 +115,7 @@ struct Material : public raptor::Resource {
 
 }; // struct Material
 
-// ResourceCache ////////////////////////////////////////////////////////////////
+// ResourceCache //////////////////////////////////////////////////////////
 
 //
 //
@@ -130,7 +132,7 @@ struct ResourceCache {
 
 }; // struct ResourceCache
 
-// Renderer /////////////////////////////////////////////////////////////////////
+// Renderer ///////////////////////////////////////////////////////////////
 
 
 struct RendererCreation {
@@ -154,6 +156,8 @@ struct Renderer : public Service {
 
     void                        begin_frame();
     void                        end_frame();
+
+    void                        imgui_draw();
 
     void                        resize_swapchain( u32 width, u32 height );
 
@@ -187,8 +191,14 @@ struct Renderer : public Service {
     void*                       map_buffer( BufferResource* buffer, u32 offset = 0, u32 size = 0 );
     void                        unmap_buffer( BufferResource* buffer );
 
-    CommandBuffer*              get_command_buffer( QueueType::Enum type, bool begin )  { return gpu->get_command_buffer( type, begin ); }
+    CommandBuffer*              get_command_buffer( u32 thread_index, bool begin )  { return gpu->get_command_buffer( thread_index, begin ); }
     void                        queue_command_buffer( raptor::CommandBuffer* commands ) { gpu->queue_command_buffer( commands ); }
+
+    // Multithread friendly update to textures
+    void                        add_texture_to_update( raptor::TextureHandle texture );
+    void                        add_texture_update_commands( u32 thread_id );
+
+    std::mutex                  texture_update_mutex;
 
     ResourcePoolTyped<TextureResource>  textures;
     ResourcePoolTyped<BufferResource>   buffers;
@@ -198,7 +208,12 @@ struct Renderer : public Service {
 
     ResourceCache               resource_cache;
 
+    TextureHandle               textures_to_update[ 128 ];
+    u32                         num_textures_to_update = 0;
+
     raptor::GpuDevice*          gpu;
+
+    Array<VmaBudget>            gpu_heap_budgets;
 
     u16                         width;
     u16                         height;

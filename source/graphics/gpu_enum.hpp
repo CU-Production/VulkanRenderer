@@ -153,15 +153,15 @@ namespace TopologyType {
 
 namespace ResourceUsageType {
     enum Enum {
-        Immutable, Dynamic, Stream, Count
+        Immutable, Dynamic, Stream, Staging, Count
     };
 
     enum Mask {
-        Immutable_mask = 1 << 0, Dynamic_mask = 1 << 1, Stream_mask = 1 << 2, Count_mask = 1 << 3
+        Immutable_mask = 1 << 0, Dynamic_mask = 1 << 1, Stream_mask = 1 << 2, Staging_mask = 1 << 3, Count_mask = 1 << 4
     };
 
     static const char* s_value_names[] = {
-        "Immutable", "Dynamic", "Stream", "Count"
+        "Immutable", "Dynamic", "Stream", "Staging", "Count"
     };
 
     static const char* ToString( Enum e ) {

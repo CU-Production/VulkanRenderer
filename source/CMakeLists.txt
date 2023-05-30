@@ -109,6 +109,7 @@ add_custom_target(ShadersSpv
 
 foreach (GLSL_SHADER ${GLSL_SHADERS})
     add_custom_command(TARGET ShadersSpv
+#        COMMAND ${CMAKE_COMMAND} -E echo "$ENV{VULKAN_SDK}/bin/glslc ${GLSL_SHADER}"
         COMMAND $ENV{VULKAN_SDK}/bin/glslc ${GLSL_SHADER}
         DEPENDS ${GLSL_SHADER}
     )

@@ -51,7 +51,7 @@ static const char* g_vertex_shader_code_bindless = {
     "layout( location = 0 ) out vec2 Frag_UV;\n"
     "layout( location = 1 ) out vec4 Frag_Color;\n"
     "layout (location = 2) flat out uint texture_id;\n"
-    "layout( std140, binding = 0 ) uniform LocalConstants { mat4 ProjMtx; };\n"
+    "layout( std140, set = 1, binding = 0 ) uniform LocalConstants { mat4 ProjMtx; };\n"
     "void main()\n"
     "{\n"
     "    Frag_UV = UV;\n"
@@ -81,7 +81,7 @@ static const char* g_fragment_shader_code_bindless = {
     "layout (location = 1) in vec4 Frag_Color;\n"
     "layout (location = 2) flat in uint texture_id;\n"
     "layout (location = 0) out vec4 Out_Color;\n"
-    "layout (set = 1, binding = 10) uniform sampler2D textures[];\n"
+    "layout (set = 0, binding = 10) uniform sampler2D textures[];\n"
     "void main()\n"
     "{\n"
     "    Out_Color = Frag_Color * texture(textures[nonuniformEXT(texture_id)], Frag_UV.st);\n"
@@ -156,13 +156,10 @@ void ImGuiService::init( void* configuration ) {
     pipeline_creation.render_pass = gpu->get_swapchain_output();
 
     DescriptorSetLayoutCreation descriptor_set_layout_creation{};
-    if ( gpu->bindless_supported ) {
-        descriptor_set_layout_creation.add_binding( { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 0, 1, "LocalConstants" } ).add_binding( { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 10, 1, "Texture" } ).set_name( "RLL_ImGui" );
+    if ( !gpu->bindless_supported ) {
+        descriptor_set_layout_creation.add_binding( { VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 10, 1, "Texture" } );
     }
-    else {
-        descriptor_set_layout_creation.add_binding( { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 0, 1, "LocalConstants" } ).set_name( "RLL_ImGui" );
-    }
-
+    descriptor_set_layout_creation.add_binding( { VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 0, 1, "LocalConstants" } ).set_name( "RLL_ImGui" ).set_set_index( 1 );
 
     g_descriptor_set_layout = gpu->create_descriptor_set_layout( descriptor_set_layout_creation );
 
@@ -178,9 +175,9 @@ void ImGuiService::init( void* configuration ) {
     // Create descriptor set
     DescriptorSetCreation ds_creation{};
     if ( gpu->bindless_supported ) {
-        ds_creation.set_layout( pipeline_creation.descriptor_set_layout[0] ).buffer( g_ui_cb, 0 ).texture( g_font_texture, 1 ).set_name( "RL_ImGui" );
-    } else {
         ds_creation.set_layout( pipeline_creation.descriptor_set_layout[0] ).buffer( g_ui_cb, 0 ).set_name( "RL_ImGui" );
+    } else {
+        ds_creation.set_layout( pipeline_creation.descriptor_set_layout[0] ).buffer( g_ui_cb, 0 ).texture( g_font_texture, 1 ).set_name( "RL_ImGui" );
     }
     g_ui_descriptor_set = gpu->create_descriptor_set( ds_creation );
 
@@ -298,8 +295,7 @@ void ImGuiService::render( raptor::CommandBuffer& commands, bool use_secondary )
     // TODO_KS: Add the sorting.
     commands.push_marker( "ImGUI" );
 
-    // todo: key
-    commands.bind_pass( gpu->get_swapchain_pass(), use_secondary );
+    commands.bind_pass( gpu->get_swapchain_pass(), gpu->get_current_framebuffer(), use_secondary );
     commands.bind_pipeline( g_imgui_pipeline );
     commands.bind_vertex_buffer( g_vb, 0, 0 );
     commands.bind_index_buffer( g_ib, 0, VK_INDEX_TYPE_UINT16 );

@@ -1,6 +1,6 @@
 #pragma once
 
-#if (_MSC_VER)
+#if defined(_MSC_VER)
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
@@ -104,7 +104,7 @@ struct GpuDevice : public Service {
     static GpuDevice*               instance();
 
     // Helper methods
-    static void                     fill_write_descriptor_sets( GpuDevice& gpu, const DesciptorSetLayout* descriptor_set_layout, VkDescriptorSet vk_descriptor_set,
+    static void                     fill_write_descriptor_sets( GpuDevice& gpu, const DescriptorSetLayout* descriptor_set_layout, VkDescriptorSet vk_descriptor_set,
                                                                 VkWriteDescriptorSet* descriptor_write, VkDescriptorBufferInfo* buffer_info, VkDescriptorImageInfo* image_info,
                                                                 VkSampler vk_default_sampler, u32& num_resources, const ResourceHandle* resources, const SamplerHandle* samplers, const u16* bindings );
 
@@ -120,6 +120,7 @@ struct GpuDevice : public Service {
     DescriptorSetLayoutHandle       create_descriptor_set_layout( const DescriptorSetLayoutCreation& creation );
     DescriptorSetHandle             create_descriptor_set( const DescriptorSetCreation& creation );
     RenderPassHandle                create_render_pass( const RenderPassCreation& creation );
+    FramebufferHandle               create_framebuffer( const FramebufferCreation& creation );
     ShaderStateHandle               create_shader_state( const ShaderStateCreation& creation );
 
     void                            destroy_buffer( BufferHandle buffer );
@@ -129,6 +130,7 @@ struct GpuDevice : public Service {
     void                            destroy_descriptor_set_layout( DescriptorSetLayoutHandle layout );
     void                            destroy_descriptor_set( DescriptorSetHandle set );
     void                            destroy_render_pass( RenderPassHandle render_pass );
+    void                            destroy_framebuffer( FramebufferHandle framebuffer );
     void                            destroy_shader_state( ShaderStateHandle shader );
 
     // Query Description /////////////////////////////////////////////////
@@ -143,7 +145,8 @@ struct GpuDevice : public Service {
     const RenderPassOutput&         get_render_pass_output( RenderPassHandle render_pass ) const;
 
     // Update/Reload resources ///////////////////////////////////////////
-    void                            resize_output_textures( RenderPassHandle render_pass, u32 width, u32 height );
+    void                            resize_output_textures( FramebufferHandle render_pass, u32 width, u32 height );
+    void                            resize_texture( TextureHandle texture, u32 width, u32 height );
 
     void                            update_descriptor_set( DescriptorSetHandle set );
 
@@ -179,12 +182,12 @@ struct GpuDevice : public Service {
     void                            new_frame();
     void                            present();
     void                            resize( u16 width, u16 height );
-    void                            set_presentation_mode( PresentMode::Enum mode );
 
-    void                            fill_barrier( RenderPassHandle render_pass, ExecutionBarrier& out_barrier );
+    void                            fill_barrier( FramebufferHandle render_pass, ExecutionBarrier& out_barrier );
 
     BufferHandle                    get_fullscreen_vertex_buffer() const;           // Returns a vertex buffer usable for fullscreen shaders that uses no vertices.
     RenderPassHandle                get_swapchain_pass() const;                     // Returns what is considered the final pass that writes to the swapchain.
+    FramebufferHandle               get_current_framebuffer() const;                // Returns the framebuffer for the active swapchain image
 
     TextureHandle                   get_dummy_texture() const;
     BufferHandle                    get_dummy_constant_buffer() const;
@@ -213,6 +216,7 @@ struct GpuDevice : public Service {
     void                            destroy_descriptor_set_layout_instant( ResourceHandle layout );
     void                            destroy_descriptor_set_instant( ResourceHandle set );
     void                            destroy_render_pass_instant( ResourceHandle render_pass );
+    void                            destroy_framebuffer_instant( ResourceHandle framebuffer );
     void                            destroy_shader_state_instant( ResourceHandle shader );
 
     void                            update_descriptor_set_instant( const DescriptorSetUpdate& update );
@@ -227,12 +231,13 @@ struct GpuDevice : public Service {
     ResourcePool                    descriptor_set_layouts;
     ResourcePool                    descriptor_sets;
 	ResourcePool                    render_passes;
+    ResourcePool                    framebuffers;
     ResourcePool                    command_buffers;
     ResourcePool                    shaders;
 
     // Primitive resources
     BufferHandle                    fullscreen_vertex_buffer;
-    RenderPassHandle                swapchain_pass;
+    RenderPassHandle                swapchain_render_pass{ k_invalid_index };
     SamplerHandle                   default_sampler;
     // Dummy resources
     TextureHandle                   dummy_texture;
@@ -287,21 +292,18 @@ struct GpuDevice : public Service {
 
     // [TAG: BINDLESS]
     VkDescriptorPool                vulkan_bindless_descriptor_pool;
-    VkDescriptorSetLayout           vulkan_bindless_descriptor_layout;      // Global bindless descriptor layout.
-    VkDescriptorSet                 vulkan_bindless_descriptor_set;         // Global bindless descriptor set.
+    VkDescriptorSet                 vulkan_bindless_descriptor_set_cached;  // Cached but will be removed with its associated DescriptorSet.
+    DescriptorSetLayoutHandle       bindless_descriptor_set_layout;
+    DescriptorSetHandle             bindless_descriptor_set;
 
     // Swapchain
-    VkImage                         vulkan_swapchain_images[ k_max_swapchain_images ];
-    VkImageView                     vulkan_swapchain_image_views[ k_max_swapchain_images ];
-    VkFramebuffer                   vulkan_swapchain_framebuffers[ k_max_swapchain_images ];
+    FramebufferHandle               vulkan_swapchain_framebuffers[ k_max_swapchain_images ]{ k_invalid_index, k_invalid_index, k_invalid_index };
 
     VkQueryPool                     vulkan_timestamp_query_pool;
     // Per frame synchronization
     VkSemaphore                     vulkan_render_complete_semaphore[ k_max_swapchain_images ];
     VkSemaphore                     vulkan_image_acquired_semaphore;
     VkFence                         vulkan_command_buffer_executed_fence[ k_max_swapchain_images ];
-
-    TextureHandle                   depth_texture;
 
     static const uint32_t           k_max_frames                    = 3;
 
@@ -319,6 +321,10 @@ struct GpuDevice : public Service {
 
     VmaAllocator                    vma_allocator;
 
+    // Extension functions
+    PFN_vkCmdBeginRendering         cmd_begin_rendering;
+    PFN_vkCmdEndRendering           cmd_end_rendering;
+
     // These are dynamic - so that workload can be handled correctly.
     Array<ResourceUpdate>           resource_deletion_queue;
     Array<DescriptorSetUpdate>      descriptor_set_updates;
@@ -328,6 +334,7 @@ struct GpuDevice : public Service {
     f32                             gpu_timestamp_frequency;
     bool                            gpu_timestamp_reset             = true;
     bool                            debug_utils_extension_present   = false;
+    bool                            dynamic_rendering_extension_present = false;
 
     sizet                           ubo_alignment                   = 256;
     sizet                           ssbo_alignemnt                  = 256;
@@ -350,18 +357,20 @@ struct GpuDevice : public Service {
     Sampler*                  access_sampler( SamplerHandle sampler );
     const Sampler*            access_sampler( SamplerHandle sampler ) const;
 
-    DesciptorSetLayout*       access_descriptor_set_layout( DescriptorSetLayoutHandle layout );
-    const DesciptorSetLayout* access_descriptor_set_layout( DescriptorSetLayoutHandle layout ) const;
+    DescriptorSetLayout*       access_descriptor_set_layout( DescriptorSetLayoutHandle layout );
+    const DescriptorSetLayout* access_descriptor_set_layout( DescriptorSetLayoutHandle layout ) const;
 
     DescriptorSetLayoutHandle get_descriptor_set_layout( PipelineHandle pipeline_handle, int layout_index );
     DescriptorSetLayoutHandle get_descriptor_set_layout( PipelineHandle pipeline_handle, int layout_index ) const;
 
-    DesciptorSet*             access_descriptor_set( DescriptorSetHandle set );
-    const DesciptorSet*       access_descriptor_set( DescriptorSetHandle set ) const;
+    DescriptorSet*             access_descriptor_set( DescriptorSetHandle set );
+    const DescriptorSet*       access_descriptor_set( DescriptorSetHandle set ) const;
 
     RenderPass*               access_render_pass( RenderPassHandle render_pass );
     const RenderPass*         access_render_pass( RenderPassHandle render_pass ) const;
 
+    Framebuffer*               access_framebuffer( FramebufferHandle framebuffer );
+    const Framebuffer*         access_framebuffer( FramebufferHandle framebuffer ) const;
 
 }; // struct Device
 

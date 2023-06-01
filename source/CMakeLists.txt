@@ -1,8 +1,12 @@
 project(Chapter1)
 
 add_executable(VulkanRenderer
+    graphics/asynchronous_loader.cpp
+    graphics/asynchronous_loader.hpp
     graphics/command_buffer.cpp
     graphics/command_buffer.hpp
+    graphics/gltf_scene.cpp
+    graphics/gltf_scene.hpp
     graphics/gpu_device.cpp
     graphics/gpu_device.hpp
     graphics/gpu_enum.hpp
@@ -10,8 +14,16 @@ add_executable(VulkanRenderer
     graphics/gpu_profiler.hpp
     graphics/gpu_resources.cpp
     graphics/gpu_resources.hpp
+    graphics/obj_scene.cpp
+    graphics/obj_scene.hpp
+    graphics/render_resources_loader.cpp
+    graphics/render_resources_loader.hpp
+    graphics/render_scene.cpp
+    graphics/render_scene.hpp
     graphics/renderer.cpp
     graphics/renderer.hpp
+    graphics/scene_graph.cpp
+    graphics/scene_graph.hpp
     graphics/spirv_parser.cpp
     graphics/spirv_parser.hpp
 
@@ -31,6 +43,7 @@ if (WIN32)
 endif()
 
 target_compile_definitions(VulkanRenderer PRIVATE
+    RAPTOR_WORKING_FOLDER="${CMAKE_CURRENT_SOURCE_DIR}"
     RAPTOR_SHADER_FOLDER="${CMAKE_CURRENT_SOURCE_DIR}/shaders/"
 )
 

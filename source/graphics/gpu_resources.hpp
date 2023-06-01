@@ -60,15 +60,20 @@ struct RenderPassHandle {
 	ResourceHandle                  index;
 }; // struct RenderPassHandle
 
+struct FramebufferHandle {
+    ResourceHandle                  index;
+}; // struct PipelineHandle
+
 // Invalid handles
-static BufferHandle                 k_invalid_buffer    { k_invalid_index };
-static TextureHandle                k_invalid_texture   { k_invalid_index };
-static ShaderStateHandle            k_invalid_shader    { k_invalid_index };
-static SamplerHandle                k_invalid_sampler   { k_invalid_index };
-static DescriptorSetLayoutHandle    k_invalid_layout    { k_invalid_index };
-static DescriptorSetHandle          k_invalid_set       { k_invalid_index };
-static PipelineHandle               k_invalid_pipeline  { k_invalid_index };
-static RenderPassHandle             k_invalid_pass      { k_invalid_index };
+static BufferHandle                 k_invalid_buffer        { k_invalid_index };
+static TextureHandle                k_invalid_texture       { k_invalid_index };
+static ShaderStateHandle            k_invalid_shader        { k_invalid_index };
+static SamplerHandle                k_invalid_sampler       { k_invalid_index };
+static DescriptorSetLayoutHandle    k_invalid_layout        { k_invalid_index };
+static DescriptorSetHandle          k_invalid_set           { k_invalid_index };
+static PipelineHandle               k_invalid_pipeline      { k_invalid_index };
+static RenderPassHandle             k_invalid_pass          { k_invalid_index };
+static FramebufferHandle            k_invalid_framebuffer   { k_invalid_index };
 
 
 
@@ -238,6 +243,8 @@ struct TextureCreation {
     VkFormat                        format          = VK_FORMAT_UNDEFINED;
     TextureType::Enum               type            = TextureType::Texture2D;
 
+    TextureHandle                   alias           = k_invalid_texture;
+
     const char*                     name            = nullptr;
 
     TextureCreation&                set_size( u16 width, u16 height, u16 depth );
@@ -245,6 +252,7 @@ struct TextureCreation {
     TextureCreation&                set_format_type( VkFormat format, TextureType::Enum type );
     TextureCreation&                set_name( const char* name );
     TextureCreation&                set_data( void* data );
+    TextureCreation&                set_alias( TextureHandle alias );
 
 }; // struct TextureCreation
 
@@ -294,7 +302,7 @@ struct ShaderStateCreation {
     // Building helpers
     ShaderStateCreation&            reset();
     ShaderStateCreation&            set_name( const char* name );
-    ShaderStateCreation&            add_stage( const char* code, u32 code_size, VkShaderStageFlagBits type );
+    ShaderStateCreation&            add_stage( const char* code, sizet code_size, VkShaderStageFlagBits type );
     ShaderStateCreation&            set_spv_input( bool value );
 
 }; // struct ShaderStateCreation
@@ -309,7 +317,7 @@ struct DescriptorSetLayoutCreation {
     struct Binding {
 
         VkDescriptorType            type    = VK_DESCRIPTOR_TYPE_MAX_ENUM;
-        u16                         start   = 0;
+        u16                         index   = 0;
         u16                         count   = 0;
         cstring                     name    = nullptr;  // Comes from external memory.
     }; // struct Binding
@@ -317,12 +325,15 @@ struct DescriptorSetLayoutCreation {
     Binding                         bindings[ k_max_descriptors_per_set ];
     u32                             num_bindings    = 0;
     u32                             set_index       = 0;
+    bool                            bindless        = false;
+    bool                            dynamic         = false;
 
     cstring                         name            = nullptr;
 
     // Building helpers
     DescriptorSetLayoutCreation&    reset();
     DescriptorSetLayoutCreation&    add_binding( const Binding& binding );
+    DescriptorSetLayoutCreation&    add_binding( VkDescriptorType type, u32 index, u32 count, cstring name );
     DescriptorSetLayoutCreation&    add_binding_at_index( const Binding& binding, int index );
     DescriptorSetLayoutCreation&    set_name( cstring name );
     DescriptorSetLayoutCreation&    set_set_index( u32 index );
@@ -355,7 +366,7 @@ struct DescriptorSetCreation {
 //
 //
 struct DescriptorSetUpdate {
-    DescriptorSetHandle              descriptor_set;
+    DescriptorSetHandle             descriptor_set;
 
     u32                             frame_issued = 0;
 }; // DescriptorSetUpdate
@@ -401,17 +412,21 @@ struct VertexInputCreation {
 struct RenderPassOutput {
 
     VkFormat                        color_formats[ k_max_image_outputs ];
+    VkImageLayout                   color_final_layouts[ k_max_image_outputs ];
+    RenderPassOperation::Enum       color_operations[ k_max_image_outputs ];
+
     VkFormat                        depth_stencil_format;
+    VkImageLayout                   depth_stencil_final_layout;
+
     u32                             num_color_formats;
 
-    RenderPassOperation::Enum       color_operation         = RenderPassOperation::DontCare;
     RenderPassOperation::Enum       depth_operation         = RenderPassOperation::DontCare;
     RenderPassOperation::Enum       stencil_operation       = RenderPassOperation::DontCare;
 
     RenderPassOutput&               reset();
-    RenderPassOutput&               color( VkFormat format );
-    RenderPassOutput&               depth( VkFormat format );
-    RenderPassOutput&               set_operations( RenderPassOperation::Enum color, RenderPassOperation::Enum depth, RenderPassOperation::Enum stencil );
+    RenderPassOutput&               color( VkFormat format, VkImageLayout layout, RenderPassOperation::Enum load_op );
+    RenderPassOutput&               depth( VkFormat format, VkImageLayout layout );
+    RenderPassOutput&               set_depth_stencil_operations( RenderPassOperation::Enum depth, RenderPassOperation::Enum stencil );
 
 }; // struct RenderPassOutput
 
@@ -420,28 +435,52 @@ struct RenderPassOutput {
 struct RenderPassCreation {
 
     u16                             num_render_targets  = 0;
-    RenderPassType::Enum            type                = RenderPassType::Geometry;
 
-    TextureHandle                   output_textures[ k_max_image_outputs ];
-    TextureHandle                   depth_stencil_texture;
+    VkFormat                        color_formats[ k_max_image_outputs ];
+    VkImageLayout                   color_final_layouts[ k_max_image_outputs ];
+    RenderPassOperation::Enum       color_operations[ k_max_image_outputs ];
 
-    f32                             scale_x             = 1.f;
-    f32                             scale_y             = 1.f;
-    u8                              resize              = 1;
+    VkFormat                        depth_stencil_format = VK_FORMAT_UNDEFINED;
+    VkImageLayout                   depth_stencil_final_layout;
 
-    RenderPassOperation::Enum       color_operation         = RenderPassOperation::DontCare;
     RenderPassOperation::Enum       depth_operation         = RenderPassOperation::DontCare;
     RenderPassOperation::Enum       stencil_operation       = RenderPassOperation::DontCare;
 
     const char*                     name                = nullptr;
 
     RenderPassCreation&             reset();
-    RenderPassCreation&             add_render_texture( TextureHandle texture );
-    RenderPassCreation&             set_scaling( f32 scale_x, f32 scale_y, u8 resize );
-    RenderPassCreation&             set_depth_stencil_texture( TextureHandle texture );
+    RenderPassCreation&             add_attachment( VkFormat format, VkImageLayout layout, RenderPassOperation::Enum load_op );
+    RenderPassCreation&             set_depth_stencil_texture( VkFormat format, VkImageLayout layout );
     RenderPassCreation&             set_name( const char* name );
-    RenderPassCreation&             set_type( RenderPassType::Enum type );
-    RenderPassCreation&             set_operations( RenderPassOperation::Enum color, RenderPassOperation::Enum depth, RenderPassOperation::Enum stencil );
+    RenderPassCreation&             set_depth_stencil_operations( RenderPassOperation::Enum depth, RenderPassOperation::Enum stencil );
+
+}; // struct RenderPassCreation
+
+//
+//
+struct FramebufferCreation {
+
+    RenderPassHandle                render_pass;
+
+    u16                             num_render_targets  = 0;
+
+    TextureHandle                   output_textures[ k_max_image_outputs ];
+    TextureHandle                   depth_stencil_texture = { k_invalid_index };
+
+    u16                             width       = 0;
+    u16                             height      = 0;
+
+    f32                             scale_x             = 1.f;
+    f32                             scale_y             = 1.f;
+    u8                              resize              = 1;
+
+    const char*                     name                = nullptr;
+
+    FramebufferCreation&            reset();
+    FramebufferCreation&            add_render_texture( TextureHandle texture );
+    FramebufferCreation&            set_depth_stencil_texture( TextureHandle texture );
+    FramebufferCreation&            set_scaling( f32 scale_x, f32 scale_y, u8 resize );
+    FramebufferCreation&            set_name( const char* name );
 
 }; // struct RenderPassCreation
 
@@ -457,11 +496,11 @@ struct PipelineCreation {
 
     RenderPassOutput                render_pass;
     DescriptorSetLayoutHandle       descriptor_set_layout[ k_max_descriptor_set_layouts ];
-    const ViewportState*            viewport = nullptr;
+    const ViewportState*            viewport            = nullptr;
 
-    u32                             num_active_layouts = 0;
+    u32                             num_active_layouts  = 0;
 
-    const char*                     name = nullptr;
+    const char*                     name                = nullptr;
 
     PipelineCreation&               add_descriptor_set_layout( DescriptorSetLayoutHandle handle );
     RenderPassOutput&               render_pass_output();
@@ -497,25 +536,30 @@ namespace TextureFormat {
 
 } // namespace TextureFormat
 
-struct ResourceData {
-
-    void* data = nullptr;
-
-}; // struct ResourceData
 
 //
 //
-struct ResourceBinding {
-    u16                             type = 0;    // ResourceType
-    u16                             start = 0;
-    u16                             count = 0;
-    u16                             set = 0;
+struct DescriptorData {
 
-    const char*                     name = nullptr;
-}; // struct ResourceBinding
+    void*                           data    = nullptr;
+
+}; // struct DescriptorData
+
+//
+//
+struct DescriptorBinding {
+
+    VkDescriptorType                type;
+    u16                             index   = 0;
+    u16                             count   = 0;
+    u16                             set     = 0;
+
+    const char*                     name    = nullptr;
+}; // struct DescriptorBinding
 
 
-// API-agnostic descriptions ////////////////////////////////////////////////////
+
+// Resources descriptions /////////////////////////////////////////////////
 
 //
 //
@@ -579,7 +623,7 @@ struct SamplerDescription {
 //
 struct DescriptorSetLayoutDescription {
 
-    ResourceBinding                 bindings[ k_max_descriptors_per_set ];
+    DescriptorBinding*              bindings    = nullptr;
     u32                             num_active_bindings = 0;
 
 }; // struct DescriptorSetLayoutDescription
@@ -588,7 +632,7 @@ struct DescriptorSetLayoutDescription {
 //
 struct DesciptorSetDescription {
 
-    ResourceData                    resources[ k_max_descriptors_per_set ];
+    DescriptorData*                 resources   = nullptr;
     u32                             num_active_resources = 0;
 
 }; // struct DesciptorSetDescription
@@ -656,9 +700,10 @@ struct ExecutionBarrier {
 //
 struct ResourceUpdate {
 
-    ResourceDeletionType::Enum      type;
+    ResourceUpdateType::Enum        type;
     ResourceHandle                  handle;
     u32                             current_frame;
+    u32                             deleting;
 }; // struct ResourceUpdate
 
 // Resources /////////////////////////////////////////////////////////////
@@ -749,26 +794,17 @@ struct ShaderState {
 
 //
 //
-struct DescriptorBinding {
-
-    VkDescriptorType                type;
-    u16                             start   = 0;
-    u16                             count   = 0;
-    u16                             set     = 0;
-
-    const char*                     name    = nullptr;
-}; // struct ResourceBindingVulkan
-
-//
-//
-struct DesciptorSetLayout {
+struct DescriptorSetLayout {
 
     VkDescriptorSetLayout           vk_descriptor_set_layout;
 
     VkDescriptorSetLayoutBinding*   vk_binding      = nullptr;
     DescriptorBinding*              bindings        = nullptr;
+    u8*                             index_to_binding = nullptr; // Mapping between binding point and binding data.
     u16                             num_bindings    = 0;
     u16                             set_index       = 0;
+    u8                              bindless        = 0;
+    u8                              dynamic         = 0;
 
     DescriptorSetLayoutHandle       handle;
 
@@ -776,7 +812,7 @@ struct DesciptorSetLayout {
 
 //
 //
-struct DesciptorSet {
+struct DescriptorSet {
 
     VkDescriptorSet                 vk_descriptor_set;
 
@@ -784,9 +820,9 @@ struct DesciptorSet {
     SamplerHandle*                  samplers        = nullptr;
     u16*                            bindings        = nullptr;
 
-    const DesciptorSetLayout*       layout          = nullptr;
+    const DescriptorSetLayout*      layout          = nullptr;
     u32                             num_resources   = 0;
-}; // struct DesciptorSetVulkan
+}; // struct DesciptorSet
 
 
 //
@@ -800,8 +836,8 @@ struct Pipeline {
 
     ShaderStateHandle               shader_state;
 
-    const DesciptorSetLayout*       descriptor_set_layout[ k_max_descriptor_set_layouts ];
-    DescriptorSetLayoutHandle       descriptor_set_layout_handle[ k_max_descriptor_set_layouts ];
+    const DescriptorSetLayout*      descriptor_set_layout[ k_max_descriptor_set_layouts ];
+    DescriptorSetLayoutHandle       descriptor_set_layout_handles[ k_max_descriptor_set_layouts ];
     u32                             num_active_layouts = 0;
 
     DepthStencilCreation            depth_stencil;
@@ -811,37 +847,62 @@ struct Pipeline {
     PipelineHandle                  handle;
     bool                            graphics_pipeline = true;
 
-}; // struct PipelineVulkan
+}; // struct Pipeline
 
 
 //
 //
 struct RenderPass {
 
+    // NOTE(marco): this will be a null handle if dynamic rendering is available
     VkRenderPass                    vk_render_pass;
-    VkFramebuffer                   vk_frame_buffer;
 
     RenderPassOutput                output;
 
-    TextureHandle                   output_textures[ k_max_image_outputs ];
-    TextureHandle                   output_depth;
-
-    RenderPassType::Enum            type;
-
-    f32                             scale_x     = 1.f;
-    f32                             scale_y     = 1.f;
-    u16                             width       = 0;
-    u16                             height      = 0;
     u16                             dispatch_x  = 0;
     u16                             dispatch_y  = 0;
     u16                             dispatch_z  = 0;
 
-    u8                              resize      = 0;
     u8                              num_render_targets = 0;
 
     const char*                     name        = nullptr;
-}; // struct RenderPass
+}; // struct RenderPassVulkan
 
+//
+//
+struct Framebuffer {
+
+    // NOTE(marco): this will be a null handle if dynamic rendering is available
+    VkFramebuffer                   vk_framebuffer;
+
+    // NOTE(marco): cache render pass handle
+    RenderPassHandle                render_pass;
+
+    u16                             width       = 0;
+    u16                             height      = 0;
+
+    f32                             scale_x     = 1.f;
+    f32                             scale_y     = 1.f;
+
+    TextureHandle                   color_attachments[ k_max_image_outputs ];
+    TextureHandle                   depth_stencil_attachment;
+    u32                             num_color_attachments;
+
+    u8                              resize      = 0;
+
+    const char*                     name        = nullptr;
+}; // struct Framebuffer
+
+
+//
+//
+struct ComputeLocalSize {
+
+    u32                             x : 10;
+    u32                             y : 10;
+    u32                             z : 10;
+    u32                             pad : 2;
+}; // struct ComputeLocalSize
 
 // Enum translations. Use tables or switches depending on the case. ////////////
 static cstring to_compiler_extension( VkShaderStageFlagBits value ) {
@@ -870,6 +931,7 @@ static cstring to_stage_defines( VkShaderStageFlagBits value ) {
             return "";
     }
 }
+
 //
 //
 static VkImageType to_vk_image_type( TextureType::Enum type ) {
@@ -1058,5 +1120,7 @@ void util_add_image_barrier_ext( VkCommandBuffer command_buffer, VkImage image, 
 void util_add_buffer_barrier_ext( VkCommandBuffer command_buffer, VkBuffer buffer, ResourceState old_state, ResourceState new_state,
                                   u32 buffer_size, u32 source_family, u32 destination_family,
                                   QueueType::Enum source_queue_type, QueueType::Enum destination_queue_type );
+
+VkFormat util_string_to_vk_format( cstring format );
 
 } // namespace raptor

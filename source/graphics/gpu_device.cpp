@@ -39,6 +39,8 @@ constexpr const T& raptor_max( const T& a, const T& b ) {
 #pragma warning (disable: 5027)
 #endif // _MSC_VER
 
+//#define VMA_DEBUG_LOG rprintret
+
 #define VMA_IMPLEMENTATION
 #include "external/vk_mem_alloc.h"
 
@@ -152,6 +154,7 @@ void GpuDevice::init( const DeviceCreation& creation ) {
     // 1. Perform common code
     allocator = creation.allocator;
     temporary_allocator = creation.temporary_allocator;
+
     string_buffer.init( 1024 * 1024, creation.allocator );
 
     //////// Init Vulkan instance.
@@ -204,7 +207,7 @@ void GpuDevice::init( const DeviceCreation& creation ) {
 
             if ( !strcmp( extensions[ i ].extensionName, VK_EXT_DEBUG_UTILS_EXTENSION_NAME ) ) {
                 debug_utils_extension_present = true;
-                break;
+                continue;
             }
         }
 
@@ -229,8 +232,31 @@ void GpuDevice::init( const DeviceCreation& creation ) {
     result = vkEnumeratePhysicalDevices( vulkan_instance, &num_physical_device, gpus );
     check( result );
 
-    // TODO: improve - choose the first gpu.
-    vulkan_physical_device = gpus[ 0 ];
+    VkPhysicalDevice discrete_gpu = VK_NULL_HANDLE;
+    VkPhysicalDevice integrated_gpu = VK_NULL_HANDLE;
+    for ( u32 i = 0; i < num_physical_device; ++i ) {
+        VkPhysicalDevice physical_device = gpus[ i ];
+        vkGetPhysicalDeviceProperties( physical_device, &vulkan_physical_properties );
+
+        if ( vulkan_physical_properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ) {
+            discrete_gpu = physical_device;
+            continue;
+        }
+
+        if ( vulkan_physical_properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU ) {
+            integrated_gpu = physical_device;
+            continue;
+        }
+    }
+
+    if ( discrete_gpu != VK_NULL_HANDLE ) {
+        vulkan_physical_device = discrete_gpu;
+    } else if ( integrated_gpu != VK_NULL_HANDLE ) {
+        vulkan_physical_device = integrated_gpu;
+    } else {
+        RASSERTM( false, "Suitable GPU device not found!" );
+        return;
+    }
 
     temp_allocator->free_marker( initial_temp_allocator_marker );
 

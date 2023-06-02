@@ -336,8 +336,14 @@ void GpuDevice::init( const DeviceCreation& creation ) {
     vulkan_main_queue_family = main_queue_index;
     vulkan_transfer_queue_family = transfer_queue_index;
 
-    u32 device_extension_count = 1;
-    const char* device_extensions[] = { "VK_KHR_swapchain" };
+    Array<const char*> device_extensions;
+    device_extensions.init( allocator, 2 );
+    device_extensions.push( VK_KHR_SWAPCHAIN_EXTENSION_NAME );
+
+    if ( dynamic_rendering_extension_present ) {
+        device_extensions.push( VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME );
+    }
+
     const float queue_priority[] = { 1.0f };
     VkDeviceQueueCreateInfo queue_info[ 2 ] = {};
 
@@ -357,13 +363,17 @@ void GpuDevice::init( const DeviceCreation& creation ) {
 
     // Enable all features: just pass the physical features 2 struct.
     VkPhysicalDeviceFeatures2 physical_features2 { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2 };
+    VkPhysicalDeviceDynamicRenderingFeatures dynamic_rendering_features{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES };
+    if ( dynamic_rendering_extension_present ) {
+        physical_features2.pNext = &dynamic_rendering_features;
+    }
     vkGetPhysicalDeviceFeatures2( vulkan_physical_device, &physical_features2 );
 
     VkDeviceCreateInfo device_create_info { VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO };
     device_create_info.queueCreateInfoCount = vulkan_transfer_queue_family < queue_family_count ? 2 : 1;
     device_create_info.pQueueCreateInfos = queue_info;
-    device_create_info.enabledExtensionCount = device_extension_count;
-    device_create_info.ppEnabledExtensionNames = device_extensions;
+    device_create_info.enabledExtensionCount = device_extensions.size;
+    device_create_info.ppEnabledExtensionNames = device_extensions.data;
     device_create_info.pNext = &physical_features2;
 
     // [TAG: BINDLESS]
@@ -372,11 +382,18 @@ void GpuDevice::init( const DeviceCreation& creation ) {
         indexing_features.descriptorBindingPartiallyBound = VK_TRUE;
         indexing_features.runtimeDescriptorArray = VK_TRUE;
 
-        physical_features2.pNext = &indexing_features;
+        // TODO(marco): more generic chaining
+        if (dynamic_rendering_extension_present) {
+            dynamic_rendering_features.pNext = &indexing_features;
+        } else {
+            physical_features2.pNext = &indexing_features;
+        }
     }
 
     result = vkCreateDevice( vulkan_physical_device, &device_create_info, vulkan_allocation_callbacks, &vulkan_device );
     check( result );
+
+    device_extensions.shutdown();
 
     //  Get the function pointers to Debug Utils functions.
     if ( debug_utils_extension_present ) {

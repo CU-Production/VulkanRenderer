@@ -16,6 +16,12 @@
 
 # Features
 
+## 20230606
+
+- [x] json based frame graph
+- [x] use [dynamic rendering](https://www.khronos.org/blog/streamlining-render-passes) to avoid using VkRenderPass
+- [x] impl deferred rendering using frame graph
+
 ## 20230528
 - [x] task manager based on [enkiTS](https://github.com/dougbinks/enkiTS)
 - [x] async loading texture using pinned task

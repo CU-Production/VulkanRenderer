@@ -5,6 +5,8 @@ add_executable(VulkanRenderer
     graphics/asynchronous_loader.hpp
     graphics/command_buffer.cpp
     graphics/command_buffer.hpp
+    graphics/frame_graph.cpp
+    graphics/frame_graph.hpp
     graphics/gltf_scene.cpp
     graphics/gltf_scene.hpp
     graphics/gpu_device.cpp
@@ -111,23 +113,3 @@ if (WIN32)
         )
     endforeach()
 endif()
-
-file(GLOB GLSL_SHADERS
-    shaders/*.vert
-    shaders/*.frag)
-
-add_custom_target(ShadersSpv
-    SOURCES ${GLSL_SHADERS}
-)
-
-foreach (GLSL_SHADER ${GLSL_SHADERS})
-    add_custom_command(TARGET ShadersSpv
-#        COMMAND ${CMAKE_COMMAND} -E echo "$ENV{VULKAN_SDK}/bin/glslc ${GLSL_SHADER}"
-        COMMAND $ENV{VULKAN_SDK}/bin/glslc ${GLSL_SHADER}
-        DEPENDS ${GLSL_SHADER}
-    )
-endforeach()
-
-add_dependencies(VulkanRenderer
-    ShadersSpv
-)

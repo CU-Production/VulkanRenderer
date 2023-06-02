@@ -1,6 +1,6 @@
 #version 460
 
-layout ( std140, binding = 0 ) uniform LocalConstants {
+layout ( std140, set = MATERIAL_SET, binding = 0 ) uniform LocalConstants {
     mat4        view_projection;
     vec4        eye;
     vec4        light;
@@ -8,7 +8,7 @@ layout ( std140, binding = 0 ) uniform LocalConstants {
     float       light_intensity;
 };
 
-layout ( std140, binding = 1 ) uniform Mesh {
+layout ( std140, set = MATERIAL_SET, binding = 1 ) uniform Mesh {
 
     mat4        model;
     mat4        model_inverse;

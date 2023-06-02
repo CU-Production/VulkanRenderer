@@ -54,49 +54,52 @@ struct SamplerResource : public raptor::Resource {
 
 //
 //
-struct ProgramPass {
+struct GpuTechniqueCreation {
+
+    PipelineCreation                creations[ 8 ];
+    u32                             num_creations   = 0;
+
+    cstring                         name            = nullptr;
+
+    GpuTechniqueCreation&           reset();
+    GpuTechniqueCreation&           add_pipeline( const PipelineCreation& pipeline );
+    GpuTechniqueCreation&           set_name( cstring name );
+
+}; // struct GpuTechniqueCreation
+
+//
+//
+struct GpuTechniquePass {
 
     PipelineHandle                  pipeline;
-    DescriptorSetLayoutHandle       descriptor_set_layout;
-}; // struct ProgramPass
+
+}; // struct GpuTechniquePass
 
 //
 //
-struct ProgramCreation {
+struct GpuTechnique : public raptor::Resource {
 
-    // NOTE(marco): not much benefit having this abstraction for now,
-    // but it will become more powerful soon
-    PipelineCreation                pipeline_creation;
-
-}; // struct ProgramCreation
-
-//
-//
-struct Program : public raptor::Resource {
-
-    u32                             get_num_passes() const;
-
-    Array<ProgramPass>              passes;
+    Array<GpuTechniquePass>         passes;
 
     u32                             pool_index;
 
-    static constexpr cstring        k_type = "raptor_program_type";
+    static constexpr cstring        k_type = "raptor_gpu_technique_type";
     static u64                      k_type_hash;
 
-}; // struct Program
+}; // struct GpuTechnique
 
 //
 //
 struct MaterialCreation {
 
     MaterialCreation&               reset();
-    MaterialCreation&               set_program( Program* program );
+    MaterialCreation&               set_technique( GpuTechnique* technique );
     MaterialCreation&               set_name( cstring name );
     MaterialCreation&               set_render_index( u32 render_index );
 
-    Program*                        program          = nullptr;
-    cstring                         name             = nullptr;
-    u32                             render_index     = ~0u;
+    GpuTechnique*                   technique       = nullptr;
+    cstring                         name            = nullptr;
+    u32                             render_index    = ~0u;
 
 }; // struct MaterialCreation
 
@@ -104,7 +107,7 @@ struct MaterialCreation {
 //
 struct Material : public raptor::Resource {
 
-    Program*                        program;
+    GpuTechnique*                   technique;
 
     u32                             render_index;
 
@@ -127,8 +130,8 @@ struct ResourceCache {
     FlatHashMap<u64, TextureResource*> textures;
     FlatHashMap<u64, BufferResource*>  buffers;
     FlatHashMap<u64, SamplerResource*> samplers;
-    FlatHashMap<u64, Program*>         programs;
     FlatHashMap<u64, Material*>        materials;
+    FlatHashMap<u64, GpuTechnique*>    techniques;
 
 }; // struct ResourceCache
 
@@ -159,6 +162,7 @@ struct Renderer : public Service {
 
     void                        imgui_draw();
 
+    void                        set_presentation_mode( PresentMode::Enum value );
     void                        resize_swapchain( u32 width, u32 height );
 
     f32                         aspect_ratio() const;
@@ -168,24 +172,23 @@ struct Renderer : public Service {
     BufferResource*             create_buffer( VkBufferUsageFlags type, ResourceUsageType::Enum usage, u32 size, void* data, cstring name );
 
     TextureResource*            create_texture( const TextureCreation& creation );
-    TextureResource*            create_texture( cstring name, cstring filename, bool create_mipmaps );
 
     SamplerResource*            create_sampler( const SamplerCreation& creation );
 
-    Program*                    create_program( const ProgramCreation& creation );
+    GpuTechnique*               create_technique( const GpuTechniqueCreation& creation );
 
     Material*                   create_material( const MaterialCreation& creation );
-    Material*                   create_material( Program* program, cstring name );
+    Material*                   create_material( GpuTechnique* technique, cstring name );
 
     // Draw
-    PipelineHandle              get_pipeline( Material* material );
+    PipelineHandle              get_pipeline( Material* material, u32 pass_index );
     DescriptorSetHandle         create_descriptor_set( CommandBuffer* gpu_commands, Material* material, DescriptorSetCreation& ds_creation );
 
     void                        destroy_buffer( BufferResource* buffer );
     void                        destroy_texture( TextureResource* texture );
     void                        destroy_sampler( SamplerResource* sampler );
-    void                        destroy_program( Program* program );
     void                        destroy_material( Material* material );
+    void                        destroy_technique( GpuTechnique* technique );
 
     // Update resources
     void*                       map_buffer( BufferResource* buffer, u32 offset = 0, u32 size = 0 );
@@ -203,8 +206,8 @@ struct Renderer : public Service {
     ResourcePoolTyped<TextureResource>  textures;
     ResourcePoolTyped<BufferResource>   buffers;
     ResourcePoolTyped<SamplerResource>  samplers;
-    ResourcePoolTyped<Program>          programs;
     ResourcePoolTyped<Material>         materials;
+    ResourcePoolTyped<GpuTechnique>     techniques;
 
     ResourceCache               resource_cache;
 

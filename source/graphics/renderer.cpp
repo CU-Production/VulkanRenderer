@@ -70,6 +70,8 @@ void Renderer::init( const RendererCreation& creation ) {
     rprint( "Renderer init\n" );
 
     gpu = creation.gpu;
+    resident_allocator = creation.allocator;
+    temporary_allocator.init( rkilo( 2 ) );
 
     width = gpu->swapchain_width;
     height = gpu->swapchain_height;
@@ -90,10 +92,12 @@ void Renderer::init( const RendererCreation& creation ) {
     GpuTechnique::k_type_hash = hash_calculate( GpuTechnique::k_type );
 
     const u32 gpu_heap_counts = gpu->get_memory_heap_count();
-    gpu_heap_budgets.init( gpu->allocator, gpu_heap_counts, gpu_heap_counts );
+    gpu_heap_budgets.init( resident_allocator, gpu_heap_counts, gpu_heap_counts );
 }
 
 void Renderer::shutdown() {
+
+    temporary_allocator.shutdown();
 
     resource_cache.shutdown( this );
     gpu_heap_budgets.shutdown();
@@ -113,17 +117,9 @@ void Renderer::set_loaders( raptor::ResourceManager* manager ) {
 
 }
 
-void Renderer::begin_frame() {
-    gpu->new_frame();
-}
-
-void Renderer::end_frame() {
-    // Present
-    gpu->present();
-}
-
 void Renderer::imgui_draw() {
 
+    ImGui::Text( "GPU used: %s", gpu->get_gpu_name() );
     // Print memory stats
     vmaGetHeapBudgets( gpu->vma_allocator, gpu_heap_budgets.data );
 
@@ -218,13 +214,16 @@ SamplerResource* Renderer::create_sampler( const SamplerCreation& creation ) {
 GpuTechnique* Renderer::create_technique( const GpuTechniqueCreation& creation ) {
     GpuTechnique* technique = techniques.obtain();
     if ( technique ) {
-        technique->passes.init( gpu->allocator, creation.num_creations, creation.num_creations );
+        technique->passes.init( resident_allocator, creation.num_creations, creation.num_creations );
+        technique->name_hash_to_index.init( resident_allocator, creation.num_creations );
         technique->name = creation.name;
 
-        StringBuffer pipeline_cache_path;
-        pipeline_cache_path.init( 1024, gpu->allocator );
+        temporary_allocator.clear();
 
-        for ( uint32_t i = 0; i < creation.num_creations; ++i ) {
+        StringBuffer pipeline_cache_path;
+        pipeline_cache_path.init( 1024, &temporary_allocator );
+
+        for ( u32 i = 0; i < creation.num_creations; ++i ) {
             GpuTechniquePass& pass = technique->passes[ i ];
             const PipelineCreation& pass_creation = creation.creations[ i ];
             if ( pass_creation.name != nullptr ) {
@@ -234,9 +233,12 @@ GpuTechnique* Renderer::create_technique( const GpuTechniqueCreation& creation )
             } else {
                 pass.pipeline = gpu->create_pipeline( pass_creation );
             }
+
+            RASSERT( pass_creation.name );
+            technique->name_hash_to_index.insert( hash_calculate( pass_creation.name ), ( u32 )i );
         }
 
-        pipeline_cache_path.shutdown();
+        temporary_allocator.clear();
 
         if ( creation.name != nullptr ) {
             resource_cache.techniques.insert( hash_calculate( creation.name ), technique );
@@ -297,7 +299,10 @@ void Renderer::destroy_buffer( BufferResource* buffer ) {
         return;
     }
 
-    resource_cache.buffers.remove( hash_calculate( buffer->desc.name ) );
+    if ( buffer->desc.name) {
+        resource_cache.buffers.remove( hash_calculate( buffer->desc.name ) );
+    }
+
     gpu->destroy_buffer( buffer->handle );
     buffers.release( buffer );
 }
@@ -312,7 +317,10 @@ void Renderer::destroy_texture( TextureResource* texture ) {
         return;
     }
 
-    resource_cache.textures.remove( hash_calculate( texture->desc.name ) );
+    if ( texture->desc.name ) {
+        resource_cache.textures.remove( hash_calculate( texture->desc.name ) );
+    }
+
     gpu->destroy_texture( texture->handle );
     textures.release( texture );
 }
@@ -327,7 +335,10 @@ void Renderer::destroy_sampler( SamplerResource* sampler ) {
         return;
     }
 
-    resource_cache.samplers.remove( hash_calculate( sampler->desc.name ) );
+    if ( sampler->desc.name ) {
+        resource_cache.samplers.remove( hash_calculate( sampler->desc.name ) );
+    }
+
     gpu->destroy_sampler( sampler->handle );
     samplers.release( sampler );
 }
@@ -359,8 +370,9 @@ void Renderer::destroy_technique( GpuTechnique* technique ) {
     for ( u32 i = 0; i < technique->passes.size; ++i ) {
         gpu->destroy_pipeline( technique->passes[ i ].pipeline );
     }
-    
+
     technique->passes.shutdown();
+    technique->name_hash_to_index.shutdown();
 
     resource_cache.techniques.remove( hash_calculate( technique->name ) );
     techniques.release( technique );
@@ -391,14 +403,14 @@ static void generate_mipmaps( raptor::Texture* texture, raptor::CommandBuffer* c
     using namespace raptor;
 
     if ( texture->mipmaps > 1 ) {
-        util_add_image_barrier( cb->vk_command_buffer, texture->vk_image, from_transfer_queue ? RESOURCE_STATE_COPY_SOURCE : RESOURCE_STATE_COPY_SOURCE, RESOURCE_STATE_COPY_SOURCE, 0, 1, false );
+        util_add_image_barrier( cb->device, cb->vk_command_buffer, texture->vk_image, from_transfer_queue ? RESOURCE_STATE_COPY_SOURCE : RESOURCE_STATE_COPY_SOURCE, RESOURCE_STATE_COPY_SOURCE, 0, 1, false );
     }
 
     i32 w = texture->width;
     i32 h = texture->height;
 
     for ( int mip_index = 1; mip_index < texture->mipmaps; ++mip_index ) {
-        util_add_image_barrier( cb->vk_command_buffer, texture->vk_image, RESOURCE_STATE_UNDEFINED, RESOURCE_STATE_COPY_DEST, mip_index, 1, false );
+        util_add_image_barrier( cb->device, cb->vk_command_buffer, texture->vk_image, RESOURCE_STATE_UNDEFINED, RESOURCE_STATE_COPY_DEST, mip_index, 1, false );
 
         VkImageBlit blit_region{ };
         blit_region.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
@@ -423,18 +435,16 @@ static void generate_mipmaps( raptor::Texture* texture, raptor::CommandBuffer* c
         vkCmdBlitImage( cb->vk_command_buffer, texture->vk_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, texture->vk_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit_region, VK_FILTER_LINEAR );
 
         // Prepare current mip for next level
-        util_add_image_barrier( cb->vk_command_buffer, texture->vk_image, RESOURCE_STATE_COPY_DEST, RESOURCE_STATE_COPY_SOURCE, mip_index, 1, false );
+        util_add_image_barrier( cb->device, cb->vk_command_buffer, texture->vk_image, RESOURCE_STATE_COPY_DEST, RESOURCE_STATE_COPY_SOURCE, mip_index, 1, false );
     }
 
     // Transition
     if ( from_transfer_queue ) {
-        util_add_image_barrier( cb->vk_command_buffer, texture->vk_image, ( texture->mipmaps > 1 ) ? RESOURCE_STATE_COPY_SOURCE : RESOURCE_STATE_COPY_DEST, RESOURCE_STATE_SHADER_RESOURCE, 0, texture->mipmaps, false );
-    } else {
-        util_add_image_barrier( cb->vk_command_buffer, texture->vk_image, RESOURCE_STATE_UNDEFINED, RESOURCE_STATE_SHADER_RESOURCE, 0, texture->mipmaps, false );
+        util_add_image_barrier( cb->device, cb->vk_command_buffer, texture->vk_image, ( texture->mipmaps > 1 ) ? RESOURCE_STATE_COPY_SOURCE : RESOURCE_STATE_COPY_DEST, RESOURCE_STATE_SHADER_RESOURCE, 0, texture->mipmaps, false );
     }
-
-
-    texture->vk_image_layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    else {
+        util_add_image_barrier( cb->device, cb->vk_command_buffer, texture->vk_image, RESOURCE_STATE_UNDEFINED, RESOURCE_STATE_SHADER_RESOURCE, 0, texture->mipmaps, false );
+    }
 }
 
 
@@ -445,16 +455,15 @@ void Renderer::add_texture_update_commands( u32 thread_id ) {
         return;
     }
 
-    CommandBuffer* cb = gpu->get_command_buffer( thread_id, false );
+    CommandBuffer* cb = gpu->get_command_buffer( thread_id, gpu->current_frame, false );
     cb->begin();
 
     for ( u32 i = 0; i < num_textures_to_update; ++i ) {
 
         Texture* texture = gpu->access_texture( textures_to_update[i] );
 
-        util_add_image_barrier_ext( cb->vk_command_buffer, texture->vk_image, RESOURCE_STATE_COPY_DEST, RESOURCE_STATE_COPY_SOURCE,
+        util_add_image_barrier_ext( cb->device, cb->vk_command_buffer, texture->vk_image, RESOURCE_STATE_COPY_DEST, RESOURCE_STATE_COPY_SOURCE,
                                     0, 1, false, gpu->vulkan_transfer_queue_family, gpu->vulkan_main_queue_family, QueueType::CopyTransfer, QueueType::Graphics );
-        texture->vk_image_layout = util_to_vk_image_layout( RESOURCE_STATE_COPY_SOURCE );
 
         generate_mipmaps( texture, cb, true );
     }

@@ -12,11 +12,13 @@ void SceneGraph::init( Allocator* resident_allocator, u32 num_nodes ) {
     nodes_hierarchy.init( resident_allocator, num_nodes, num_nodes );
     local_matrices.init( resident_allocator, num_nodes, num_nodes );
     world_matrices.init( resident_allocator, num_nodes, num_nodes );
+    nodes_debug_data.init( resident_allocator, num_nodes, num_nodes );
 
     updated_nodes.init( resident_allocator, num_nodes );
 }
 
 void SceneGraph::shutdown() {
+    nodes_debug_data.shutdown();
     nodes_hierarchy.shutdown();
     updated_nodes.shutdown();
     local_matrices.shutdown();
@@ -27,6 +29,7 @@ void SceneGraph::resize( u32 num_nodes ) {
     nodes_hierarchy.set_size( num_nodes );
     local_matrices.set_size( num_nodes );
     world_matrices.set_size( num_nodes );
+    nodes_debug_data.set_size( num_nodes );
 
     updated_nodes.resize( num_nodes );
 
@@ -107,6 +110,10 @@ void SceneGraph::set_local_matrix( u32 node_index, const mat4s& local_matrix ) {
     // Mark node as updated
     updated_nodes.set_bit( node_index );
     local_matrices[ node_index ] = local_matrix;
+}
+
+void SceneGraph::set_debug_data( u32 node_index, cstring name ) {
+    nodes_debug_data[ node_index ].name = name;
 }
 
 

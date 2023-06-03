@@ -80,6 +80,7 @@ struct GpuTechniquePass {
 struct GpuTechnique : public raptor::Resource {
 
     Array<GpuTechniquePass>         passes;
+    FlatHashMap<u64, u16>           name_hash_to_index;
 
     u32                             pool_index;
 
@@ -157,9 +158,6 @@ struct Renderer : public Service {
 
     void                        set_loaders( raptor::ResourceManager* manager );
 
-    void                        begin_frame();
-    void                        end_frame();
-
     void                        imgui_draw();
 
     void                        set_presentation_mode( PresentMode::Enum value );
@@ -194,7 +192,7 @@ struct Renderer : public Service {
     void*                       map_buffer( BufferResource* buffer, u32 offset = 0, u32 size = 0 );
     void                        unmap_buffer( BufferResource* buffer );
 
-    CommandBuffer*              get_command_buffer( u32 thread_index, bool begin )  { return gpu->get_command_buffer( thread_index, begin ); }
+    CommandBuffer*              get_command_buffer( u32 thread_index, u32 current_frame_index, bool begin )  { return gpu->get_command_buffer( thread_index, current_frame_index, begin ); }
     void                        queue_command_buffer( raptor::CommandBuffer* commands ) { gpu->queue_command_buffer( commands ); }
 
     // Multithread friendly update to textures
@@ -215,6 +213,8 @@ struct Renderer : public Service {
     u32                         num_textures_to_update = 0;
 
     raptor::GpuDevice*          gpu;
+    Allocator*                  resident_allocator;
+    StackAllocator              temporary_allocator;
 
     Array<VmaBudget>            gpu_heap_budgets;
 

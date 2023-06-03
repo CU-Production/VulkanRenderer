@@ -1,5 +1,6 @@
 #include "graphics/command_buffer.hpp"
 #include "graphics/gpu_device.hpp"
+#include "graphics/gpu_profiler.hpp"
 
 #include "foundation/memory.hpp"
 
@@ -222,7 +223,7 @@ void CommandBuffer::bind_pass( RenderPassHandle handle_, FramebufferHandle frame
                     color_attachment_info.resolveMode = VK_RESOLVE_MODE_NONE;
                     color_attachment_info.loadOp = color_op;
                     color_attachment_info.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-                    color_attachment_info.clearValue = render_pass->output.color_operations[ a ] == RenderPassOperation::Enum::Clear ? clears[ 0 ] : VkClearValue{ };
+                    color_attachment_info.clearValue = render_pass->output.color_operations[ a ] == RenderPassOperation::Enum::Clear ? clear_values[ a ] : VkClearValue{ };
                 }
 
                 VkRenderingAttachmentInfo depth_attachment_info{ VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR };
@@ -250,7 +251,7 @@ void CommandBuffer::bind_pass( RenderPassHandle handle_, FramebufferHandle frame
                     depth_attachment_info.resolveMode = VK_RESOLVE_MODE_NONE;
                     depth_attachment_info.loadOp = depth_op;
                     depth_attachment_info.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-                    depth_attachment_info.clearValue = render_pass->output.depth_operation == RenderPassOperation::Enum::Clear ? clears[ 1 ] : VkClearValue{ };
+                    depth_attachment_info.clearValue = render_pass->output.depth_operation == RenderPassOperation::Enum::Clear ? clear_values[ k_depth_stencil_clear_index ] : VkClearValue{ };
                 }
 
                 VkRenderingInfoKHR rendering_info{ VK_STRUCTURE_TYPE_RENDERING_INFO_KHR };
@@ -274,19 +275,10 @@ void CommandBuffer::bind_pass( RenderPassHandle handle_, FramebufferHandle frame
                 render_pass_begin.renderArea.offset = { 0, 0 };
                 render_pass_begin.renderArea.extent = { framebuffer->width, framebuffer->height };
 
-                VkClearValue clear_values[ k_max_image_outputs + 1 ];
-
-                u32 clear_values_count = 0;
-                for ( u32 o = 0; o < render_pass->output.num_color_formats; ++o ) {
-                    if ( render_pass->output.color_operations[ o ] == RenderPassOperation::Enum::Clear ) {
-                        clear_values[ clear_values_count++ ] = clears[ 0 ];
-                    }
-                }
-
-                if ( render_pass->output.depth_stencil_format != VK_FORMAT_UNDEFINED ) {
-                    if ( render_pass->output.depth_operation == RenderPassOperation::Enum::Clear ) {
-                        clear_values[ clear_values_count++ ] = clears[ 1 ];
-                    }
+                u32 clear_values_count = render_pass->output.num_color_formats;
+                // Copy final depth/stencil clear
+                if ( (render_pass->output.depth_stencil_format != VK_FORMAT_UNDEFINED) && ( render_pass->output.depth_operation == RenderPassOperation::Enum::Clear ) ) {
+                    clear_values[ clear_values_count++ ] = clear_values[ k_depth_stencil_clear_index ];
                 }
 
                 render_pass_begin.clearValueCount =  clear_values_count;
@@ -327,6 +319,30 @@ void CommandBuffer::bind_vertex_buffer( BufferHandle handle_, u32 binding, u32 o
     vkCmdBindVertexBuffers( vk_command_buffer, binding, 1, &vk_buffer, offsets );
 }
 
+void CommandBuffer::bind_vertex_buffers( BufferHandle* handles, u32 first_binding, u32 binding_count, u32* offsets_ ) {
+    VkBuffer vk_buffers[ 8 ];
+    VkDeviceSize offsets[ 8 ];
+
+    for ( u32 i = 0; i < binding_count; ++i ) {
+        Buffer* buffer = device->access_buffer( handles[i] );
+
+        VkBuffer vk_buffer = buffer->vk_buffer;
+        // TODO: add global vertex buffer ?
+        if ( buffer->parent_buffer.index != k_invalid_index ) {
+            Buffer* parent_buffer = device->access_buffer( buffer->parent_buffer );
+            vk_buffer = parent_buffer->vk_buffer;
+            offsets[ i ] = buffer->global_offset;
+        }
+        else {
+            offsets[ i ] = offsets_[ i ];
+        }
+
+        vk_buffers[ i ] = vk_buffer;
+    }
+
+    vkCmdBindVertexBuffers( vk_command_buffer, first_binding, binding_count, vk_buffers, offsets );
+}
+
 void CommandBuffer::bind_index_buffer( BufferHandle handle_, u32 offset_, VkIndexType index_type ) {
 
     Buffer* buffer = device->access_buffer( handle_ );
@@ -354,12 +370,14 @@ void CommandBuffer::bind_descriptor_set( DescriptorSetHandle* handles, u32 num_l
         // Search for dynamic buffers
         const DescriptorSetLayout* descriptor_set_layout = descriptor_set->layout;
         for ( u32 i = 0; i < descriptor_set_layout->num_bindings; ++i ) {
+
+            const u32 binding_point = descriptor_set->bindings[ i ];
             const DescriptorBinding& rb = descriptor_set_layout->bindings[ i ];
 
             if ( rb.type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER ) {
                 // Search for the actual buffer offset
-                const u32 resource_index = descriptor_set->bindings[ i ];
-                ResourceHandle buffer_handle = descriptor_set->resources[ resource_index ];
+
+                ResourceHandle buffer_handle = descriptor_set->resources[ i ];
                 Buffer* buffer = device->access_buffer( { buffer_handle } );
 
                 offsets_cache[ num_offsets++ ] = buffer->global_offset;
@@ -468,13 +486,13 @@ void CommandBuffer::set_scissor( const Rect2DInt* rect ) {
     vkCmdSetScissor( vk_command_buffer, 0, 1, &vk_scissor );
 }
 
-void CommandBuffer::clear( f32 red, f32 green, f32 blue, f32 alpha ) {
-    clears[0].color = { red, green, blue, alpha };
+void CommandBuffer::clear( f32 red, f32 green, f32 blue, f32 alpha, u32 attachment_index ) {
+    clear_values[ attachment_index ].color = { red, green, blue, alpha };
 }
 
 void CommandBuffer::clear_depth_stencil( f32 depth, u8 value ) {
-    clears[1].depthStencil.depth = depth;
-    clears[1].depthStencil.stencil = value;
+    clear_values[ k_depth_stencil_clear_index ].depthStencil.depth = depth;
+    clear_values[ k_depth_stencil_clear_index ].depthStencil.stencil = value;
 }
 
 void CommandBuffer::draw( TopologyType::Enum topology, u32 first_vertex, u32 vertex_count, u32 first_instance, u32 instance_count ) {
@@ -489,14 +507,14 @@ void CommandBuffer::dispatch( u32 group_x, u32 group_y, u32 group_z ) {
     vkCmdDispatch( vk_command_buffer, group_x, group_y, group_z );
 }
 
-void CommandBuffer::draw_indirect( BufferHandle buffer_handle, u32 offset, u32 stride ) {
+void CommandBuffer::draw_indirect( BufferHandle buffer_handle, u32 draw_count, u32 offset, u32 stride ) {
 
     Buffer* buffer = device->access_buffer( buffer_handle );
 
     VkBuffer vk_buffer = buffer->vk_buffer;
     VkDeviceSize vk_offset = offset;
 
-    vkCmdDrawIndirect( vk_command_buffer, vk_buffer, vk_offset, 1, sizeof( VkDrawIndirectCommand ) );
+    vkCmdDrawIndirect( vk_command_buffer, vk_buffer, vk_offset, draw_count, sizeof( VkDrawIndirectCommand ) );
 }
 
 void CommandBuffer::draw_indexed_indirect( BufferHandle buffer_handle, u32 offset, u32 stride ) {
@@ -578,10 +596,9 @@ void CommandBuffer::barrier( const ExecutionBarrier& barrier ) {
 
                 source_access_flags |= pImageBarrier->srcAccessMask;
                 destination_access_flags |= pImageBarrier->dstAccessMask;
-            }
 
-            vk_barrier.oldLayout = texture_vulkan->vk_image_layout;
-            texture_vulkan->vk_image_layout = vk_barrier.newLayout;
+                texture_vulkan->state = next_state;
+            }
         }
 
         static VkBufferMemoryBarrier buffer_memory_barriers[ 8 ];
@@ -708,7 +725,7 @@ void CommandBuffer::barrier( const ExecutionBarrier& barrier ) {
         vk_barrier.subresourceRange.baseArrayLayer = 0;
         vk_barrier.subresourceRange.layerCount = 1;
 
-        vk_barrier.oldLayout = texture_vulkan->vk_image_layout;
+        vk_barrier.oldLayout = util_to_vk_image_layout( texture_vulkan->state );
 
         // Transition to...
         vk_barrier.newLayout = is_color ? new_layout : new_depth_layout;
@@ -716,7 +733,8 @@ void CommandBuffer::barrier( const ExecutionBarrier& barrier ) {
         vk_barrier.srcAccessMask = is_color ? source_access_mask : source_depth_access_mask;
         vk_barrier.dstAccessMask = is_color ? destination_access_mask : destination_depth_access_mask;
 
-        texture_vulkan->vk_image_layout = vk_barrier.newLayout;
+        RASSERTM( false, "Reimplent or delete this!" );
+        texture_vulkan->state = RESOURCE_STATE_GENERIC_READ;
     }
 
     VkPipelineStageFlags source_stage_mask = to_vk_pipeline_stage( ( PipelineStage::Enum )barrier.source_pipeline_stage );
@@ -756,7 +774,8 @@ void CommandBuffer::fill_buffer( BufferHandle buffer, u32 offset, u32 size, u32 
 
 void CommandBuffer::push_marker( const char* name ) {
 
-    device->push_gpu_timestamp( this, name );
+    GPUTimeQuery* time_query = thread_frame_pool->time_queries->push( name );
+    vkCmdWriteTimestamp( vk_command_buffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, thread_frame_pool->vulkan_timestamp_query_pool, time_query->start_query_index );
 
     if ( !device->debug_utils_extension_present )
         return;
@@ -766,7 +785,9 @@ void CommandBuffer::push_marker( const char* name ) {
 
 void CommandBuffer::pop_marker() {
 
-    device->pop_gpu_timestamp( this );
+    //device->pop_gpu_timestamp( this );
+    GPUTimeQuery* time_query = thread_frame_pool->time_queries->pop();
+    vkCmdWriteTimestamp( vk_command_buffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, thread_frame_pool->vulkan_timestamp_query_pool, time_query->end_query_index );
 
     if ( !device->debug_utils_extension_present )
         return;
@@ -797,19 +818,17 @@ void CommandBuffer::upload_texture_data( TextureHandle texture_handle, void* tex
     region.imageExtent = { texture->width, texture->height, texture->depth };
 
     // Pre copy memory barrier to perform layout transition
-    util_add_image_barrier( vk_command_buffer, texture->vk_image, RESOURCE_STATE_UNDEFINED, RESOURCE_STATE_COPY_DEST, 0, 1, false );
+    util_add_image_barrier( device, vk_command_buffer, texture, RESOURCE_STATE_COPY_DEST, 0, 1, false );
     // Copy from the staging buffer to the image
     vkCmdCopyBufferToImage( vk_command_buffer, staging_buffer->vk_buffer, texture->vk_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region );
 
     // Post copy memory barrier
-    util_add_image_barrier_ext( vk_command_buffer, texture->vk_image, RESOURCE_STATE_COPY_DEST, RESOURCE_STATE_COPY_SOURCE,
+    util_add_image_barrier_ext( device,vk_command_buffer, texture, RESOURCE_STATE_COPY_SOURCE,
                                 0, 1, false, device->vulkan_transfer_queue_family, device->vulkan_main_queue_family,
                                 QueueType::CopyTransfer, QueueType::Graphics );
-
-    texture->vk_image_layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
 }
 
-void CommandBuffer::copy_texture( TextureHandle src_, ResourceState src_state, TextureHandle dst_, ResourceState dst_state ) {
+void CommandBuffer::copy_texture( TextureHandle src_, TextureHandle dst_, ResourceState dst_state ) {
     Texture* src = device->access_texture( src_ );
     Texture* dst = device->access_texture( dst_ );
 
@@ -828,21 +847,23 @@ void CommandBuffer::copy_texture( TextureHandle src_, ResourceState src_state, T
     region.extent = { src->width, src->height, src->depth };
 
     // Copy from the staging buffer to the image
-    util_add_image_barrier( vk_command_buffer, src->vk_image, src_state, RESOURCE_STATE_COPY_SOURCE, 0, 1, false );
-    util_add_image_barrier( vk_command_buffer, dst->vk_image, RESOURCE_STATE_UNDEFINED, RESOURCE_STATE_COPY_DEST, 0, 1, false );
+    util_add_image_barrier( device, vk_command_buffer, src, RESOURCE_STATE_COPY_SOURCE, 0, 1, false );
+    // TODO(marco): maybe we need a state per mip?
+    ResourceState old_state = dst->state;
+    util_add_image_barrier( device, vk_command_buffer, dst, RESOURCE_STATE_COPY_DEST, 0, 1, false );
 
     vkCmdCopyImage( vk_command_buffer, src->vk_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst->vk_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region );
 
     // Prepare first mip to create lower mipmaps
     if ( dst->mipmaps > 1 ) {
-        util_add_image_barrier( vk_command_buffer, dst->vk_image, RESOURCE_STATE_COPY_DEST, RESOURCE_STATE_COPY_SOURCE, 0, 1, false );
+        util_add_image_barrier( device, vk_command_buffer, dst, RESOURCE_STATE_COPY_SOURCE, 0, 1, false );
     }
 
     i32 w = dst->width;
     i32 h = dst->height;
 
     for ( int mip_index = 1; mip_index < dst->mipmaps; ++mip_index ) {
-        util_add_image_barrier( vk_command_buffer, dst->vk_image, RESOURCE_STATE_UNDEFINED, RESOURCE_STATE_COPY_DEST, mip_index, 1, false );
+        util_add_image_barrier( device, vk_command_buffer, dst->vk_image, old_state, RESOURCE_STATE_COPY_DEST, mip_index, 1, false );
 
         VkImageBlit blit_region{ };
         blit_region.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
@@ -867,11 +888,11 @@ void CommandBuffer::copy_texture( TextureHandle src_, ResourceState src_state, T
         vkCmdBlitImage( vk_command_buffer, dst->vk_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst->vk_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit_region, VK_FILTER_LINEAR );
 
         // Prepare current mip for next level
-        util_add_image_barrier( vk_command_buffer, dst->vk_image, RESOURCE_STATE_COPY_DEST, RESOURCE_STATE_COPY_SOURCE, mip_index, 1, false );
+        util_add_image_barrier( device, vk_command_buffer, dst->vk_image, RESOURCE_STATE_COPY_DEST, RESOURCE_STATE_COPY_SOURCE, mip_index, 1, false );
     }
 
     // Transition
-    util_add_image_barrier( vk_command_buffer, dst->vk_image, ( dst->mipmaps > 1 ) ? RESOURCE_STATE_COPY_SOURCE : RESOURCE_STATE_COPY_DEST, dst_state, 0, dst->mipmaps, false );
+    util_add_image_barrier( device, vk_command_buffer, dst, dst_state, 0, dst->mipmaps, false );
 }
 
 void CommandBuffer::upload_buffer_data( BufferHandle buffer_handle, void* buffer_data, BufferHandle staging_buffer_handle, sizet staging_buffer_offset ) {
@@ -890,7 +911,7 @@ void CommandBuffer::upload_buffer_data( BufferHandle buffer_handle, void* buffer
 
     vkCmdCopyBuffer( vk_command_buffer, staging_buffer->vk_buffer, buffer->vk_buffer, 1, &region );
 
-    util_add_buffer_barrier_ext( vk_command_buffer, buffer->vk_buffer, RESOURCE_STATE_COPY_DEST, RESOURCE_STATE_UNDEFINED,
+    util_add_buffer_barrier_ext( device, vk_command_buffer, buffer->vk_buffer, RESOURCE_STATE_COPY_DEST, RESOURCE_STATE_UNDEFINED,
                                  copy_size, device->vulkan_transfer_queue_family, device->vulkan_main_queue_family,
                                  QueueType::CopyTransfer, QueueType::Graphics );
 }
@@ -918,19 +939,12 @@ void CommandBufferManager::init( GpuDevice* gpu_, u32 num_threads ) {
     num_pools_per_frame = num_threads;
 
     // Create pools: num frames * num threads;
-    const u32 total_pools = num_pools_per_frame * gpu->k_max_frames;
-    vulkan_command_pools.init( gpu->allocator, total_pools, total_pools );
+    const u32 total_pools = num_pools_per_frame * k_max_frames;
     // Init per thread-frame used buffers
     used_buffers.init( gpu->allocator, total_pools, total_pools );
     used_secondary_command_buffers.init( gpu->allocator, total_pools, total_pools );
 
     for ( u32 i = 0; i < total_pools; i++ ) {
-        VkCommandPoolCreateInfo cmd_pool_info = { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, nullptr };
-        cmd_pool_info.queueFamilyIndex = gpu->vulkan_main_queue_family;
-        cmd_pool_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-
-        vkCreateCommandPool( gpu->vulkan_device, &cmd_pool_info, gpu->vulkan_allocation_callbacks, &vulkan_command_pools[ i ] );
-
         used_buffers[ i ] = 0;
         used_secondary_command_buffers[ i ] = 0;
     }
@@ -942,6 +956,9 @@ void CommandBufferManager::init( GpuDevice* gpu_, u32 num_threads ) {
     const u32 total_secondary_buffers = total_pools * k_secondary_command_buffers_count;
     secondary_command_buffers.init( gpu->allocator, total_secondary_buffers );
 
+    const u32 total_compute_buffers = k_max_frames;
+    compute_command_buffers.init( gpu->allocator, k_max_frames, k_max_frames );
+
     for ( u32 i = 0; i < total_buffers; i++ ) {
         VkCommandBufferAllocateInfo cmd = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, nullptr };
 
@@ -949,7 +966,7 @@ void CommandBufferManager::init( GpuDevice* gpu_, u32 num_threads ) {
         const u32 thread_index = ( i / num_command_buffers_per_thread ) % num_pools_per_frame;
         const u32 pool_index = pool_from_indices( frame_index, thread_index );
         //rprint( "Indices i:%u f:%u t:%u p:%u\n", i, frame_index, thread_index, pool_index );
-        cmd.commandPool = vulkan_command_pools[ pool_index ];
+        cmd.commandPool = gpu->thread_frame_pools[ pool_index ].vulkan_command_pool;
         cmd.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
         cmd.commandBufferCount = 1;
 
@@ -958,6 +975,7 @@ void CommandBufferManager::init( GpuDevice* gpu_, u32 num_threads ) {
 
         // TODO(marco): move to have a ring per queue per thread
         current_command_buffer.handle = i;
+        current_command_buffer.thread_frame_pool = &gpu->thread_frame_pools[ pool_index ];
         current_command_buffer.init( gpu );
     }
 
@@ -965,7 +983,7 @@ void CommandBufferManager::init( GpuDevice* gpu_, u32 num_threads ) {
     for ( u32 pool_index = 0; pool_index < total_pools; ++pool_index ) {
         VkCommandBufferAllocateInfo cmd = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, nullptr };
 
-        cmd.commandPool = vulkan_command_pools[ pool_index ];
+        cmd.commandPool = gpu->thread_frame_pools[ pool_index ].vulkan_command_pool;
         cmd.level = VK_COMMAND_BUFFER_LEVEL_SECONDARY;
         cmd.commandBufferCount = k_secondary_command_buffers_count;
 
@@ -977,23 +995,34 @@ void CommandBufferManager::init( GpuDevice* gpu_, u32 num_threads ) {
             cb.vk_command_buffer = secondary_buffers[ scb_index ];
 
             cb.handle = handle++;
+            cb.thread_frame_pool = &gpu->thread_frame_pools[ pool_index ];
             cb.init( gpu );
 
             // NOTE(marco): access to the descriptor pool has to be synchronized
             // across theads. Don't allow for now
-
             secondary_command_buffers.push( cb );
         }
+    }
+
+    for (u32 i = 0; i < total_compute_buffers; i++) {
+        VkCommandBufferAllocateInfo cmd = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, nullptr };
+
+        cmd.commandPool = gpu->compute_frame_pools[ i ].vulkan_command_pool;
+        cmd.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+        cmd.commandBufferCount = 1;
+
+        CommandBuffer& current_command_buffer = compute_command_buffers[ i ];
+        vkAllocateCommandBuffers( gpu->vulkan_device, &cmd, &current_command_buffer.vk_command_buffer );
+
+        current_command_buffer.handle = i;
+        current_command_buffer.thread_frame_pool = &gpu->compute_frame_pools[ i ];
+        current_command_buffer.init(gpu);
     }
 
     //rprint( "Done\n" );
 }
 
 void CommandBufferManager::shutdown() {
-    const u32 total_pools = num_pools_per_frame * gpu->k_max_frames;
-    for ( u32 i = 0; i < total_pools; i++ ) {
-        vkDestroyCommandPool( gpu->vulkan_device, vulkan_command_pools[ i ], gpu->vulkan_allocation_callbacks );
-    }
 
     for ( u32 i = 0; i < command_buffers.size; i++ ) {
         command_buffers[ i ].shutdown();
@@ -1003,9 +1032,13 @@ void CommandBufferManager::shutdown() {
         secondary_command_buffers[ i ].shutdown();
     }
 
-    vulkan_command_pools.shutdown();
+    for (u32 i = 0; i < compute_command_buffers.size; ++i) {
+        compute_command_buffers[ i ].shutdown();
+    }
+
     command_buffers.shutdown();
     secondary_command_buffers.shutdown();
+    compute_command_buffers.shutdown();
     used_buffers.shutdown();
     used_secondary_command_buffers.shutdown();
 }
@@ -1014,27 +1047,48 @@ void CommandBufferManager::reset_pools( u32 frame_index ) {
 
     for ( u32 i = 0; i < num_pools_per_frame; i++ ) {
         const u32 pool_index = pool_from_indices( frame_index, i );
-        vkResetCommandPool( gpu->vulkan_device, vulkan_command_pools[ pool_index ], 0 );
+        vkResetCommandPool( gpu->vulkan_device, gpu->thread_frame_pools[ pool_index ].vulkan_command_pool, 0 );
 
         used_buffers[ pool_index ] = 0;
         used_secondary_command_buffers[ pool_index ] = 0;
     }
 }
 
-CommandBuffer* CommandBufferManager::get_command_buffer( u32 frame, u32 thread_index, bool begin ) {
-    const u32 pool_index = pool_from_indices( frame, thread_index );
-    u32 current_used_buffer = used_buffers[ pool_index ];
-    // TODO: how to handle fire-and-forget command buffers ?
-    //used_buffers[ pool_index ] = current_used_buffer + 1;
-    RASSERT( current_used_buffer < num_command_buffers_per_thread );
+CommandBuffer* CommandBufferManager::get_command_buffer( u32 frame, u32 thread_index, bool begin, bool compute) {
+    CommandBuffer* cb = nullptr;
 
-    CommandBuffer* cb = &command_buffers[ (pool_index * num_command_buffers_per_thread) + current_used_buffer ];
+    if ( compute ) {
+        RASSERT( thread_index == 0 );
+        cb = &compute_command_buffers[ frame ];
+    } else {
+        const u32 pool_index = pool_from_indices( frame, thread_index );
+        u32 current_used_buffer = used_buffers[ pool_index ];
+        // TODO: how to handle fire-and-forget command buffers ?
+        RASSERT( current_used_buffer < num_command_buffers_per_thread );
+        if ( begin ) {
+            used_buffers[ pool_index ] = current_used_buffer + 1;
+        }
+
+        cb = &command_buffers[ ( pool_index * num_command_buffers_per_thread ) + current_used_buffer ];
+    }
+
     if ( begin ) {
         cb->reset();
-        VkCommandBufferBeginInfo beginInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
-        beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-        vkBeginCommandBuffer( cb->vk_command_buffer, &beginInfo );
+        cb->begin();
+
+        // Timestamp queries
+        GpuThreadFramePools* thread_pools = cb->thread_frame_pool;
+        thread_pools->time_queries->reset();
+        vkCmdResetQueryPool( cb->vk_command_buffer, thread_pools->vulkan_timestamp_query_pool, 0, thread_pools->time_queries->time_queries.size );
+
+        if ( !compute ) {
+            // Pipeline statistics
+            vkCmdResetQueryPool( cb->vk_command_buffer, thread_pools->vulkan_pipeline_stats_query_pool, 0, GpuPipelineStatistics::Count );
+
+            vkCmdBeginQuery( cb->vk_command_buffer, thread_pools->vulkan_pipeline_stats_query_pool, 0, 0 );
+        }
     }
+
     return cb;
 }
 

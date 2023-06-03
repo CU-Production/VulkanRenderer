@@ -15,7 +15,8 @@ static void             shader_concatenate( cstring filename, raptor::StringBuff
 static VkBlendFactor    get_blend_factor( const std::string factor );
 static VkBlendOp        get_blend_op( const std::string op );
 static void             parse_gpu_pipeline( nlohmann::json& pipeline, raptor::PipelineCreation& pc, raptor::StringBuffer& path_buffer,
-                                            raptor::StringBuffer& shader_buffer, raptor::Allocator* temp_allocator, raptor::Renderer* renderer, raptor::FrameGraph* frame_graph );
+                                            raptor::StringBuffer& shader_buffer, raptor::Allocator* temp_allocator, raptor::Renderer* renderer,
+                                            raptor::FrameGraph* frame_graph, raptor::StringBuffer& pass_name_buffer );
 
 // RenderResourcesLoader //////////////////////////////////////////////////
 void RenderResourcesLoader::init( raptor::Renderer* renderer_, raptor::StackAllocator* temp_allocator_, raptor::FrameGraph* frame_graph_ ) {
@@ -27,7 +28,7 @@ void RenderResourcesLoader::init( raptor::Renderer* renderer_, raptor::StackAllo
 void RenderResourcesLoader::shutdown() {
 }
 
-void RenderResourcesLoader::load_gpu_technique( cstring json_path ) {
+GpuTechnique* RenderResourcesLoader::load_gpu_technique( cstring json_path ) {
 
     using namespace raptor;
     sizet allocated_marker = temp_allocator->get_marker();
@@ -38,7 +39,10 @@ void RenderResourcesLoader::load_gpu_technique( cstring json_path ) {
     path_buffer.init( 1024, temp_allocator );
 
     StringBuffer shader_code_buffer;
-    shader_code_buffer.init( rkilo( 64 ), temp_allocator );
+    shader_code_buffer.init( rkilo( 256 ), temp_allocator );
+
+    StringBuffer pass_name_buffer;
+    pass_name_buffer.init( rkilo( 2 ), temp_allocator );
 
     using json = nlohmann::json;
 
@@ -74,13 +78,13 @@ void RenderResourcesLoader::load_gpu_technique( cstring json_path ) {
                     pipeline_i[ "name" ].get_to( name );
 
                     if ( name == inherited_name ) {
-                        parse_gpu_pipeline( pipeline_i, pc, path_buffer, shader_code_buffer, temp_allocator, renderer, frame_graph );
+                        parse_gpu_pipeline( pipeline_i, pc, path_buffer, shader_code_buffer, temp_allocator, renderer, frame_graph, pass_name_buffer );
                         break;
                     }
                 }
             }
 
-            parse_gpu_pipeline( pipeline, pc, path_buffer, shader_code_buffer, temp_allocator, renderer, frame_graph );
+            parse_gpu_pipeline( pipeline, pc, path_buffer, shader_code_buffer, temp_allocator, renderer, frame_graph, pass_name_buffer );
 
             technique_creation.creations[ technique_creation.num_creations++ ] = pc;
         }
@@ -90,18 +94,20 @@ void RenderResourcesLoader::load_gpu_technique( cstring json_path ) {
     GpuTechnique* technique = renderer->create_technique( technique_creation );
 
     temp_allocator->free_marker( allocated_marker );
+
+    return technique;
 }
 
-void RenderResourcesLoader::load_texture( cstring path ) {
+TextureResource* RenderResourcesLoader::load_texture( cstring path, bool generate_mipmaps ) {
     int comp, width, height;
     uint8_t* image_data = stbi_load( path, &width, &height, &comp, 4 );
     if ( !image_data ) {
         rprint( "Error loading texture %s", path );
-        return ;
+        return nullptr;
     }
 
     u32 mip_levels = 1;
-    if ( true ) {
+    if ( generate_mipmaps ) {
         u32 w = width;
         u32 h = height;
 
@@ -122,13 +128,15 @@ void RenderResourcesLoader::load_texture( cstring path ) {
     TextureCreation creation;
     creation.set_data( image_data ).set_format_type( VK_FORMAT_R8G8B8A8_UNORM, TextureType::Texture2D ).set_flags( mip_levels, 0 ).set_size( ( u16 )width, ( u16 )height, 1 ).set_name( copied_path );
 
-    renderer->create_texture( creation );
+    TextureResource* texture = renderer->create_texture( creation );
 
     // IMPORTANT:
     // Free memory loaded from file, it should not matter!
     free( image_data );
 
     temp_allocator->free_marker( allocated_marker );
+
+    return texture;
 }
 
 
@@ -230,10 +238,20 @@ void shader_concatenate( cstring filename, raptor::StringBuffer& path_buffer, ra
 }
 
 void parse_gpu_pipeline( nlohmann::json& pipeline, raptor::PipelineCreation& pc, raptor::StringBuffer& path_buffer,
-                                raptor::StringBuffer& shader_buffer, raptor::Allocator* temp_allocator, raptor::Renderer* renderer, raptor::FrameGraph* frame_graph ) {
+                         raptor::StringBuffer& shader_buffer, raptor::Allocator* temp_allocator, raptor::Renderer* renderer,
+                         raptor::FrameGraph* frame_graph, raptor::StringBuffer& pass_name_buffer ) {
     using json = nlohmann::json;
     using namespace raptor;
 
+    json json_name = pipeline[ "name" ];
+    if ( json_name.is_string() ) {
+        std::string name;
+        json_name.get_to( name );
+
+        pc.name = pass_name_buffer.append_use_f( "%s", name.c_str() );
+    }
+
+    bool compute_shader_pass = false;
     json shaders = pipeline[ "shaders" ];
     if ( !shaders.is_null() ) {
 
@@ -273,6 +291,8 @@ void parse_gpu_pipeline( nlohmann::json& pipeline, raptor::PipelineCreation& pc,
                 pc.shaders.add_stage( code, strlen( code ), VK_SHADER_STAGE_FRAGMENT_BIT );
             } else if ( name == "compute" ) {
                 pc.shaders.add_stage( code, strlen( code ), VK_SHADER_STAGE_COMPUTE_BIT );
+
+                compute_shader_pass = true;
             }
         }
     }
@@ -379,6 +399,24 @@ void parse_gpu_pipeline( nlohmann::json& pipeline, raptor::PipelineCreation& pc,
 
         if ( name == "back" ) {
             pc.rasterization.cull_mode = VK_CULL_MODE_BACK_BIT;
+        } else if ( name == "front" ) {
+            pc.rasterization.cull_mode = VK_CULL_MODE_FRONT_BIT;
+        } else {
+            RASSERT( false );
+        }
+    }
+
+    pc.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+    json topology = pipeline[ "topology" ];
+    if ( topology.is_string() ) {
+        std::string name;
+        topology.get_to( name );
+
+        if ( name == "triangle_list" ) {
+            pc.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        } else if ( name == "line_list" ) {
+            pc.topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
         } else {
             RASSERT( false );
         }
@@ -390,16 +428,19 @@ void parse_gpu_pipeline( nlohmann::json& pipeline, raptor::PipelineCreation& pc,
         render_pass.get_to( name );
 
         FrameGraphNode* node = frame_graph->get_node( name.c_str() );
-
         if ( node ) {
 
             // TODO: handle better
             if ( name == "swapchain" ) {
                 pc.render_pass = renderer->gpu->get_swapchain_output();
-            } else {
+            }
+            else if ( compute_shader_pass ) {
+                pc.render_pass = renderer->gpu->get_swapchain_output();
+            }
+            else {
                 const RenderPass* render_pass = renderer->gpu->access_render_pass( node->render_pass );
-
-                pc.render_pass = render_pass->output;
+                if ( render_pass )
+                    pc.render_pass = render_pass->output;
             }
         } else {
             rprint( "Cannot find render pass %s. Defaulting to swapchain\n", name.c_str() );

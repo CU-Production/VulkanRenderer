@@ -17,7 +17,7 @@ namespace raptor
 {
     struct Allocator;
     struct FrameGraph;
-    struct GPUProfiler;
+    struct GpuVisualProfiler;
     struct ImGuiService;
     struct Renderer;
     struct StackAllocator;
@@ -36,7 +36,6 @@ namespace raptor
     struct UploadRequest {
 
         void*                                   data        = nullptr;
-        u32*                                    completed   = nullptr;
         TextureHandle                           texture     = k_invalid_texture;
         BufferHandle                            cpu_buffer  = k_invalid_buffer;
         BufferHandle                            gpu_buffer  = k_invalid_buffer;
@@ -52,7 +51,7 @@ namespace raptor
 
         void                                    request_texture_data( cstring filename, TextureHandle texture );
         void                                    request_buffer_upload( void* data, BufferHandle buffer );
-        void                                    request_buffer_copy( BufferHandle src, BufferHandle dst, u32* completed );
+        void                                    request_buffer_copy( BufferHandle src, BufferHandle dst );
 
         Allocator*                              allocator       = nullptr;
         Renderer*                               renderer        = nullptr;
@@ -67,10 +66,9 @@ namespace raptor
         TextureHandle                           texture_ready;
         BufferHandle                            cpu_buffer_ready;
         BufferHandle                            gpu_buffer_ready;
-        u32*                                    completed;
 
-        VkCommandPool                           command_pools[ GpuDevice::k_max_frames ];
-        CommandBuffer                           command_buffers[ GpuDevice::k_max_frames ];
+        VkCommandPool                           command_pools[ k_max_frames ];
+        CommandBuffer                           command_buffers[ k_max_frames ];
         VkSemaphore                             transfer_complete_semaphore;
         VkFence                                 transfer_fence;
 

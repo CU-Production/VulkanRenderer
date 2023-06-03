@@ -6,6 +6,7 @@
 
 #include "foundation/file.hpp"
 #include "foundation/time.hpp"
+#include "foundation/numerics.hpp"
 
 #include "external/imgui/imgui.h"
 #include "external/stb_image.h"
@@ -20,495 +21,19 @@
 
 namespace raptor {
 
-static int gltf_mesh_material_compare( const void* a, const void* b ) {
-    const Mesh* mesh_a = ( const Mesh* )a;
-    const Mesh* mesh_b = ( const Mesh* )b;
-
-    if ( mesh_a->pbr_material.material->render_index < mesh_b->pbr_material.material->render_index ) return -1;
-    if ( mesh_a->pbr_material.material->render_index > mesh_b->pbr_material.material->render_index ) return  1;
-    return 0;
-}
-
-//
-//
-static void copy_gpu_material_data( GpuMeshData& gpu_mesh_data, const Mesh& mesh ) {
-    gpu_mesh_data.textures[ 0 ] = mesh.pbr_material.diffuse_texture_index;
-    gpu_mesh_data.textures[ 1 ] = mesh.pbr_material.roughness_texture_index;
-    gpu_mesh_data.textures[ 2 ] = mesh.pbr_material.normal_texture_index;
-    gpu_mesh_data.textures[ 3 ] = mesh.pbr_material.occlusion_texture_index;
-    gpu_mesh_data.base_color_factor = mesh.pbr_material.base_color_factor;
-    gpu_mesh_data.metallic_roughness_occlusion_factor = mesh.pbr_material.metallic_roughness_occlusion_factor;
-    gpu_mesh_data.alpha_cutoff = mesh.pbr_material.alpha_cutoff;
-    gpu_mesh_data.flags = mesh.pbr_material.flags;
-}
-
-//
-//
-static void copy_gpu_mesh_matrix( GpuMeshData& gpu_mesh_data, const Mesh& mesh, const f32 global_scale, const SceneGraph* scene_graph ) {
-    if ( scene_graph ) {
-        // Apply global scale matrix
-        // NOTE: for left-handed systems (as defined in cglm) need to invert positive and negative Z.
-        const mat4s scale_matrix = glms_scale_make( { global_scale, global_scale, -global_scale } );
-        gpu_mesh_data.world = glms_mat4_mul( scale_matrix, scene_graph->world_matrices[ mesh.scene_graph_node_index ] );
-
-        gpu_mesh_data.inverse_world = glms_mat4_inv( glms_mat4_transpose( gpu_mesh_data.world ) );
-    } else {
-        gpu_mesh_data.world = glms_mat4_identity();
-        gpu_mesh_data.inverse_world = glms_mat4_identity();
-    }
-}
-
-//
-// DepthPrePass ///////////////////////////////////////////////////////
-void DepthPrePass::render( CommandBuffer* gpu_commands, RenderScene* render_scene ) {
-    glTFScene* scene = ( glTFScene* )render_scene;
-
-    Material* last_material = nullptr;
-    for ( u32 mesh_index = 0; mesh_index < mesh_instances.size; ++mesh_index ) {
-        MeshInstance& mesh_instance = mesh_instances[ mesh_index ];
-        Mesh& mesh = *mesh_instance.mesh;
-
-        if ( mesh.pbr_material.material != last_material ) {
-            PipelineHandle pipeline = renderer->get_pipeline( mesh.pbr_material.material, mesh_instance.material_pass_index );
-
-            gpu_commands->bind_pipeline( pipeline );
-
-            last_material = mesh.pbr_material.material;
-        }
-
-        scene->draw_mesh( gpu_commands, mesh );
-    }
-}
-
-void DepthPrePass::prepare_draws( glTFScene& scene, FrameGraph* frame_graph, Allocator* resident_allocator, StackAllocator* scratch_allocator ) {
-    renderer = scene.renderer;
-
-    FrameGraphNode* node = frame_graph->get_node( "depth_pre_pass" );
-    if ( node == nullptr ) {
-        RASSERT( false );
-        return;
-    }
-
-    // Create pipeline state
-    PipelineCreation pipeline_creation;
-
-    const u64 hashed_name = hash_calculate( "main" );
-    GpuTechnique* main_technique = renderer->resource_cache.techniques.get( hashed_name );
-
-    MaterialCreation material_creation;
-
-    material_creation.set_name( "material_depth_pre_pass" ).set_technique( main_technique ).set_render_index( 0 );
-    Material* material_depth_pre_pass = renderer->create_material( material_creation );
-
-    glTF::glTF& gltf_scene = scene.gltf_scene;
-
-    mesh_instances.init( resident_allocator, 16 );
-
-    // Copy all mesh draws and change only material.
-    for ( u32 i = 0; i < scene.meshes.size; ++i ) {
-
-        Mesh* mesh = &scene.meshes[ i ];
-        if ( mesh->is_transparent() ) {
-            continue;
-        }
-
-        MeshInstance mesh_instance{};
-        mesh_instance.mesh = mesh;
-        // TODO: pass 0 of main material is depth prepass.
-        mesh_instance.material_pass_index = 0;
-
-        mesh_instances.push( mesh_instance );
-    }
-}
-
-void DepthPrePass::free_gpu_resources() {
-    GpuDevice& gpu = *renderer->gpu;
-
-    mesh_instances.shutdown();
-}
-
-//
-// GBufferPass ////////////////////////////////////////////////////////
-void GBufferPass::render( CommandBuffer* gpu_commands, RenderScene* render_scene ) {
-    glTFScene* scene = ( glTFScene* )render_scene;
-
-    Material* last_material = nullptr;
-    for ( u32 mesh_index = 0; mesh_index < mesh_instances.size; ++mesh_index ) {
-        MeshInstance& mesh_instance = mesh_instances[ mesh_index ];
-        Mesh& mesh = *mesh_instance.mesh;
-
-        if ( mesh.pbr_material.material != last_material ) {
-            PipelineHandle pipeline = renderer->get_pipeline( mesh.pbr_material.material, mesh_instance.material_pass_index );
-
-            gpu_commands->bind_pipeline( pipeline );
-
-            last_material = mesh.pbr_material.material;
-        }
-
-        scene->draw_mesh( gpu_commands, mesh );
-    }
-}
-
-void GBufferPass::prepare_draws( glTFScene& scene, FrameGraph* frame_graph, Allocator* resident_allocator, StackAllocator* scratch_allocator ) {
-    renderer = scene.renderer;
-
-    FrameGraphNode* node = frame_graph->get_node( "gbuffer_pass" );
-    if ( node == nullptr ) {
-        RASSERT( false );
-        return;
-    }
-
-    const u64 hashed_name = hash_calculate( "main" );
-    GpuTechnique* main_technique = renderer->resource_cache.techniques.get( hashed_name );
-
-    MaterialCreation material_creation;
-
-    material_creation.set_name( "material_no_cull" ).set_technique( main_technique ).set_render_index( 0 );
-    Material* material = renderer->create_material( material_creation );
-
-    glTF::glTF& gltf_scene = scene.gltf_scene;
-
-    mesh_instances.init( resident_allocator, 16 );
-
-    // Copy all mesh draws and change only material.
-    for ( u32 i = 0; i < scene.meshes.size; ++i ) {
-
-        // Skip transparent meshes
-        Mesh* mesh = &scene.meshes[ i ];
-        if ( mesh->is_transparent() ) {
-            continue;
-        }
-
-        MeshInstance mesh_instance{};
-        mesh_instance.mesh = mesh;
-        mesh_instance.material_pass_index = 1;
-
-        mesh_instances.push( mesh_instance );
-    }
-
-    //qsort( mesh_draws.data, mesh_draws.size, sizeof( MeshDraw ), gltf_mesh_material_compare );
-}
-
-void GBufferPass::free_gpu_resources() {
-    GpuDevice& gpu = *renderer->gpu;
-
-    mesh_instances.shutdown();
-}
-
-//
-// LightPass //////////////////////////////////////////////////////////
-void LighPass::render( CommandBuffer* gpu_commands, RenderScene* render_scene ) {
-    glTFScene* scene = ( glTFScene* )render_scene;
-
-    PipelineHandle pipeline = renderer->get_pipeline( mesh.pbr_material.material, 0 );
-
-    gpu_commands->bind_pipeline( pipeline );
-    gpu_commands->bind_vertex_buffer( mesh.position_buffer, 0, 0 );
-    gpu_commands->bind_descriptor_set( &mesh.pbr_material.descriptor_set, 1, nullptr, 0 );
-
-    gpu_commands->draw( TopologyType::Triangle, 0, 3, 0, 1 );
-}
-
-void LighPass::prepare_draws( glTFScene& scene, FrameGraph* frame_graph, Allocator* resident_allocator, StackAllocator* scratch_allocator ) {
-    renderer = scene.renderer;
-
-    FrameGraphNode* node = frame_graph->get_node( "lighting_pass" );
-    if ( node == nullptr ) {
-        RASSERT( false );
-        return;
-    }
-
-    const u64 hashed_name = hash_calculate( "pbr_lighting" );
-    GpuTechnique* main_technique = renderer->resource_cache.techniques.get( hashed_name );
-
-    MaterialCreation material_creation;
-
-    material_creation.set_name( "material_pbr" ).set_technique( main_technique ).set_render_index( 0 );
-    Material* material_pbr = renderer->create_material( material_creation );
-
-    BufferCreation buffer_creation;
-    buffer_creation.reset().set( VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, ResourceUsageType::Dynamic, sizeof( GpuMeshData ) ).set_name( "mesh_data" );
-    mesh.pbr_material.material_buffer = renderer->gpu->create_buffer( buffer_creation );
-
-    DescriptorSetCreation ds_creation{};
-    DescriptorSetLayoutHandle layout = renderer->gpu->get_descriptor_set_layout( main_technique->passes[ 0 ].pipeline, k_material_descriptor_set_index );
-    ds_creation.buffer( scene.scene_cb, 0 ).buffer( mesh.pbr_material.material_buffer, 1 ).set_layout( layout );
-    mesh.pbr_material.descriptor_set = renderer->gpu->create_descriptor_set( ds_creation );
-
-    BufferHandle fs_vb = renderer->gpu->get_fullscreen_vertex_buffer();
-    mesh.position_buffer = fs_vb;
-
-    FrameGraphResource* color_texture = frame_graph->access_resource( node->inputs[ 0 ] );
-    FrameGraphResource* normal_texture = frame_graph->access_resource( node->inputs[ 1 ] );
-    FrameGraphResource* roughness_texture = frame_graph->access_resource( node->inputs[ 2 ] );
-    FrameGraphResource* position_texture = frame_graph->access_resource( node->inputs[ 3 ] );
-
-    mesh.pbr_material.diffuse_texture_index = color_texture->resource_info.texture.texture.index;
-    mesh.pbr_material.normal_texture_index = normal_texture->resource_info.texture.texture.index;
-    mesh.pbr_material.roughness_texture_index = roughness_texture->resource_info.texture.texture.index;
-    mesh.pbr_material.occlusion_texture_index = position_texture->resource_info.texture.texture.index;
-    mesh.pbr_material.material = material_pbr;
-}
-
-void LighPass::upload_materials() {
-
-    MapBufferParameters cb_map = { mesh.pbr_material.material_buffer, 0, 0 };
-    GpuMeshData* mesh_data = ( GpuMeshData* )renderer->gpu->map_buffer( cb_map );
-    if ( mesh_data ) {
-        copy_gpu_material_data( *mesh_data, mesh );
-
-        renderer->gpu->unmap_buffer( cb_map );
-    }
-}
-
-void LighPass::free_gpu_resources() {
-    GpuDevice& gpu = *renderer->gpu;
-
-    gpu.destroy_buffer( mesh.pbr_material.material_buffer );
-    gpu.destroy_descriptor_set( mesh.pbr_material.descriptor_set );
-}
-
-//
-// TransparentPass ////////////////////////////////////////////////////////
-void TransparentPass::render( CommandBuffer* gpu_commands, RenderScene* render_scene ) {
-    glTFScene* scene = ( glTFScene* )render_scene;
-
-    Material* last_material = nullptr;
-    for ( u32 mesh_index = 0; mesh_index < mesh_instances.size; ++mesh_index ) {
-        MeshInstance& mesh_instance = mesh_instances[ mesh_index ];
-        Mesh& mesh = *mesh_instance.mesh;
-
-        if ( mesh.pbr_material.material != last_material ) {
-            PipelineHandle pipeline = renderer->get_pipeline( mesh.pbr_material.material, mesh_instance.material_pass_index );
-
-            gpu_commands->bind_pipeline( pipeline );
-
-            last_material = mesh.pbr_material.material;
-        }
-
-        scene->draw_mesh( gpu_commands, mesh );
-    }
-}
-
-void TransparentPass::prepare_draws( glTFScene& scene, FrameGraph* frame_graph, Allocator* resident_allocator, StackAllocator* scratch_allocator ) {
-    renderer = scene.renderer;
-
-    FrameGraphNode* node = frame_graph->get_node( "transparent_pass" );
-    if ( node == nullptr ) {
-        RASSERT( false );
-        return;
-    }
-
-    // Create pipeline state
-    PipelineCreation pipeline_creation;
-
-    const u64 hashed_name = hash_calculate( "main" );
-    GpuTechnique* main_technique = renderer->resource_cache.techniques.get( hashed_name );
-
-    MaterialCreation material_creation;
-
-    material_creation.set_name( "material_transparent" ).set_technique( main_technique ).set_render_index( 0 );
-    Material* material_depth_pre_pass = renderer->create_material( material_creation );
-
-    glTF::glTF& gltf_scene = scene.gltf_scene;
-
-    mesh_instances.init( resident_allocator, 16 );
-
-    // Copy all mesh draws and change only material.
-    for ( u32 i = 0; i < scene.meshes.size; ++i ) {
-
-        // Skip transparent meshes
-        Mesh* mesh = &scene.meshes[ i ];
-        if ( !mesh->is_transparent() ) {
-            continue;
-        }
-
-        MeshInstance mesh_instance{};
-        mesh_instance.mesh = mesh;
-        mesh_instance.material_pass_index = 4;
-
-        mesh_instances.push( mesh_instance );
-    }
-}
-
-void TransparentPass::free_gpu_resources() {
-    GpuDevice& gpu = *renderer->gpu;
-
-    mesh_instances.shutdown();
-}
-
-//
-// DoFPass ////////////////////////////////////////////////////////////////
-void DoFPass::add_ui() {
-    ImGui::InputFloat( "Focal Length", &focal_length);
-    ImGui::InputFloat( "Plane in Focus", &plane_in_focus);
-    ImGui::InputFloat( "Aperture", &aperture);
-}
-
-void DoFPass::pre_render( CommandBuffer* gpu_commands, RenderScene* render_scene ) {
-    glTFScene* scene = ( glTFScene* )render_scene;
-
-    FrameGraphResource* texture = ( FrameGraphResource* )scene->frame_graph->get_resource( "lighting" );
-    RASSERT ( texture != nullptr );
-
-    gpu_commands->copy_texture( texture->resource_info.texture.texture, RESOURCE_STATE_RENDER_TARGET, scene_mips->handle, RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
-}
-
-void DoFPass::render( CommandBuffer* gpu_commands, RenderScene* render_scene ) {
-    glTFScene* scene = ( glTFScene* )render_scene;
-
-    PipelineHandle pipeline = renderer->get_pipeline( mesh.pbr_material.material, 0 );
-
-    gpu_commands->bind_pipeline( pipeline );
-    gpu_commands->bind_vertex_buffer( mesh.position_buffer, 0, 0 );
-    gpu_commands->bind_descriptor_set( &mesh.pbr_material.descriptor_set, 1, nullptr, 0 );
-
-    gpu_commands->draw( TopologyType::Triangle, 0, 3, 0, 1 );
-}
-
-//TODO:
-static TextureCreation dof_scene_tc;
-
-void DoFPass::on_resize( GpuDevice& gpu, u32 new_width, u32 new_height ) {
-
-    u32 w = new_width;
-    u32 h = new_height;
-
-    u32 mips = 1;
-    while ( w > 1 && h > 1 ) {
-        w /= 2;
-        h /= 2;
-        mips++;
-    }
-
-    // Destroy scene mips
-    renderer->destroy_texture( scene_mips );
-
-    // Reuse cached texture creation and create new scene mips.
-    dof_scene_tc.set_flags( mips, 0 ).set_size( new_width, new_height, 1 );
-    scene_mips = renderer->create_texture( dof_scene_tc );
-
-    mesh.pbr_material.diffuse_texture_index = scene_mips->handle.index;
-}
-
-void DoFPass::prepare_draws( glTFScene& scene, FrameGraph* frame_graph, Allocator* resident_allocator, StackAllocator* scratch_allocator ) {
-    renderer = scene.renderer;
-
-    FrameGraphNode* node = frame_graph->get_node( "depth_of_field_pass" );
-    if ( node == nullptr ) {
-        RASSERT( false );
-        return;
-    }
-
-    const u64 hashed_name = hash_calculate( "depth_of_field" );
-    GpuTechnique* main_technique = renderer->resource_cache.techniques.get( hashed_name );
-
-    MaterialCreation material_creation;
-
-    material_creation.set_name( "material_dof" ).set_technique( main_technique ).set_render_index( 0 );
-    Material* material_dof = renderer->create_material( material_creation );
-
-    BufferCreation buffer_creation;
-    buffer_creation.reset().set( VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, ResourceUsageType::Dynamic, sizeof( DoFData ) ).set_name( "dof_data" );
-    mesh.pbr_material.material_buffer = renderer->gpu->create_buffer( buffer_creation );
-
-    DescriptorSetCreation ds_creation{};
-    DescriptorSetLayoutHandle layout = renderer->gpu->get_descriptor_set_layout( main_technique->passes[ 0 ].pipeline, k_material_descriptor_set_index );
-    ds_creation.buffer( mesh.pbr_material.material_buffer, 0 ).set_layout( layout );
-    mesh.pbr_material.descriptor_set = renderer->gpu->create_descriptor_set( ds_creation );
-
-    BufferHandle fs_vb = renderer->gpu->get_fullscreen_vertex_buffer();
-    mesh.position_buffer = fs_vb;
-
-    FrameGraphResource* color_texture = frame_graph->access_resource( node->inputs[ 0 ] );
-    FrameGraphResource* depth_texture_reference = frame_graph->access_resource( node->inputs[ 1 ] );
-
-    FrameGraphResource* depth_texture = frame_graph->get_resource( depth_texture_reference->name );
-    RASSERT( depth_texture != nullptr );
-
-    FrameGraphResourceInfo& info = color_texture->resource_info;
-    u32 w = info.texture.width;
-    u32 h = info.texture.height;
-
-    u32 mips = 1;
-    while ( w > 1 && h > 1) {
-        w /= 2;
-        h /= 2;
-        mips++;
-    }
-
-    dof_scene_tc.set_data( nullptr ).set_format_type( info.texture.format, TextureType::Texture2D ).set_flags( mips, 0 ).set_size( ( u16 )info.texture.width, ( u16 )info.texture.height, 1 ).set_name( "scene_mips" );
-    scene_mips = renderer->create_texture( dof_scene_tc );
-
-    mesh.pbr_material.diffuse_texture_index = scene_mips->handle.index;
-    mesh.pbr_material.roughness_texture_index = depth_texture->resource_info.texture.texture.index;
-    mesh.pbr_material.material = material_dof;
-
-    znear = 0.1f;
-    zfar = 1000.0f;
-    focal_length = 5.0f;
-    plane_in_focus = 1.0f;
-    aperture = 8.0f;
-}
-
-void DoFPass::upload_materials() {
-
-    MapBufferParameters cb_map = { mesh.pbr_material.material_buffer, 0, 0 };
-    DoFData* dof_data = ( DoFData* )renderer->gpu->map_buffer( cb_map );
-    if ( dof_data ) {
-        dof_data->textures[ 0 ] = mesh.pbr_material.diffuse_texture_index;
-        dof_data->textures[ 1 ] = mesh.pbr_material.roughness_texture_index;
-
-        dof_data->znear = znear;
-        dof_data->zfar = zfar;
-        dof_data->focal_length = focal_length;
-        dof_data->plane_in_focus = plane_in_focus;
-        dof_data->aperture = aperture;
-
-        renderer->gpu->unmap_buffer( cb_map );
-    }
-}
-
-void DoFPass::free_gpu_resources() {
-    GpuDevice& gpu = *renderer->gpu;
-
-    renderer->destroy_texture( scene_mips );
-    gpu.destroy_buffer( mesh.pbr_material.material_buffer );
-    gpu.destroy_descriptor_set( mesh.pbr_material.descriptor_set );
-}
-
 //
 // glTFScene //////////////////////////////////////////////////////////////
-void glTFScene::draw_mesh( CommandBuffer* gpu_commands, Mesh& mesh ) {
 
-    gpu_commands->bind_vertex_buffer( mesh.position_buffer, 0, mesh.position_offset );
-    gpu_commands->bind_vertex_buffer( mesh.tangent_buffer, 1, mesh.tangent_offset );
-    gpu_commands->bind_vertex_buffer( mesh.normal_buffer, 2, mesh.normal_offset );
-    gpu_commands->bind_vertex_buffer( mesh.texcoord_buffer, 3, mesh.texcoord_offset );
-    gpu_commands->bind_index_buffer( mesh.index_buffer, mesh.index_offset, mesh.index_type );
-
-    if ( recreate_per_thread_descriptors ) {
-        DescriptorSetCreation ds_creation{};
-        ds_creation.buffer( scene_cb, 0 ).buffer( mesh.pbr_material.material_buffer, 1 );
-        DescriptorSetHandle descriptor_set = renderer->create_descriptor_set( gpu_commands, mesh.pbr_material.material, ds_creation );
-
-        gpu_commands->bind_local_descriptor_set( &descriptor_set, 1, nullptr, 0 );
-    }
-    else {
-        gpu_commands->bind_descriptor_set( &mesh.pbr_material.descriptor_set, 1, nullptr, 0 );
-    }
-
-    gpu_commands->draw_indexed( TopologyType::Triangle, mesh.primitive_count, 1, 0, 0, 0 );
-}
-
-void glTFScene::get_mesh_vertex_buffer( i32 accessor_index, BufferHandle& out_buffer_handle, u32& out_buffer_offset ) {
+void glTFScene::get_mesh_vertex_buffer( i32 accessor_index, u32 flag, BufferHandle& out_buffer_handle, u32& out_buffer_offset, u32& out_flags ) {
     if ( accessor_index != -1 ) {
         glTF::Accessor& buffer_accessor = gltf_scene.accessors[ accessor_index ];
         glTF::BufferView& buffer_view = gltf_scene.buffer_views[ buffer_accessor.buffer_view ];
-        BufferResource& buffer_gpu = buffers[ buffer_accessor.buffer_view ];
+        BufferResource& buffer_gpu = buffers[ buffer_view.buffer ];
 
         out_buffer_handle = buffer_gpu.handle;
-        out_buffer_offset = buffer_accessor.byte_offset == glTF::INVALID_INT_VALUE ? 0 : buffer_accessor.byte_offset;
+        out_buffer_offset = glTF::get_data_offset( buffer_accessor.byte_offset, buffer_view.byte_offset );
+
+        out_flags |= flag;
     }
 }
 
@@ -519,7 +44,9 @@ void glTFScene::fill_pbr_material( Renderer& renderer, glTF::Material& material,
     if ( material.alpha_mode.data != nullptr && strcmp( material.alpha_mode.data, "MASK" ) == 0 ) {
         pbr_material.flags |= DrawFlags_AlphaMask;
     } else if ( material.alpha_mode.data != nullptr && strcmp( material.alpha_mode.data, "BLEND" ) == 0 ) {
+        // TODO: how to choose when using dithering and traditional blending ?
         pbr_material.flags |= DrawFlags_Transparent;
+        //pbr_material.flags |= DrawFlags_AlphaDither;
     }
 
     pbr_material.flags |= material.double_sided ? DrawFlags_DoubleSided : 0;
@@ -540,6 +67,18 @@ void glTFScene::fill_pbr_material( Renderer& renderer, glTF::Material& material,
 
         pbr_material.diffuse_texture_index = get_material_texture( gpu, material.pbr_metallic_roughness->base_color_texture );
         pbr_material.roughness_texture_index = get_material_texture( gpu, material.pbr_metallic_roughness->metallic_roughness_texture );
+    }
+
+    if ( material.emissive_texture != nullptr ) {
+        pbr_material.emissive_texture_index = get_material_texture( gpu, material.emissive_texture );
+    }
+
+    if ( material.emissive_factor_count != 0 ) {
+        RASSERT( material.emissive_factor_count == 3 );
+
+        memcpy( pbr_material.emissive_factor.raw, material.emissive_factor, sizeof( vec3s ) );
+    } else {
+        pbr_material.emissive_factor = { 0.0f, 0.0f, 0.0f };
     }
 
     pbr_material.occlusion_texture_index = get_material_texture( gpu, ( material.occlusion_texture != nullptr ) ? material.occlusion_texture->index : -1 );
@@ -583,7 +122,9 @@ u16 glTFScene::get_material_texture( GpuDevice& gpu, i32 gltf_texture_index ) {
     }
 }
 
-void glTFScene::init( cstring filename, cstring path, Allocator* resident_allocator, StackAllocator* temp_allocator, AsynchronousLoader* async_loader ) {
+void glTFScene::init( cstring filename, cstring path, Allocator* resident_allocator_, StackAllocator* temp_allocator, AsynchronousLoader* async_loader ) {
+
+    resident_allocator = resident_allocator_;
     renderer = async_loader->renderer;
     enki::TaskScheduler* task_scheduler = async_loader->task_scheduler;
     sizet temp_allocator_initial_marker = temp_allocator->get_marker();
@@ -601,8 +142,8 @@ void glTFScene::init( cstring filename, cstring path, Allocator* resident_alloca
     Array<TextureCreation> tcs;
     tcs.init( temp_allocator, gltf_scene.images_count, gltf_scene.images_count );
 
-    StringBuffer name_buffer;
-    name_buffer.init( 4096, temp_allocator );
+    StringBuffer temp_name_buffer;
+    temp_name_buffer.init( 4096, temp_allocator );
 
     for ( u32 image_index = 0; image_index < gltf_scene.images_count; ++image_index ) {
         glTF::Image& image = gltf_scene.images[ image_index ];
@@ -632,15 +173,17 @@ void glTFScene::init( cstring filename, cstring path, Allocator* resident_alloca
         images.push( *tr );
 
         // Reconstruct file path
-        char* full_filename = name_buffer.append_use_f( "%s%s", path, image.uri.data );
+        char* full_filename = temp_name_buffer.append_use_f( "%s%s", path, image.uri.data );
         async_loader->request_texture_data( full_filename, tr->handle );
         // Reset name buffer
-        name_buffer.clear();
+        temp_name_buffer.clear();
     }
 
     i64 end_loading_textures_files = time_now();
 
     i64 end_creating_textures = time_now();
+
+    names_buffer.init( rkilo( 64 ), resident_allocator );
 
     // Load all samplers
     samplers.init( resident_allocator, gltf_scene.samplers_count );
@@ -648,7 +191,7 @@ void glTFScene::init( cstring filename, cstring path, Allocator* resident_alloca
     for ( u32 sampler_index = 0; sampler_index < gltf_scene.samplers_count; ++sampler_index ) {
         glTF::Sampler& sampler = gltf_scene.samplers[ sampler_index ];
 
-        char* sampler_name = name_buffer.append_use_f( "sampler_%u", sampler_index );
+        char* sampler_name = names_buffer.append_use_f( "sampler_%u", sampler_index );
 
         SamplerCreation creation;
         switch ( sampler.min_filter ) {
@@ -728,30 +271,147 @@ void glTFScene::init( cstring filename, cstring path, Allocator* resident_alloca
     // Load all buffers and initialize them with buffer data
     buffers.init( resident_allocator, gltf_scene.buffer_views_count );
 
-    for ( u32 buffer_index = 0; buffer_index < gltf_scene.buffer_views_count; ++buffer_index ) {
-        glTF::BufferView& buffer = gltf_scene.buffer_views[ buffer_index ];
+    for ( u32 buffer_index = 0; buffer_index < gltf_scene.buffers_count; ++buffer_index ) {
 
-        i32 offset = buffer.byte_offset;
-        if ( offset == glTF::INVALID_INT_VALUE ) {
-            offset = 0;
-        }
+        glTF::Buffer& buffer = gltf_scene.buffers[ buffer_index ];
 
-        u8* buffer_data = ( u8* )buffers_data[ buffer.buffer ] + offset;
-
-        // NOTE(marco): the target attribute of a BufferView is not mandatory, so we prepare for both uses
         VkBufferUsageFlags flags = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
 
-        char* buffer_name = buffer.name.data;
-        if ( buffer_name == nullptr ) {
-            buffer_name = name_buffer.append_use_f( "buffer_%u", buffer_index );
-        }
+        char* buffer_name = names_buffer.append_use_f( "buffer_%u", buffer_index );
 
+        u8* buffer_data = ( u8* )buffers_data[ buffer_index ];
         BufferResource* br = renderer->create_buffer( flags, ResourceUsageType::Immutable, buffer.byte_length, buffer_data, buffer_name );
-        RASSERT( br != nullptr );
-
         buffers.push( *br );
     }
 
+    // Before unloading buffer data, load animations
+    animations.init( resident_allocator, gltf_scene.animations_count );
+
+    for ( u32 animation_index = 0; animation_index < gltf_scene.animations_count; ++animation_index ) {
+        glTF::Animation& gltf_animation = gltf_scene.animations[ animation_index ];
+
+        Animation& animation = animations.push_use();
+        animation.time_start = FLT_MAX;
+        animation.time_end = -FLT_MAX;
+        animation.channels.init( resident_allocator, gltf_animation.channels_count, gltf_animation.channels_count );
+        for ( u32 channel_index = 0; channel_index < gltf_animation.channels_count; ++channel_index ) {
+
+            glTF::AnimationChannel& gltf_channel = gltf_animation.channels[ channel_index ];
+            AnimationChannel& channel = animation.channels[ channel_index ];
+
+            channel.sampler = gltf_channel.sampler;
+            channel.target_node = gltf_channel.target_node;
+            channel.target_type = (raptor::AnimationChannel::TargetType)gltf_channel.target_type;
+        }
+
+        animation.samplers.init( resident_allocator, gltf_animation.samplers_count, gltf_animation.samplers_count );
+        for ( u32 sampler_index = 0; sampler_index < gltf_animation.samplers_count; ++sampler_index ) {
+
+            glTF::AnimationSampler& gltf_sampler = gltf_animation.samplers[ sampler_index ];
+            AnimationSampler& sampler = animation.samplers[ sampler_index ];
+
+            sampler.interpolation_type = ( raptor::AnimationSampler::Interpolation )gltf_sampler.interpolation;
+
+            i32 key_frames_count = 0;
+
+            // Copy keyframe data
+            {
+                glTF::Accessor& buffer_accessor = gltf_scene.accessors[ gltf_sampler.input_keyframe_buffer_index ];
+                glTF::BufferView& buffer_view = gltf_scene.buffer_views[ buffer_accessor.buffer_view ];
+
+                i32 byte_offset = glTF::get_data_offset( buffer_accessor.byte_offset, buffer_view.byte_offset );
+
+                u8* buffer_data = ( u8* )buffers_data[ buffer_view.buffer ] + byte_offset;
+                sampler.key_frames.init( resident_allocator, buffer_accessor.count, buffer_accessor.count );
+
+                const f32* key_frames = ( const f32* )buffer_data;
+                for ( u32 i = 0; i < buffer_accessor.count; ++i ) {
+                    sampler.key_frames[ i ] = key_frames[ i ];
+
+                    animation.time_start = glm_min( animation.time_start, key_frames[ i ] );
+                    animation.time_end = glm_max( animation.time_end, key_frames[ i ] );
+                }
+
+                key_frames_count = buffer_accessor.count;
+            }
+            // Copy animation data
+            {
+                glTF::Accessor& buffer_accessor = gltf_scene.accessors[ gltf_sampler.output_keyframe_buffer_index ];
+                glTF::BufferView& buffer_view = gltf_scene.buffer_views[ buffer_accessor.buffer_view ];
+
+                i32 byte_offset = glTF::get_data_offset( buffer_accessor.byte_offset, buffer_view.byte_offset );
+
+                RASSERT( buffer_accessor.count == key_frames_count );
+
+                u8* buffer_data = ( u8* )buffers_data[ buffer_view.buffer ] + byte_offset;
+
+                sampler.data = (vec4s*)rallocaa( sizeof(vec4s) * buffer_accessor.count, resident_allocator, 16 );
+
+                switch ( buffer_accessor.type ) {
+                    case glTF::Accessor::Vec3:
+                    {
+                        const vec3s* animation_data = ( const vec3s* )buffer_data;
+                        for ( u32 i = 0; i < buffer_accessor.count; ++i ) {
+                            sampler.data[ i ] = glms_vec4( animation_data[ i ], 0.f );
+                        }
+                        break;
+                    }
+                    case glTF::Accessor::Vec4:
+                    {
+                        const f32* animation_data = ( const f32* )buffer_data;
+                        for ( u32 i = 0; i < buffer_accessor.count; ++i ) {
+                            sampler.data[ i ] = vec4s{ animation_data[ i * 4 ], animation_data[ i * 4 + 1 ], animation_data[ i * 4 + 2 ], animation_data[ i * 4 + 3 ] };
+                        }
+                        break;
+                    }
+                    default:
+                    {
+                        RASSERT( false );
+                        break;
+                    }
+                }
+
+            }
+        }
+
+        //rprint( "Done loading animation %f %f\n", animation.time_start, animation.time_end );
+    }
+
+    // Load skins
+    skins.init( resident_allocator, gltf_scene.skins_count );
+
+    for ( u32 si = 0; si < gltf_scene.skins_count; ++si ) {
+        glTF::Skin& gltf_skin = gltf_scene.skins[ si ];
+
+        Skin& skin = skins.push_use();
+        skin.skeleton_root_index = gltf_skin.skeleton_root_node_index;
+
+        // Copy joints
+        skin.joints.init( resident_allocator, gltf_skin.joints_count, gltf_skin.joints_count );
+        memory_copy( skin.joints.data, gltf_skin.joints, sizeof( i32 ) * gltf_skin.joints_count );
+
+        // Copy inverse bind matrices
+        glTF::Accessor& buffer_accessor = gltf_scene.accessors[ gltf_skin.inverse_bind_matrices_buffer_index ];
+        glTF::BufferView& buffer_view = gltf_scene.buffer_views[ buffer_accessor.buffer_view ];
+
+        i32 byte_offset = glTF::get_data_offset( buffer_accessor.byte_offset, buffer_view.byte_offset );
+
+        RASSERT( buffer_accessor.count == skin.joints.size );
+        skin.inverse_bind_matrices = ( mat4s* )rallocaa( sizeof( mat4s ) * buffer_accessor.count, resident_allocator, 16 );
+
+        u8* buffer_data = ( u8* )buffers_data[ buffer_view.buffer ] + byte_offset;
+        memory_copy( skin.inverse_bind_matrices, buffer_data, sizeof( mat4s ) * buffer_accessor.count );
+
+        // Create matrix ssbo.
+        // TODO: transforms use absolute indices, thus we need all nodes.
+        BufferCreation bc;
+        bc.reset().set( VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, ResourceUsageType::Dynamic, sizeof( mat4s ) * gltf_scene.nodes_count )
+                  .set_data( buffer_data ).set_name( "Skin ssbo" );
+
+        skin.joint_transforms = renderer->gpu->create_buffer( bc );
+    }
+
+    // Deallocate file-read buffer data
     for ( u32 buffer_index = 0; buffer_index < gltf_scene.buffers_count; ++buffer_index ) {
         void* buffer = buffers_data[ buffer_index ];
         resident_allocator->deallocate( buffer );
@@ -778,6 +438,31 @@ void glTFScene::init( cstring filename, cstring path, Allocator* resident_alloca
 void glTFScene::shutdown( Renderer* renderer ) {
     GpuDevice& gpu = *renderer->gpu;
 
+    // Unload animations
+    for ( u32 ai = 0; ai < animations.size; ++ai ) {
+        Animation& animation = animations[ ai ];
+        animation.channels.shutdown();
+
+        for ( u32 si = 0; si < animation.samplers.size; ++si ) {
+            AnimationSampler& sampler = animation.samplers[ si ];
+            sampler.key_frames.shutdown();
+            rfree( sampler.data, resident_allocator );
+        }
+        animation.samplers.shutdown();
+    }
+    animations.shutdown();
+
+    // Unload skins
+    for ( u32 si = 0; si < skins.size; ++si ) {
+        Skin& skin = skins[ si ];
+        skin.joints.shutdown();
+        rfree( skin.inverse_bind_matrices, resident_allocator );
+
+        renderer->gpu->destroy_buffer( skin.joint_transforms );
+    }
+    skins.shutdown();
+
+    // Unload meshes
     for ( u32 mesh_index = 0; mesh_index < meshes.size; ++mesh_index ) {
         Mesh& mesh = meshes[ mesh_index ];
 
@@ -785,7 +470,6 @@ void glTFScene::shutdown( Renderer* renderer ) {
         gpu.destroy_descriptor_set( mesh.pbr_material.descriptor_set );
     }
 
-    gpu.destroy_descriptor_set( fullscreen_ds );
     gpu.destroy_buffer( scene_cb );
 
     for ( u32 i = 0; i < images.size; ++i) {
@@ -802,11 +486,7 @@ void glTFScene::shutdown( Renderer* renderer ) {
 
     meshes.shutdown();
 
-    depth_pre_pass.free_gpu_resources();
-    gbuffer_pass.free_gpu_resources();
-    light_pass.free_gpu_resources();
-    transparent_pass.free_gpu_resources();
-    dof_pass.free_gpu_resources();
+    names_buffer.shutdown();
 
     // Free scene buffers
     samplers.shutdown();
@@ -816,16 +496,6 @@ void glTFScene::shutdown( Renderer* renderer ) {
     // NOTE(marco): we can't destroy this sooner as textures and buffers
     // hold a pointer to the names stored here
     gltf_free( gltf_scene );
-}
-
-void glTFScene::register_render_passes( FrameGraph* frame_graph_ ) {
-    frame_graph = frame_graph_;
-
-    frame_graph->builder->register_render_pass( "depth_pre_pass", &depth_pre_pass );
-    frame_graph->builder->register_render_pass( "gbuffer_pass", &gbuffer_pass );
-    frame_graph->builder->register_render_pass( "lighting_pass", &light_pass );
-    frame_graph->builder->register_render_pass( "transparent_pass", &transparent_pass );
-    frame_graph->builder->register_render_pass( "depth_of_field_pass", &dof_pass );
 }
 
 void glTFScene::prepare_draws( Renderer* renderer, StackAllocator* scratch_allocator, SceneGraph* scene_graph_ ) {
@@ -907,22 +577,27 @@ void glTFScene::prepare_draws( Renderer* renderer, StackAllocator* scratch_alloc
                 RASSERT( node.scale_count == 3 );
                 node_scale = vec3s{ node.scale[ 0 ], node.scale[ 1 ], node.scale[ 2 ] };
             }
-            mat4s scale_matrix = glms_scale_make( node_scale );
 
-            vec3s translation{ 0.f, 0.f, 0.f };
+            vec3s node_translation{ 0.f, 0.f, 0.f };
             if ( node.translation_count ) {
                 RASSERT( node.translation_count == 3 );
-                translation = vec3s{ node.translation[ 0 ], node.translation[ 1 ], node.translation[ 2 ] };
+                node_translation = vec3s{ node.translation[ 0 ], node.translation[ 1 ], node.translation[ 2 ] };
             }
-            mat4s translation_matrix = glms_translate_make( translation );
+
             // Rotation is written as a plain quaternion
-            versors rotation = glms_quat_identity();
+            versors node_rotation = glms_quat_identity();
             if ( node.rotation_count ) {
                 RASSERT( node.rotation_count == 4 );
-                rotation = glms_quat_init( node.rotation[ 0 ], node.rotation[ 1 ], node.rotation[ 2 ], node.rotation[ 3 ] );
+                node_rotation = glms_quat_init( node.rotation[ 0 ], node.rotation[ 1 ], node.rotation[ 2 ], node.rotation[ 3 ] );
             }
+
+            Transform transform;
+            transform.translation = node_translation;
+            transform.scale = node_scale;
+            transform.rotation = node_rotation;
+
             // Final SRT composition
-            const mat4s local_matrix = glms_mat4_mul( glms_mat4_mul( scale_matrix, glms_quat_mat4( rotation ) ), translation_matrix );
+            const mat4s local_matrix = transform.calculate_matrix();
             scene_graph->set_local_matrix( node_index, local_matrix );
         }
 
@@ -939,10 +614,14 @@ void glTFScene::prepare_draws( Renderer* renderer, StackAllocator* scratch_alloc
             }
         }
 
+        // Cache node name
+        scene_graph->set_debug_data( node_index, node.name.data );
+
         if ( node.mesh == glTF::INVALID_INT_VALUE ) {
             continue;
         }
 
+        // Start mesh part
         glTF::Mesh& gltf_mesh = gltf_scene.meshes[ node.mesh ];
 
         // Gltf primitives are conceptually submeshes.
@@ -953,15 +632,31 @@ void glTFScene::prepare_draws( Renderer* renderer, StackAllocator* scratch_alloc
 
             glTF::MeshPrimitive& mesh_primitive = gltf_mesh.primitives[ primitive_index ];
 
+            // Load material defaults: flags is modified after this point.
+            mesh.pbr_material = {};
+
             const i32 position_accessor_index = gltf_get_attribute_accessor_index( mesh_primitive.attributes, mesh_primitive.attribute_count, "POSITION" );
             const i32 tangent_accessor_index = gltf_get_attribute_accessor_index( mesh_primitive.attributes, mesh_primitive.attribute_count, "TANGENT" );
             const i32 normal_accessor_index = gltf_get_attribute_accessor_index( mesh_primitive.attributes, mesh_primitive.attribute_count, "NORMAL" );
             const i32 texcoord_accessor_index = gltf_get_attribute_accessor_index( mesh_primitive.attributes, mesh_primitive.attribute_count, "TEXCOORD_0" );
 
-            get_mesh_vertex_buffer( position_accessor_index, mesh.position_buffer, mesh.position_offset );
-            get_mesh_vertex_buffer( tangent_accessor_index, mesh.tangent_buffer, mesh.tangent_offset );
-            get_mesh_vertex_buffer( normal_accessor_index, mesh.normal_buffer, mesh.normal_offset );
-            get_mesh_vertex_buffer( texcoord_accessor_index, mesh.texcoord_buffer, mesh.texcoord_offset );
+            get_mesh_vertex_buffer( position_accessor_index, 0, mesh.position_buffer, mesh.position_offset, mesh.pbr_material.flags );
+            get_mesh_vertex_buffer( tangent_accessor_index, DrawFlags_HasTangents, mesh.tangent_buffer, mesh.tangent_offset, mesh.pbr_material.flags );
+            get_mesh_vertex_buffer( normal_accessor_index, DrawFlags_HasNormals, mesh.normal_buffer, mesh.normal_offset, mesh.pbr_material.flags );
+            get_mesh_vertex_buffer( texcoord_accessor_index, DrawFlags_HasTexCoords, mesh.texcoord_buffer, mesh.texcoord_offset, mesh.pbr_material.flags );
+
+            // Read skinning data
+            mesh.skin_index = i32_max;
+            if ( node.skin != glTF::INVALID_INT_VALUE ) {
+                RASSERT( node.skin < skins.size );
+                const i32 joints_accessor_index = gltf_get_attribute_accessor_index( mesh_primitive.attributes, mesh_primitive.attribute_count, "JOINTS_0" );
+                const i32 weights_accessor_index = gltf_get_attribute_accessor_index( mesh_primitive.attributes, mesh_primitive.attribute_count, "WEIGHTS_0" );
+
+                get_mesh_vertex_buffer( joints_accessor_index, DrawFlags_HasJoints, mesh.joints_buffer, mesh.joints_offset, mesh.pbr_material.flags );
+                get_mesh_vertex_buffer( weights_accessor_index, DrawFlags_HasWeights, mesh.weights_buffer, mesh.weights_offset, mesh.pbr_material.flags );
+
+                mesh.skin_index = node.skin;
+            }
 
             // Create index buffer
             glTF::Accessor& indices_accessor = gltf_scene.accessors[ mesh_primitive.indices ];
@@ -969,14 +664,16 @@ void glTFScene::prepare_draws( Renderer* renderer, StackAllocator* scratch_alloc
             mesh.index_type = ( indices_accessor.component_type == glTF::Accessor::ComponentType::UNSIGNED_SHORT ) ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32;
 
             glTF::BufferView& indices_buffer_view = gltf_scene.buffer_views[ indices_accessor.buffer_view ];
-            BufferResource& indices_buffer_gpu = buffers[ indices_accessor.buffer_view ];
+            BufferResource& indices_buffer_gpu = buffers[ indices_buffer_view.buffer ];
             mesh.index_buffer = indices_buffer_gpu.handle;
-            mesh.index_offset = indices_accessor.byte_offset == glTF::INVALID_INT_VALUE ? 0 : indices_accessor.byte_offset;
+            mesh.index_offset = glTF::get_data_offset( indices_accessor.byte_offset, indices_buffer_view.byte_offset );
             mesh.primitive_count = indices_accessor.count;
 
-            // Read pbr material data
-            glTF::Material& material = gltf_scene.materials[ mesh_primitive.material ];
-            fill_pbr_material( *renderer, material, mesh.pbr_material );
+            // Read pbr material data if present
+            if ( mesh_primitive.material != glTF::INVALID_INT_VALUE ) {
+                glTF::Material& material = gltf_scene.materials[ mesh_primitive.material ];
+                fill_pbr_material( *renderer, material, mesh.pbr_material );
+            }
 
             // Create material buffer
             BufferCreation buffer_creation;
@@ -984,8 +681,20 @@ void glTFScene::prepare_draws( Renderer* renderer, StackAllocator* scratch_alloc
             mesh.pbr_material.material_buffer = renderer->gpu->create_buffer( buffer_creation );
 
             DescriptorSetCreation ds_creation{};
-            DescriptorSetLayoutHandle layout = renderer->gpu->get_descriptor_set_layout( main_technique->passes[ 3 ].pipeline, k_material_descriptor_set_index );
-            ds_creation.buffer( scene_cb, 0 ).buffer( mesh.pbr_material.material_buffer, 1 ).set_layout( layout );
+            u32 pass_index = 0;
+            if ( mesh.has_skinning() ) {
+                pass_index = main_technique->name_hash_to_index.get( hash_calculate( "transparent_skinning_no_cull" ) );
+            }
+            else {
+                pass_index = main_technique->name_hash_to_index.get( hash_calculate( "transparent_no_cull" ) );
+            }
+
+            DescriptorSetLayoutHandle layout = renderer->gpu->get_descriptor_set_layout( main_technique->passes[ pass_index ].pipeline, k_material_descriptor_set_index );
+            ds_creation.buffer( scene_cb, 0 ).buffer( mesh.pbr_material.material_buffer, 2 ).set_layout(layout);
+
+            if ( mesh.has_skinning() ) {
+                ds_creation.buffer( skins[ mesh.skin_index ].joint_transforms, 3 );
+            }
             mesh.pbr_material.descriptor_set = renderer->gpu->create_descriptor_set( ds_creation );
 
             mesh.pbr_material.material = pbr_material;
@@ -994,125 +703,9 @@ void glTFScene::prepare_draws( Renderer* renderer, StackAllocator* scratch_alloc
         }
     }
 
-    qsort( meshes.data, meshes.size, sizeof( Mesh ), gltf_mesh_material_compare );
+    //qsort( meshes.data, meshes.size, sizeof( Mesh ), gltf_mesh_material_compare );
 
     scratch_allocator->free_marker( cached_scratch_size );
-
-    depth_pre_pass.prepare_draws( *this, frame_graph, renderer->gpu->allocator, scratch_allocator );
-    gbuffer_pass.prepare_draws( *this, frame_graph, renderer->gpu->allocator, scratch_allocator );
-    light_pass.prepare_draws( *this, frame_graph, renderer->gpu->allocator, scratch_allocator );
-    transparent_pass.prepare_draws( *this, frame_graph, renderer->gpu->allocator, scratch_allocator );
-    dof_pass.prepare_draws( *this, frame_graph, renderer->gpu->allocator, scratch_allocator );
-
-    // Handle fullscreen pass.
-    fullscreen_tech = renderer->resource_cache.techniques.get( hash_calculate( "fullscreen" ) );
-
-    DescriptorSetCreation dsc;
-    DescriptorSetLayoutHandle descriptor_set_layout = renderer->gpu->get_descriptor_set_layout( fullscreen_tech->passes[ 0 ].pipeline, k_material_descriptor_set_index );
-    dsc.reset().buffer( scene_cb, 0 ).set_layout( descriptor_set_layout );
-    fullscreen_ds = renderer->gpu->create_descriptor_set( dsc );
-
-    FrameGraphResource* texture = frame_graph->get_resource( "final" );
-    if ( texture != nullptr ) {
-        fullscreen_input_rt = texture->resource_info.texture.texture.index;
-    }
-}
-
-void glTFScene::upload_materials() {
-    // Update per mesh material buffer
-    for ( u32 mesh_index = 0; mesh_index < meshes.size; ++mesh_index ) {
-        Mesh& mesh = meshes[ mesh_index ];
-
-        MapBufferParameters cb_map = { mesh.pbr_material.material_buffer, 0, 0 };
-        GpuMeshData* mesh_data = ( GpuMeshData* )renderer->gpu->map_buffer( cb_map );
-        if ( mesh_data ) {
-            copy_gpu_material_data( *mesh_data, mesh );
-            copy_gpu_mesh_matrix( *mesh_data, mesh, global_scale, scene_graph );
-
-            renderer->gpu->unmap_buffer( cb_map );
-        }
-    }
-
-    light_pass.upload_materials();
-    dof_pass.upload_materials();
-}
-
-void glTFScene::submit_draw_task( ImGuiService* imgui, GPUProfiler* gpu_profiler, enki::TaskScheduler* task_scheduler ) {
-    glTFDrawTask draw_task;
-    draw_task.init( renderer->gpu, frame_graph, renderer, imgui, gpu_profiler, this );
-    task_scheduler->AddTaskSetToPipe( &draw_task );
-    task_scheduler->WaitforTaskSet( &draw_task );
-
-    // Avoid using the same command buffer
-    renderer->add_texture_update_commands( ( draw_task.thread_id + 1 ) % task_scheduler->GetNumTaskThreads() );
-}
-
-// glTFDrawTask ///////////////////////////////////////////////////////////
-void glTFDrawTask::init( GpuDevice* gpu_, FrameGraph* frame_graph_, Renderer* renderer_,
-                         ImGuiService* imgui_, GPUProfiler* gpu_profiler_, glTFScene* scene_ ) {
-    gpu = gpu_;
-    frame_graph = frame_graph_;
-    renderer = renderer_;
-    imgui = imgui_;
-    gpu_profiler = gpu_profiler_;
-    scene = scene_;
-}
-
-void glTFDrawTask::ExecuteRange( enki::TaskSetPartition range_, uint32_t threadnum_ ) {
-    ZoneScoped;
-
-    using namespace raptor;
-
-    thread_id = threadnum_;
-
-    //rprint( "Executing draw task from thread %u\n", threadnum_ );
-    // TODO: improve getting a command buffer/pool
-    CommandBuffer* gpu_commands = gpu->get_command_buffer( threadnum_, true );
-    gpu_commands->push_marker( "Frame" );
-
-    frame_graph->render( gpu_commands, scene );
-
-    gpu_commands->push_marker( "Fullscreen" );
-    gpu_commands->clear( 0.3f, 0.3f, 0.3f, 1.f );
-    gpu_commands->clear_depth_stencil( 1.0f, 0 );
-    gpu_commands->bind_pass( gpu->get_swapchain_pass(), gpu->get_current_framebuffer(), false );
-    gpu_commands->set_scissor( nullptr );
-    gpu_commands->set_viewport( nullptr );
-
-    // TODO: add global switch
-    if ( false ) {
-        Material* last_material = nullptr;
-        // TODO(marco): loop by material so that we can deal with multiple passes
-        for ( u32 mesh_index = 0; mesh_index < scene->meshes.size; ++mesh_index ) {
-            Mesh& mesh = scene->meshes[ mesh_index ];
-
-            if ( mesh.pbr_material.material != last_material ) {
-                PipelineHandle pipeline = renderer->get_pipeline( mesh.pbr_material.material, 3 );
-
-                gpu_commands->bind_pipeline( pipeline );
-
-                last_material = mesh.pbr_material.material;
-            }
-
-            scene->draw_mesh( gpu_commands, mesh );
-        }
-    }
-    else {
-        // Apply fullscreen material
-        gpu_commands->bind_pipeline( scene->fullscreen_tech->passes[ 0 ].pipeline );
-        gpu_commands->bind_descriptor_set( &scene->fullscreen_ds, 1, nullptr, 0 );
-        gpu_commands->draw( TopologyType::Triangle, 0, 3, scene->fullscreen_input_rt, 1 );
-    }
-
-    imgui->render( *gpu_commands, false );
-
-    gpu_commands->pop_marker(); // Fullscreen marker
-    gpu_commands->pop_marker(); // Frame marker
-
-    gpu_profiler->update( *gpu );
-
-    // Send commands to GPU
-    gpu->queue_command_buffer( gpu_commands );
 }
 
 } // namespace raptor

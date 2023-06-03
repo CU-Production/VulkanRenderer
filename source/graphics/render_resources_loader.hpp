@@ -13,8 +13,8 @@ namespace raptor {
         void            init( raptor::Renderer* renderer, raptor::StackAllocator* temp_allocator, raptor::FrameGraph* frame_graph );
         void            shutdown();
 
-        void            load_gpu_technique( cstring json_path );
-        void            load_texture( cstring path );
+        GpuTechnique*   load_gpu_technique( cstring json_path );
+        TextureResource* load_texture( cstring path, bool generate_mipmaps = true );
 
         Renderer*       renderer;
         FrameGraph*     frame_graph;

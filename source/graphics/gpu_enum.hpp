@@ -532,6 +532,8 @@ typedef enum ResourceState {
     RESOURCE_STATE_SHADING_RATE_SOURCE = 0x8000,
 } ResourceState;
 
+static cstring ResourceStateName( ResourceState value );
+
 // TODO: Error enum?
 
 

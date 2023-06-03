@@ -63,7 +63,6 @@ static const char* g_vertex_shader_code_bindless = {
 
 static const char* g_fragment_shader_code = {
     "#version 450\n"
-    "#extension GL_EXT_nonuniform_qualifier : enable\n"
     "layout (location = 0) in vec2 Frag_UV;\n"
     "layout (location = 1) in vec4 Frag_Color;\n"
     "layout (location = 0) out vec4 Out_Color;\n"
@@ -154,6 +153,8 @@ void ImGuiService::init( void* configuration ) {
 
     pipeline_creation.vertex_input.add_vertex_stream( { 0, 20, VertexInputRate::PerVertex } );
     pipeline_creation.render_pass = gpu->get_swapchain_output();
+
+    pipeline_creation.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 
     DescriptorSetLayoutCreation descriptor_set_layout_creation{};
     if ( !gpu->bindless_supported ) {

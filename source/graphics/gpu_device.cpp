@@ -1,5 +1,6 @@
 #include "graphics/gpu_device.hpp"
 #include "graphics/command_buffer.hpp"
+#include "graphics/gpu_profiler.hpp"
 #include "graphics/spirv_parser.hpp"
 
 #include "foundation/memory.hpp"
@@ -98,6 +99,8 @@ static const char* s_requested_extensions[] = {
 static const char* s_requested_layers[] = {
 #if defined (VULKAN_DEBUG_REPORT)
     "VK_LAYER_KHRONOS_validation",
+    //"VK_LAYER_AMD_switchable_graphics",
+    //"VK_LAYER_NV_optimus",
     //"VK_LAYER_LUNARG_core_validation",
     //"VK_LAYER_LUNARG_image",
     //"VK_LAYER_LUNARG_parameter_validation",
@@ -146,9 +149,10 @@ static raptor::FlatHashMap<u64, VkRenderPass> render_pass_cache;
 static CommandBufferManager command_buffer_ring;
 
 static const u32        k_bindless_texture_binding = 10;
+static const u32        k_bindless_image_binding = 11;
 static const u32        k_max_bindless_resources = 1024;
 
-void GpuDevice::init( const DeviceCreation& creation ) {
+void GpuDevice::init( const GpuDeviceCreation& creation ) {
 
     rprint( "Gpu Device init\n" );
     // 1. Perform common code
@@ -161,6 +165,7 @@ void GpuDevice::init( const DeviceCreation& creation ) {
     VkResult result;
     vulkan_allocation_callbacks = nullptr;
 
+    // Using vk 1.3.0
     VkApplicationInfo application_info = { VK_STRUCTURE_TYPE_APPLICATION_INFO, nullptr, "Raptor Graphics Device", 1, "Raptor", 1, VK_MAKE_VERSION( 1, 3, 0 ) };
 
     VkInstanceCreateInfo create_info = { VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, nullptr, 0, &application_info,

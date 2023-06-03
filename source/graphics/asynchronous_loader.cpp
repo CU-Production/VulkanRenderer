@@ -22,7 +22,6 @@ void AsynchronousLoader::init( Renderer* renderer_, enki::TaskScheduler* task_sc
     texture_ready.index = k_invalid_texture.index;
     cpu_buffer_ready.index = k_invalid_buffer.index;
     gpu_buffer_ready.index = k_invalid_buffer.index;
-    completed = nullptr;
 
     using namespace raptor;
 
@@ -35,7 +34,7 @@ void AsynchronousLoader::init( Renderer* renderer_, enki::TaskScheduler* task_sc
 
     staging_buffer_offset = 0;
 
-    for ( u32 i = 0; i < GpuDevice::k_max_frames; ++i) {
+    for ( u32 i = 0; i < k_max_frames; ++i) {
         VkCommandPoolCreateInfo cmd_pool_info = { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, nullptr };
         cmd_pool_info.queueFamilyIndex = renderer->gpu->vulkan_transfer_queue_family;
         cmd_pool_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
@@ -68,7 +67,7 @@ void AsynchronousLoader::shutdown() {
     file_load_requests.shutdown();
     upload_requests.shutdown();
 
-    for ( u32 i = 0; i < GpuDevice::k_max_frames; ++i ) {
+    for ( u32 i = 0; i < k_max_frames; ++i ) {
         vkDestroyCommandPool( renderer->gpu->vulkan_device, command_pools[ i ], renderer->gpu->vulkan_allocation_callbacks );
         // Command buffers are destroyed with the pool associated.
     }
@@ -87,15 +86,15 @@ void AsynchronousLoader::update( Allocator* scratch_allocator ) {
         renderer->add_texture_to_update( texture_ready );
     }
 
-    if ( cpu_buffer_ready.index != k_invalid_buffer.index && cpu_buffer_ready.index != k_invalid_buffer.index ) {
-        RASSERT( completed != nullptr );
-        (*completed)++;
-
+    if ( cpu_buffer_ready.index != k_invalid_buffer.index && gpu_buffer_ready.index != k_invalid_buffer.index ) {
         // TODO(marco): free cpu buffer
+        renderer->gpu->destroy_buffer( cpu_buffer_ready );
+
+        Buffer* buffer = renderer->gpu->access_buffer( gpu_buffer_ready );
+        buffer->ready = true;
 
         gpu_buffer_ready.index = k_invalid_buffer.index;
         cpu_buffer_ready.index = k_invalid_buffer.index;
-        completed = nullptr;
     }
 
     texture_ready.index = k_invalid_texture.index;
@@ -168,10 +167,9 @@ void AsynchronousLoader::update( Allocator* scratch_allocator ) {
         else if ( request.cpu_buffer.index != k_invalid_buffer.index && request.gpu_buffer.index != k_invalid_buffer.index ) {
             RASSERT( cpu_buffer_ready.index == k_invalid_index );
             RASSERT( gpu_buffer_ready.index == k_invalid_index );
-            RASSERT( completed == nullptr );
+
             cpu_buffer_ready = request.cpu_buffer;
             gpu_buffer_ready = request.gpu_buffer;
-            completed = request.completed;
         }
         else if ( request.cpu_buffer.index != k_invalid_index ) {
             RASSERT( cpu_buffer_ready.index == k_invalid_index );
@@ -221,14 +219,16 @@ void AsynchronousLoader::request_buffer_upload( void* data, BufferHandle buffer 
     upload_request.texture = k_invalid_texture;
 }
 
-void AsynchronousLoader::request_buffer_copy( BufferHandle src, BufferHandle dst, u32* completed ) {
+void AsynchronousLoader::request_buffer_copy( BufferHandle src, BufferHandle dst ) {
 
     UploadRequest& upload_request = upload_requests.push_use();
-    upload_request.completed = completed;
     upload_request.data = nullptr;
     upload_request.cpu_buffer = src;
     upload_request.gpu_buffer = dst;
     upload_request.texture = k_invalid_texture;
+
+    Buffer* buffer = renderer->gpu->access_buffer( dst );
+    buffer->ready = false;
 }
 
 } // namespace raptor

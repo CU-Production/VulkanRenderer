@@ -28,7 +28,7 @@
 				{
 					"stage" : "fragment",
 					"shader" : "pbr.glsl",
-					"includes" : ["platform.h"]
+					"includes" : ["platform.h", "scene.h", "lighting.h"]
 				}
 			]
 		},
@@ -39,7 +39,7 @@
 				{
 					"stage" : "compute",
 					"shader" : "pbr.glsl",
-					"includes" : ["platform.h"]
+					"includes" : ["platform.h", "scene.h", "lighting.h"]
 				}
 			]
 		}

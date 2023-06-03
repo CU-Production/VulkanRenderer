@@ -44,20 +44,25 @@ struct FrameGraphResourceInfo {
             sizet                           size;
             VkBufferUsageFlags              flags;
 
-            BufferHandle                    buffer;
+            BufferHandle                    handle[ k_max_frames ];
         } buffer;
 
         struct {
             u32                             width;
             u32                             height;
             u32                             depth;
+            f32                             scale_width;
+            f32                             scale_height;
 
             VkFormat                        format;
             VkImageUsageFlags               flags;
 
             RenderPassOperation::Enum       load_op;
 
-            TextureHandle                   texture;
+            TextureHandle                   handle[ k_max_frames ];
+            f32                             clear_values[ 4 ];  // Reused between color or depth/stencil.
+
+            bool                            compute;
         } texture;
     };
 };
@@ -101,12 +106,13 @@ struct FrameGraphNodeCreation {
     bool                                    enabled;
 
     const char*                             name;
+    bool                                    compute;
 };
 
 struct FrameGraphRenderPass
 {
     virtual void                            add_ui() { }
-    virtual void                            pre_render( CommandBuffer* gpu_commands, RenderScene* render_scene ) { }
+    virtual void                            pre_render( u32 current_frame_index, CommandBuffer* gpu_commands, FrameGraph* frame_graph ) { }
     virtual void                            render( CommandBuffer* gpu_commands, RenderScene* render_scene ) { }
     virtual void                            on_resize( GpuDevice& gpu, u32 new_width, u32 new_height ) {}
 };
@@ -115,7 +121,7 @@ struct FrameGraphNode {
     i32                                     ref_count = 0;
 
     RenderPassHandle                        render_pass;
-    FramebufferHandle                       framebuffer;
+    FramebufferHandle                       framebuffer[ k_max_frames ];
 
     FrameGraphRenderPass*                   graph_render_pass;
 
@@ -124,9 +130,14 @@ struct FrameGraphNode {
 
     Array<FrameGraphNodeHandle>             edges;
 
-    bool                                    enabled = true;
+    f32                                     resolution_scale_width  = 0.f;
+    f32                                     resolution_scale_height = 0.f;
 
-    const char*                             name = nullptr;
+    bool                                    compute                 = false;
+    bool                                    ray_tracing             = false;
+    bool                                    enabled                 = true;
+
+    const char*                             name                    = nullptr;
 };
 
 struct FrameGraphRenderPassCache {
@@ -204,7 +215,7 @@ struct FrameGraph {
     void                            disable_render_pass( cstring render_pass_name );
     void                            compile();
     void                            add_ui();
-    void                            render( CommandBuffer* gpu_commands, RenderScene* render_scene );
+    void                            render( u32 current_frame_index, CommandBuffer* gpu_commands, RenderScene* render_scene );
     void                            on_resize( GpuDevice& gpu, u32 new_width, u32 new_height );
 
     FrameGraphNode*                 get_node( cstring name );
@@ -218,6 +229,7 @@ struct FrameGraph {
 
     // NOTE(marco): nodes sorted in topological order
     Array<FrameGraphNodeHandle>     nodes;
+    Array<FrameGraphNodeHandle>     all_nodes;
 
     FrameGraphBuilder*              builder;
     Allocator*                      allocator;

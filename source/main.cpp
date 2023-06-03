@@ -81,10 +81,10 @@ struct AsynchronousLoadTask : enki::IPinnedTask {
 //
 int main( int argc, char** argv ) {
 
-    if ( argc < 2 ) {
-        printf( "Usage: VulkanRenderer [path to glTF or obj model]\n");
-        InjectDefault3DModel();
-    }
+//    if ( argc < 2 ) {
+//        printf( "Usage: VulkanRenderer [path to glTF or obj model]\n");
+//        InjectDefault3DModel();
+//    }
 
     using namespace raptor;
     // Init services
@@ -118,7 +118,7 @@ int main( int argc, char** argv ) {
     window.register_os_messages_callback( input_os_messages_callback, &input );
 
     // graphics
-    DeviceCreation dc;
+    GpuDeviceCreation dc;
     dc.set_window( window.width, window.height, window.platform_handle ).set_allocator( allocator )
       .set_num_threads( task_scheduler.GetNumTaskThreads() ).set_linear_allocator( &scratch_allocator );
     GpuDevice gpu;
@@ -127,8 +127,8 @@ int main( int argc, char** argv ) {
     ResourceManager rm;
     rm.init( allocator, nullptr );
 
-    GPUProfiler gpu_profiler;
-    gpu_profiler.init( allocator, 100 );
+    GpuVisualProfiler gpu_profiler;
+    gpu_profiler.init( allocator, 100, dc.gpu_time_queries_per_frame );
 
     Renderer renderer;
     renderer.init( { &gpu, allocator } );
@@ -140,7 +140,7 @@ int main( int argc, char** argv ) {
 
     GameCamera game_camera;
     game_camera.camera.init_perpective( 0.1f, 1000.f, 60.f, wconf.width * 1.f / wconf.height );
-    game_camera.camera.position = vec3s{0, 0, -1};
+    //game_camera.camera.position = vec3s{0, 0, -1};
     game_camera.init( true, 20.f, 6.f, 0.1f );
 
     time_service_init();
@@ -152,19 +152,27 @@ int main( int argc, char** argv ) {
     frame_graph.init( &frame_graph_builder );
 
     RenderResourcesLoader render_resources_loader;
+    TextureResource* dither_texture = nullptr;
+
+    sizet scratch_marker = scratch_allocator.get_marker();
+
+    StringBuffer temporary_name_buffer;
+    temporary_name_buffer.init( 1024, &scratch_allocator );
 
     // Load frame graph and parse gpu techniques
     {
-        sizet scratch_marker = scratch_allocator.get_marker();
-
-        StringBuffer temporary_name_buffer;
-        temporary_name_buffer.init( 1024, &scratch_allocator );
         cstring frame_graph_path = temporary_name_buffer.append_use_f( "%s/%s", RAPTOR_WORKING_FOLDER, "graph.json" );
 
         frame_graph.parse( frame_graph_path, &scratch_allocator );
         frame_graph.compile();
 
         render_resources_loader.init( &renderer, &scratch_allocator, &frame_graph );
+
+        // TODO: add this to render graph itself.
+        // Add utility textures (dithering, ...)
+        temporary_name_buffer.clear();
+        cstring dither_texture_path = temporary_name_buffer.append_use_f( "%s/BayerDither4x4.png", RAPTOR_DATA_FOLDER );
+        dither_texture = render_resources_loader.load_texture( dither_texture_path, false );
 
         // Parse techniques
         GpuTechniqueCreation gtc;
@@ -184,7 +192,14 @@ int main( int argc, char** argv ) {
         cstring dof_pipeline_path = temporary_name_buffer.append_use_f( "%s/%s", RAPTOR_SHADER_FOLDER, "dof.json" );
         render_resources_loader.load_gpu_technique( dof_pipeline_path );
 
-        scratch_allocator.free_marker( scratch_marker );
+        temporary_name_buffer.clear();
+        cstring cloth_pipeline_path = temporary_name_buffer.append_use_f( "%s/%s", RAPTOR_SHADER_FOLDER, "cloth.json" );
+        render_resources_loader.load_gpu_technique( cloth_pipeline_path );
+
+        temporary_name_buffer.clear();
+        cstring debug_pipeline_path = temporary_name_buffer.append_use_f( "%s/%s", RAPTOR_SHADER_FOLDER, "debug.json" );
+        render_resources_loader.load_gpu_technique( debug_pipeline_path );
+
     }
 
     SceneGraph scene_graph;
@@ -197,15 +212,26 @@ int main( int argc, char** argv ) {
     Directory cwd{ };
     directory_current(&cwd);
 
+    temporary_name_buffer.clear();
+    cstring scene_path = nullptr;
+    if ( argc > 1 && false ) {
+        scene_path = argv[ 1 ];
+    }
+    else {
+        scene_path = temporary_name_buffer.append_use_f( "%s/%s", RAPTOR_DATA_FOLDER, "plane.obj" );
+    }
+
     char file_base_path[512]{ };
-    memcpy( file_base_path, argv[ 1 ], strlen( argv[ 1] ) );
+    memcpy( file_base_path, scene_path, strlen( scene_path ) );
     file_directory_from_path( file_base_path );
 
     directory_change( file_base_path );
 
     char file_name[512]{ };
-    memcpy( file_name, argv[ 1 ], strlen( argv[ 1] ) );
+    memcpy( file_name, scene_path, strlen( scene_path ) );
     file_name_from_path( file_name );
+
+    scratch_allocator.free_marker( scratch_marker );
 
     RenderScene* scene = nullptr;
 
@@ -222,8 +248,9 @@ int main( int argc, char** argv ) {
     // NOTE(marco): restore working directory
     directory_change( cwd.path );
 
-    scene->register_render_passes( &frame_graph );
-    scene->prepare_draws( &renderer, &scratch_allocator, &scene_graph );
+    FrameRenderer frame_renderer;
+    frame_renderer.init( allocator, &renderer, &frame_graph, &scene_graph, scene );
+    frame_renderer.prepare_draws( &scratch_allocator );
 
     // Start multithreading IO
     // Create IO threads at the end
@@ -244,8 +271,14 @@ int main( int argc, char** argv ) {
 
     vec3s light_position = vec3s{ 0.0f, 4.0f, 0.0f };
 
-    float light_radius = 20.0f;
-    float light_intensity = 80.0f;
+    f32 light_radius = 20.0f;
+    f32 light_intensity = 80.0f;
+
+    f32 spring_stiffness = 10000.0f;
+    f32 spring_damping = 5000.0f;
+    f32 air_density = 10.0f;
+    bool reset_simulation = false;
+    vec3s wind_direction{ -5.0f, 0.0f, 0.0f };
 
     while ( !window.requested_exit ) {
         ZoneScopedN("RenderLoop");
@@ -265,7 +298,7 @@ int main( int argc, char** argv ) {
         input.new_frame();
 
         if ( window.resized ) {
-            gpu.resize( window.width, window.height );
+            renderer.resize_swapchain( window.width, window.height );
             window.resized = false;
             frame_graph.on_resize( gpu, window.width, window.height );
 
@@ -282,6 +315,8 @@ int main( int argc, char** argv ) {
         game_camera.update( &input, window.width, window.height, delta_time );
         window.center_mouse( game_camera.mouse_dragging );
 
+        static f32 animation_speed_multiplier = 0.05f;
+
         {
             ZoneScopedN( "ImGui Recording" );
 
@@ -293,8 +328,16 @@ int main( int argc, char** argv ) {
                 ImGui::InputFloat3( "Camera position", game_camera.camera.position.raw );
                 ImGui::InputFloat3( "Camera target movement", game_camera.target_movement.raw );
                 ImGui::Separator();
+                ImGui::InputFloat3( "Wind direction", wind_direction.raw );
+                ImGui::InputFloat( "Air density", &air_density );
+                ImGui::InputFloat( "Spring stiffness", &spring_stiffness );
+                ImGui::InputFloat( "Spring damping", &spring_damping );
+                ImGui::Checkbox( "Reset simulation", &reset_simulation );
+                ImGui::Separator();
                 ImGui::Checkbox( "Dynamically recreate descriptor sets", &recreate_per_thread_descriptors );
                 ImGui::Checkbox( "Use secondary command buffers", &use_secondary_command_buffers );
+
+                ImGui::SliderFloat( "Animation Speed Multiplier", &animation_speed_multiplier, 0.0f, 10.0f );
 
                 static bool fullscreen = false;
                 if ( ImGui::Checkbox( "Fullscreen", &fullscreen ) ) {
@@ -310,6 +353,35 @@ int main( int argc, char** argv ) {
             }
             ImGui::End();
 
+            if ( ImGui::Begin( "Scene" ) ) {
+
+                static u32 selected_node = u32_max;
+
+                ImGui::Text( "Selected node %u", selected_node );
+                if ( selected_node < scene_graph.nodes_hierarchy.size ) {
+
+                    mat4s& local_transform = scene_graph.local_matrices[ selected_node ];
+                    f32 position[ 3 ]{ local_transform.m30, local_transform.m31, local_transform.m32 };
+
+                    if ( ImGui::SliderFloat3( "Node Position", position, -100.0f, 100.0f ) ) {
+                        local_transform.m30 = position[ 0 ];
+                        local_transform.m31 = position[ 1 ];
+                        local_transform.m32 = position[ 2 ];
+
+                        scene_graph.set_local_matrix( selected_node, local_transform );
+                    }
+                    ImGui::Separator();
+                }
+
+                for ( u32 n = 0; n < scene_graph.nodes_hierarchy.size; ++n ) {
+                    const SceneGraphNodeDebugData& node_debug_data = scene_graph.nodes_debug_data[ n ];
+                    if ( ImGui::Selectable( node_debug_data.name ? node_debug_data.name : "-", n == selected_node) ) {
+                        selected_node = n;
+                    }
+                }
+            }
+            ImGui::End();
+
             if ( ImGui::Begin( "GPU" ) ) {
                 renderer.imgui_draw();
 
@@ -321,34 +393,56 @@ int main( int argc, char** argv ) {
 
         }
         {
+            ZoneScopedN( "AnimationsUpdate" );
+            scene->update_animations( delta_time * animation_speed_multiplier );
+        }
+        {
             ZoneScopedN( "SceneGraphUpdate" );
             scene_graph.update_matrices();
+        }
+        {
+            ZoneScopedN( "JointsUpdate" );
+            scene->update_joints();
         }
 
         {
             ZoneScopedN( "UniformBufferUpdate" );
 
             // Update scene constant buffer
-            MapBufferParameters cb_map = { scene->scene_cb, 0, 0 };
-            GpuSceneData* uniform_data = ( GpuSceneData* )gpu.map_buffer( cb_map );
-            if ( uniform_data ) {
-                uniform_data->view_projection = game_camera.camera.view_projection;
-                uniform_data->eye = vec4s{ game_camera.camera.position.x, game_camera.camera.position.y, game_camera.camera.position.z, 1.0f };
-                uniform_data->light_position = vec4s{ light_position.x, light_position.y, light_position.z, 1.0f };
-                uniform_data->light_range = light_radius;
-                uniform_data->light_intensity = light_intensity;
+            MapBufferParameters scene_cb_map = { scene->scene_cb, 0, 0 };
+            GpuSceneData* gpu_scene_data = ( GpuSceneData* )gpu.map_buffer( scene_cb_map );
+            if ( gpu_scene_data ) {
+                gpu_scene_data->view_projection = game_camera.camera.view_projection;
+                gpu_scene_data->inverse_view_projection = glms_mat4_inv( game_camera.camera.view_projection );
+                gpu_scene_data->eye = vec4s{ game_camera.camera.position.x, game_camera.camera.position.y, game_camera.camera.position.z, 1.0f };
+                gpu_scene_data->light_position = vec4s{ light_position.x, light_position.y, light_position.z, 1.0f };
+                gpu_scene_data->light_range = light_radius;
+                gpu_scene_data->light_intensity = light_intensity;
+                gpu_scene_data->dither_texture_index = dither_texture ? dither_texture->handle.index : 0;
 
-                gpu.unmap_buffer( cb_map );
+                gpu.unmap_buffer( scene_cb_map );
             }
 
-            scene->upload_materials(/* model_scale */);
+            frame_renderer.upload_gpu_data();
         }
 
         if ( !window.minimized ) {
+            DrawTask draw_task;
+            draw_task.init( renderer.gpu, &frame_graph, &renderer, imgui, &gpu_profiler, scene, &frame_renderer );
+            task_scheduler.AddTaskSetToPipe( &draw_task );
 
-            scene->submit_draw_task( imgui, &gpu_profiler, &task_scheduler );
+            CommandBuffer* async_compute_command_buffer = nullptr;
+            {
+                ZoneScopedN( "PhysicsUpdate" );
+                async_compute_command_buffer = scene->update_physics( delta_time, air_density, spring_stiffness, spring_damping, wind_direction, reset_simulation );
+                reset_simulation = false;
+            }
 
-            gpu.present();
+            task_scheduler.WaitforTaskSet( &draw_task );
+
+            // Avoid using the same command buffer
+            renderer.add_texture_update_commands( ( draw_task.thread_id + 1 ) % task_scheduler.GetNumTaskThreads() );
+            gpu.present( async_compute_command_buffer );
         } else {
             ImGui::Render();
         }

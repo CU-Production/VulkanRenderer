@@ -47,6 +47,7 @@ endif()
 target_compile_definitions(VulkanRenderer PRIVATE
     RAPTOR_WORKING_FOLDER="${CMAKE_CURRENT_SOURCE_DIR}"
     RAPTOR_SHADER_FOLDER="${CMAKE_CURRENT_SOURCE_DIR}/shaders/"
+    RAPTOR_DATA_FOLDER="${CMAKE_SOURCE_DIR}/binaries/data"
 )
 
 target_compile_definitions(VulkanRenderer PRIVATE

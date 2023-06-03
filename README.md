@@ -16,7 +16,14 @@
 
 # Features
 
-## 20230606
+## 20230603
+
+- [x] compute queue for async compute
+- [x] frame graph supports async compute
+- [x] timeline semaphore to simplify fence/semaphore multi queue sync
+- [x] cloth sim for async compute test
+
+## 20230602
 
 - [x] json based frame graph
 - [x] use [dynamic rendering](https://www.khronos.org/blog/streamlining-render-passes) to avoid using VkRenderPass

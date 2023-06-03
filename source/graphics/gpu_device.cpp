@@ -426,23 +426,31 @@ void GpuDevice::init( const GpuDeviceCreation& creation ) {
     VkPhysicalDeviceVulkan11Features vulkan_11_features{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES };
     void* current_pnext = &vulkan_11_features;
 
-    VkPhysicalDeviceDynamicRenderingFeatures dynamic_rendering_features{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES };
-    if ( dynamic_rendering_extension_present ) {
-        dynamic_rendering_features.pNext = current_pnext;
-        current_pnext = &dynamic_rendering_features;
-    }
+    VkPhysicalDeviceVulkan12Features vulkan_12_features{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES };
+    vulkan_12_features.pNext = current_pnext;
+    current_pnext = &vulkan_12_features;
 
-    VkPhysicalDeviceTimelineSemaphoreFeatures timeline_sempahore_features{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES };
-    if ( timeline_semaphore_extension_present ) {
-        timeline_sempahore_features.pNext = current_pnext;
-        current_pnext = &timeline_sempahore_features;
-    }
+    VkPhysicalDeviceVulkan13Features vulkan_13_features{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES };
+    vulkan_13_features.pNext = current_pnext;
+    current_pnext = &vulkan_13_features;
 
-    VkPhysicalDeviceSynchronization2Features synchronization2_features{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES };
-    if ( synchronization2_extension_present ) {
-        synchronization2_features.pNext = current_pnext;
-        current_pnext = &synchronization2_features;
-    }
+//    VkPhysicalDeviceDynamicRenderingFeatures dynamic_rendering_features{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES };
+//    if ( dynamic_rendering_extension_present ) {
+//        dynamic_rendering_features.pNext = current_pnext;
+//        current_pnext = &dynamic_rendering_features;
+//    }
+//
+//    VkPhysicalDeviceTimelineSemaphoreFeatures timeline_sempahore_features{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES };
+//    if ( timeline_semaphore_extension_present ) {
+//        timeline_sempahore_features.pNext = current_pnext;
+//        current_pnext = &timeline_sempahore_features;
+//    }
+//
+//    VkPhysicalDeviceSynchronization2Features synchronization2_features{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SYNCHRONIZATION_2_FEATURES };
+//    if ( synchronization2_extension_present ) {
+//        synchronization2_features.pNext = current_pnext;
+//        current_pnext = &synchronization2_features;
+//    }
 
     // [TAG: BINDLESS]
     // We also add the bindless needed feature on the device creation.

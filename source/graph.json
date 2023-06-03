@@ -17,29 +17,33 @@
                     "type": "attachment",
                     "name": "gbuffer_colour",
                     "format": "VK_FORMAT_B8G8R8A8_UNORM",
-                    "resolution": [ 1280, 800 ],
-                    "op": "VK_ATTACHMENT_LOAD_OP_CLEAR"
+                    "resolution_scale": [ 1.0, 1.0 ],
+                    "load_operation": "clear",
+                    "clear_color":[0.529, 0.807, 0.921, 1]
                 },
                 {
                     "type": "attachment",
                     "name": "gbuffer_normals",
-                    "format": "VK_FORMAT_R16G16B16A16_SFLOAT",
-                    "resolution": [ 1280, 800 ],
-                    "op": "VK_ATTACHMENT_LOAD_OP_CLEAR"
+                    "format": "VK_FORMAT_R16G16_SFLOAT",
+                    "resolution_scale": [ 1.0, 1.0 ],
+                    "load_operation": "clear",
+                    "clear_color":[0.3, 0.3, 0.3, 1]
                 },
                 {
                     "type": "attachment",
-                    "name": "gbuffer_metallic_roughness_occlusion",
+                    "name": "gbuffer_occlusion_roughness_metalness",
                     "format": "VK_FORMAT_B8G8R8A8_UNORM",
-                    "resolution": [ 1280, 800 ],
-                    "op": "VK_ATTACHMENT_LOAD_OP_CLEAR"
+                    "resolution_scale": [ 1.0, 1.0 ],
+                    "load_operation": "clear",
+                    "clear_color":[0.3, 0.3, 0.3, 1]
                 },
                 {
                     "type": "attachment",
-                    "name": "gbuffer_position",
+                    "name": "gbuffer_emissive",
                     "format": "VK_FORMAT_R16G16B16A16_SFLOAT",
-                    "resolution": [ 1280, 800 ],
-                    "op": "VK_ATTACHMENT_LOAD_OP_CLEAR"
+                    "resolution_scale": [ 1.0, 1.0 ],
+                    "load_operation": "clear",
+                    "clear_color":[0.0, 0.0, 0.0, 1]
                 }
             ]
         },
@@ -48,21 +52,14 @@
             [
                 {
                     "type": "attachment",
-                    "name": "lighting"
+                    "name": "final"
                 },
                 {
                     "type": "attachment",
                     "name": "depth"
                 }
             ],
-            "name": "transparent_pass",
-            "outputs":
-            [
-                {
-                    "type": "reference",
-                    "name": "lighting"
-                }
-            ]
+            "name": "transparent_pass"
         },
         {
             "inputs":
@@ -77,16 +74,28 @@
                 }
             ],
             "name": "depth_of_field_pass",
+            "enabled": false,
             "outputs":
             [
                 {
                     "type": "attachment",
                     "name": "final",
                     "format": "VK_FORMAT_B8G8R8A8_UNORM",
-                    "resolution": [ 1280, 800 ],
-                    "op": "VK_ATTACHMENT_LOAD_OP_CLEAR"
+                    "resolution_scale": [ 1.0, 1.0 ],
+                    "load_operation": "clear",
+                    "clear_color":[0, 0, 0, 1]
                 }
             ]
+        },
+        {
+            "inputs":
+            [
+                {
+                    "type": "attachment",
+                    "name": "final"
+                }
+            ],
+            "name": "debug_pass"
         },
         {
             "inputs":
@@ -101,22 +110,28 @@
                 },
                 {
                     "type": "texture",
-                    "name": "gbuffer_metallic_roughness_occlusion"
+                    "name": "gbuffer_occlusion_roughness_metalness"
                 },
                 {
                     "type": "texture",
-                    "name": "gbuffer_position"
+                    "name": "gbuffer_emissive"
+                },
+                {
+                    "type": "texture",
+                    "name": "depth"
                 }
             ],
             "name": "lighting_pass",
+            "type" : "compute",
             "outputs":
             [
                 {
                     "type": "attachment",
-                    "name": "lighting",
+                    "name": "final",
                     "format": "VK_FORMAT_B8G8R8A8_UNORM",
-                    "resolution": [ 1280, 800 ],
-                    "op": "VK_ATTACHMENT_LOAD_OP_CLEAR"
+                    "resolution_scale": [ 1.0, 1.0 ],
+                    "load_operation": "clear",
+                    "clear_color":[0, 0, 0, 1]
                 }
             ]
         },
@@ -129,8 +144,10 @@
                     "type": "attachment",
                     "name": "depth",
                     "format": "VK_FORMAT_D32_SFLOAT",
-                    "resolution": [ 1280, 800 ],
-                    "op": "VK_ATTACHMENT_LOAD_OP_CLEAR"
+                    "resolution_scale": [ 1.0, 1.0 ],
+                    "load_operation": "clear",
+                    "clear_depth" : 1.0,
+                    "clear_stencil" : 0
                 }
             ]
         }

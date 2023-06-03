@@ -348,19 +348,25 @@ void GpuDevice::init( const GpuDeviceCreation& creation ) {
 #endif // DEBUG
 
         // Search for main queue that should be able to do all work (graphics, compute and transfer)
-        if ( (queue_family.queueFlags & ( VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT  )) == ( VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT  ) && main_queue_family_index == u32_max ) {
+        if ( (queue_family.queueFlags & ( VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT  )) == ( VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT  ) ) {
             main_queue_family_index = fi;
+
+            if ( queue_family.queueCount > 1 ) {
+                compute_queue_family_index = fi;
+                compute_queue_index = 1;
+            }
+
             continue;
         }
 
         // Search for another compute queue if graphics queue exposes only one queue
-        if ( ( queue_family.queueFlags & VK_QUEUE_GRAPHICS_BIT ) == 0 && ( queue_family.queueFlags & VK_QUEUE_COMPUTE_BIT ) && compute_queue_index == u32_max ) {
+        if ( ( queue_family.queueFlags & VK_QUEUE_COMPUTE_BIT ) && compute_queue_index == u32_max ) {
             compute_queue_family_index = fi;
             compute_queue_index = 0;
         }
 
         // Search for transfer queue
-        if ( ( queue_family.queueFlags & VK_QUEUE_COMPUTE_BIT ) == 0 && (queue_family.queueFlags & VK_QUEUE_TRANSFER_BIT) && transfer_queue_family_index == u32_max ) {
+        if ( ( queue_family.queueFlags & VK_QUEUE_COMPUTE_BIT ) == 0 && (queue_family.queueFlags & VK_QUEUE_TRANSFER_BIT) ) {
             transfer_queue_family_index = fi;
             continue;
         }

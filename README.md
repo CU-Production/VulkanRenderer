@@ -23,6 +23,8 @@
 - [x] timeline semaphore to simplify fence/semaphore multi queue sync
 - [x] cloth sim for async compute test
 
+![async compute](screenshots/Snipaste_2023-06-03_11-50-50.png)
+
 ## 20230602
 
 - [x] json based frame graph

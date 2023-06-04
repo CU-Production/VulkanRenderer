@@ -4,8 +4,10 @@
 
 #include "graphics/gpu_enum.hpp"
 
-#include <vulkan/vulkan.h>
-#include "external/vk_mem_alloc.h"
+#include <vulkan/vulkan_core.h>
+
+VK_DEFINE_HANDLE( VmaAllocation )
+struct VmaBudget;
 
 namespace raptor {
 
@@ -63,7 +65,7 @@ struct RenderPassHandle {
 
 struct FramebufferHandle {
     ResourceHandle                  index;
-}; // struct PipelineHandle
+}; // struct FramebufferHandle
 
 // Invalid handles
 static BufferHandle                 k_invalid_buffer        { k_invalid_index };
@@ -75,7 +77,6 @@ static DescriptorSetHandle          k_invalid_set           { k_invalid_index };
 static PipelineHandle               k_invalid_pipeline      { k_invalid_index };
 static RenderPassHandle             k_invalid_pass          { k_invalid_index };
 static FramebufferHandle            k_invalid_framebuffer   { k_invalid_index };
-
 
 
 // Consts ///////////////////////////////////////////////////////////////////////
@@ -219,7 +220,7 @@ struct BufferCreation {
     u32                             device_only     = 0;
     void*                           initial_data    = nullptr;
 
-    const char*                     name            = nullptr;
+    cstring                         name            = nullptr;
 
     BufferCreation&                 reset();
     BufferCreation&                 set( VkBufferUsageFlags flags, ResourceUsageType::Enum usage, u32 size );
@@ -238,7 +239,8 @@ struct TextureCreation {
     u16                             width           = 1;
     u16                             height          = 1;
     u16                             depth           = 1;
-    u8                              mipmaps         = 1;
+    u16                             array_layer_count = 1;
+    u8                              mip_level_count = 1;
     u8                              flags           = 0;    // TextureFlags bitmasks
 
     VkFormat                        format          = VK_FORMAT_UNDEFINED;
@@ -246,12 +248,14 @@ struct TextureCreation {
 
     TextureHandle                   alias           = k_invalid_texture;
 
-    const char*                     name            = nullptr;
+    cstring                         name            = nullptr;
 
     TextureCreation&                set_size( u16 width, u16 height, u16 depth );
-    TextureCreation&                set_flags( u8 mipmaps, u8 flags );
+    TextureCreation&                set_flags( u8 flags );
+    TextureCreation&                set_mips( u32 mip_level_count );
+    TextureCreation&                set_layers( u32 layer_count );
     TextureCreation&                set_format_type( VkFormat format, TextureType::Enum type );
-    TextureCreation&                set_name( const char* name );
+    TextureCreation&                set_name( cstring name );
     TextureCreation&                set_data( void* data );
     TextureCreation&                set_alias( TextureHandle alias );
 
@@ -259,22 +263,45 @@ struct TextureCreation {
 
 //
 //
+struct TextureViewCreation {
+
+    TextureHandle                   parent_texture  = k_invalid_texture;
+    
+    u32                             mip_base_level  = 0;
+    u32                             mip_level_count = 1;
+    u32                             array_base_layer  = 0;
+    u32                             array_layer_count = 1;
+
+    cstring                         name            = nullptr;
+
+    TextureViewCreation&            set_parent_texture( TextureHandle parent_texture );
+    TextureViewCreation&            set_mips( u32 base_mip, u32 mip_level_count );
+    TextureViewCreation&            set_array( u32 base_layer, u32 layer_count );
+    TextureViewCreation&            set_name( cstring name );
+
+}; // struct TextureViewCreation
+
+//
+//
 struct SamplerCreation {
 
-    VkFilter                        min_filter = VK_FILTER_NEAREST;
-    VkFilter                        mag_filter = VK_FILTER_NEAREST;
-    VkSamplerMipmapMode             mip_filter = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+    VkFilter                        min_filter  = VK_FILTER_NEAREST;
+    VkFilter                        mag_filter  = VK_FILTER_NEAREST;
+    VkSamplerMipmapMode             mip_filter  = VK_SAMPLER_MIPMAP_MODE_NEAREST;
 
     VkSamplerAddressMode            address_mode_u = VK_SAMPLER_ADDRESS_MODE_REPEAT;
     VkSamplerAddressMode            address_mode_v = VK_SAMPLER_ADDRESS_MODE_REPEAT;
     VkSamplerAddressMode            address_mode_w = VK_SAMPLER_ADDRESS_MODE_REPEAT;
 
-    const char*                     name = nullptr;
+    VkSamplerReductionMode          reduction_mode = VK_SAMPLER_REDUCTION_MODE_WEIGHTED_AVERAGE;
+
+    cstring                         name        = nullptr;
 
     SamplerCreation&                set_min_mag_mip( VkFilter min, VkFilter mag, VkSamplerMipmapMode mip );
     SamplerCreation&                set_address_mode_u( VkSamplerAddressMode u );
     SamplerCreation&                set_address_mode_uv( VkSamplerAddressMode u, VkSamplerAddressMode v );
     SamplerCreation&                set_address_mode_uvw( VkSamplerAddressMode u, VkSamplerAddressMode v, VkSamplerAddressMode w );
+    SamplerCreation&                set_reduction_mode( VkSamplerReductionMode mode );
     SamplerCreation&                set_name( const char* name );
 
 }; // struct SamplerCreation
@@ -283,7 +310,7 @@ struct SamplerCreation {
 //
 struct ShaderStage {
 
-    const char*                     code        = nullptr;
+    cstring                         code        = nullptr;
     u32                             code_size   = 0;
     VkShaderStageFlagBits           type        = VK_SHADER_STAGE_FLAG_BITS_MAX_ENUM;
 
@@ -295,7 +322,7 @@ struct ShaderStateCreation {
 
     ShaderStage                     stages[ k_max_shader_stages ];
 
-    const char*                     name            = nullptr;
+    cstring                         name            = nullptr;
 
     u32                             stages_count    = 0;
     u32                             spv_input       = 0;
@@ -352,6 +379,8 @@ struct DescriptorSetCreation {
     DescriptorSetLayoutHandle       layout;
     u32                             num_resources   = 0;
 
+    u32                             set_index       = 0;
+
     cstring                         name            = nullptr;
 
     // Building helpers
@@ -361,6 +390,7 @@ struct DescriptorSetCreation {
     DescriptorSetCreation&          buffer( BufferHandle buffer, u16 binding );
     DescriptorSetCreation&          texture_sampler( TextureHandle texture, SamplerHandle sampler, u16 binding );   // TODO: separate samplers from textures
     DescriptorSetCreation&          set_name( cstring name );
+    DescriptorSetCreation&          set_set_index( u32 index );
 
 }; // struct DescriptorSetCreation
 
@@ -447,7 +477,7 @@ struct RenderPassCreation {
     RenderPassOperation::Enum       depth_operation         = RenderPassOperation::DontCare;
     RenderPassOperation::Enum       stencil_operation       = RenderPassOperation::DontCare;
 
-    const char*                     name                = nullptr;
+    cstring                         name                = nullptr;
 
     RenderPassCreation&             reset();
     RenderPassCreation&             add_attachment( VkFormat format, VkImageLayout layout, RenderPassOperation::Enum load_op );
@@ -475,7 +505,7 @@ struct FramebufferCreation {
     f32                             scale_y             = 1.f;
     u8                              resize              = 1;
 
-    const char*                     name                = nullptr;
+    cstring                         name                = nullptr;
 
     FramebufferCreation&            reset();
     FramebufferCreation&            add_render_texture( TextureHandle texture );
@@ -503,7 +533,7 @@ struct PipelineCreation {
 
     u32                             num_active_layouts  = 0;
 
-    const char*                     name                = nullptr;
+    cstring                         name                = nullptr;
 
     PipelineCreation&               add_descriptor_set_layout( DescriptorSetLayoutHandle handle );
     RenderPassOutput&               render_pass_output();
@@ -557,7 +587,7 @@ struct DescriptorBinding {
     u16                             count   = 0;
     u16                             set     = 0;
 
-    const char*                     name    = nullptr;
+    cstring                         name    = nullptr;
 }; // struct DescriptorBinding
 
 
@@ -712,7 +742,7 @@ struct ResourceUpdate {
 // Resources /////////////////////////////////////////////////////////////
 
 static const u32                    k_max_swapchain_images = 3;
-static const u32                    k_max_frames           = 1;
+static const u32                    k_max_frames           = 2;
 
 //
 //
@@ -734,7 +764,7 @@ struct Buffer {
     bool                            ready           = true;
 
     u8*                             mapped_data     = nullptr;
-    const char*                     name            = nullptr;
+    cstring                         name            = nullptr;
 
 }; // struct Buffer
 
@@ -753,7 +783,9 @@ struct Sampler {
     VkSamplerAddressMode            address_mode_v = VK_SAMPLER_ADDRESS_MODE_REPEAT;
     VkSamplerAddressMode            address_mode_w = VK_SAMPLER_ADDRESS_MODE_REPEAT;
 
-    const char*                     name    = nullptr;
+    VkSamplerReductionMode          reduction_mode = VK_SAMPLER_REDUCTION_MODE_WEIGHTED_AVERAGE;
+
+    cstring                         name    = nullptr;
 
 }; // struct Sampler
 
@@ -767,18 +799,22 @@ struct Texture {
     VmaAllocation                   vma_allocation;
     ResourceState                   state = RESOURCE_STATE_UNDEFINED;
 
-    u16                             width = 1;
-    u16                             height = 1;
-    u16                             depth = 1;
-    u8                              mipmaps = 1;
-    u8                              flags = 0;
+    u16                             width           = 1;
+    u16                             height          = 1;
+    u16                             depth           = 1;
+    u16                             array_layer_count = 1;
+    u8                              mip_level_count = 1;
+    u8                              flags           = 0;
+    u16                             mip_base_level  = 0;    // Not 0 when texture is a view.
+    u16                             array_base_layer = 0;   // Not 0 when texture is a view.
 
     TextureHandle                   handle;
+    TextureHandle                   parent_texture;     // Used when a texture view.
     TextureType::Enum               type    = TextureType::Texture2D;
 
     Sampler*                        sampler = nullptr;
 
-    const char*                     name    = nullptr;
+    cstring                         name    = nullptr;
 }; // struct Texture
 
 //
@@ -787,9 +823,9 @@ struct ShaderState {
 
     VkPipelineShaderStageCreateInfo shader_stage_info[ k_max_shader_stages ];
 
-    const char*                     name = nullptr;
+    cstring                         name            = nullptr;
 
-    u32                             active_shaders = 0;
+    u32                             active_shaders  = 0;
     bool                            graphics_pipeline = false;
 
     spirv::ParseResult*             parse_result;
@@ -868,7 +904,7 @@ struct RenderPass {
 
     u8                              num_render_targets = 0;
 
-    const char*                     name        = nullptr;
+    cstring                         name        = nullptr;
 }; // struct RenderPass
 
 //
@@ -893,7 +929,7 @@ struct Framebuffer {
 
     u8                              resize      = 0;
 
-    const char*                     name        = nullptr;
+    cstring                         name        = nullptr;
 }; // struct Framebuffer
 
 
@@ -943,6 +979,9 @@ void util_add_image_barrier_ext( GpuDevice* gpu, VkCommandBuffer command_buffer,
 void util_add_image_barrier_ext( GpuDevice* gpu, VkCommandBuffer command_buffer, Texture* texture, ResourceState new_state,
                                  u32 base_mip_level, u32 mip_count, bool is_depth, u32 source_family, u32 destination_family,
                                  QueueType::Enum source_queue_type, QueueType::Enum destination_queue_type );
+
+void util_add_buffer_barrier( GpuDevice* gpu, VkCommandBuffer command_buffer, VkBuffer buffer, ResourceState old_state, ResourceState new_state,
+                              u32 buffer_size );
 
 void util_add_buffer_barrier_ext( GpuDevice* gpu, VkCommandBuffer command_buffer, VkBuffer buffer, ResourceState old_state, ResourceState new_state,
                                   u32 buffer_size, u32 source_family, u32 destination_family,

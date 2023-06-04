@@ -5,6 +5,7 @@
 
 #include <cstdlib>
 #include <string.h>
+#include <vulkan/vulkan.h>
 
 namespace raptor {
 namespace spirv {
@@ -67,6 +68,14 @@ VkShaderStageFlags parse_execution_model( SpvExecutionModel model )
         case ( SpvExecutionModelKernel ):
         {
             return VK_SHADER_STAGE_COMPUTE_BIT;
+        }
+        case ( SpvExecutionModelMeshNV ):
+        {
+            return VK_SHADER_STAGE_MESH_BIT_NV;
+        }
+        case ( SpvExecutionModelTaskNV ):
+        {
+            return VK_SHADER_STAGE_TASK_BIT_NV;
         }
     }
 
@@ -517,7 +526,7 @@ void parse_binary( const u32* data, size_t data_size, StringBuffer& name_buffer,
                     switch ( uniform_type.op ) {
                         case (SpvOpTypeStruct):
                         {
-                            binding.type = uniform_type.structured_buffer ? VK_DESCRIPTOR_TYPE_STORAGE_BUFFER : VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+                            binding.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
                             binding.name = uniform_type.name.text;
                             break;
                         }

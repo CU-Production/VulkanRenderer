@@ -268,18 +268,18 @@ void GpuVisualProfiler::imgui_draw() {
             stat_values[ i ] = pipeline_statistics->statistics[ i ] / stat_unit_multiplier;
         }
 
-        ImGui::Text( "Vertices %f%s, Primitives %f%s", stat_values[ GpuPipelineStatistics::VerticesCount ], stat_unit_name,
+        ImGui::Text( "Vertices %0.2f%s, Primitives %0.2f%s", stat_values[ GpuPipelineStatistics::VerticesCount ], stat_unit_name,
                      stat_values[ GpuPipelineStatistics::PrimitiveCount ], stat_unit_name );
 
-        ImGui::Text( "Clipping: Invocations %f%s, Visible Primitives %f%s, Visible Perc %3.1f", stat_values[ GpuPipelineStatistics::ClippingInvocations ], stat_unit_name,
+        ImGui::Text( "Clipping: Invocations %0.2f%s, Visible Primitives %0.2f%s, Visible Perc %3.1f", stat_values[ GpuPipelineStatistics::ClippingInvocations ], stat_unit_name,
                      stat_values[ GpuPipelineStatistics::ClippingPrimitives ], stat_unit_name,
                      stat_values[ GpuPipelineStatistics::ClippingPrimitives ] / stat_values[ GpuPipelineStatistics::ClippingInvocations ] * 100.0f, stat_unit_name );
 
-        ImGui::Text( "Invocations: Vertex Shaders %f%s, Fragment Shaders %f%s, Compute Shaders %f%s", stat_values[ GpuPipelineStatistics::VertexShaderInvocations ], stat_unit_name,
+        ImGui::Text( "Invocations: Vertex Shaders %0.2f%s, Fragment Shaders %0.2f%s, Compute Shaders %0.2f%s", stat_values[ GpuPipelineStatistics::VertexShaderInvocations ], stat_unit_name,
                      stat_values[ GpuPipelineStatistics::FragmentShaderInvocations ], stat_unit_name, stat_values[ GpuPipelineStatistics::ComputeShaderInvocations ], stat_unit_name );
 
         ImGui::Text( "Invocations divided by number of full screen quad pixels." );
-        ImGui::Text( "Vertex %f, Fragment %f, Compute %f", stat_values[ GpuPipelineStatistics::VertexShaderInvocations ] * stat_unit_multiplier / s_framebuffer_pixel_count,
+        ImGui::Text( "Vertex %0.2f, Fragment %0.2f, Compute %0.2f", stat_values[ GpuPipelineStatistics::VertexShaderInvocations ] * stat_unit_multiplier / s_framebuffer_pixel_count,
                      stat_values[ GpuPipelineStatistics::FragmentShaderInvocations ] * stat_unit_multiplier / s_framebuffer_pixel_count,
                      stat_values[ GpuPipelineStatistics::ComputeShaderInvocations ] * stat_unit_multiplier / s_framebuffer_pixel_count );
 
@@ -291,25 +291,22 @@ void GpuVisualProfiler::imgui_draw() {
 
 // GPUTimeQueriesManager //////////////////////////////////////////////////
 
-void GPUTimeQueriesManager::init( GpuThreadFramePools* thread_frame_pools_, GpuThreadFramePools* compute_frame_pools_, Allocator* allocator_, u16 queries_per_thread_, u16 num_threads_, u16 max_frames ) {
+void GPUTimeQueriesManager::init( GpuThreadFramePools* thread_frame_pools_, Allocator* allocator_, u16 queries_per_thread_, u16 num_threads_, u16 max_frames ) {
 
     allocator = allocator_;
     thread_frame_pools = thread_frame_pools_;
-    compute_frame_pools = compute_frame_pools_;
     num_threads = num_threads_;
     queries_per_thread = queries_per_thread_;
-    queries_per_frame = queries_per_thread_ * ( num_threads_  + 1 /*compute*/ );
+    queries_per_frame = queries_per_thread_ * num_threads_;
 
     const u32 total_time_queries = queries_per_frame * max_frames;
     const sizet allocated_size = sizeof( GPUTimeQuery ) * total_time_queries;
     u8* memory = rallocam( allocated_size, allocator );
 
-    // NOTE(marco): we have ( queries_per_thread * num_threads ) query entries for graphics,
-    // we then have max_frames entries at the end for compute.
     timestamps = ( GPUTimeQuery* )memory;
     memset( timestamps, 0, sizeof( GPUTimeQuery ) * total_time_queries );
 
-    const u32 num_pools = ( num_threads_  + 1 /*compute*/ ) * max_frames;
+    const u32 num_pools = num_threads * max_frames;
     query_trees.init( allocator, num_pools, num_pools );
 
     for ( u32 i = 0; i < num_pools; ++i ) {
@@ -340,16 +337,6 @@ u32 GPUTimeQueriesManager::resolve( u32 current_frame, GPUTimeQuery* timestamps_
         GpuTimeQueryTree* time_query = thread_pools.time_queries;
         if ( time_query && time_query->allocated_time_query ) {
             raptor::memory_copy( timestamps_to_fill + copied_timestamps, &timestamps[ pool_index * queries_per_thread ], sizeof( GPUTimeQuery ) * time_query->allocated_time_query );
-            copied_timestamps += time_query->allocated_time_query;
-        }
-    }
-
-    {
-        const u32 pool_index = current_frame;
-        GpuThreadFramePools& thread_pools = compute_frame_pools[ pool_index ];
-        GpuTimeQueryTree* time_query = thread_pools.time_queries;
-        if ( time_query && time_query->allocated_time_query ) {
-            raptor::memory_copy( timestamps_to_fill + copied_timestamps, &timestamps[ ( queries_per_thread * num_threads ) + pool_index ], sizeof( GPUTimeQuery ) * time_query->allocated_time_query );
             copied_timestamps += time_query->allocated_time_query;
         }
     }

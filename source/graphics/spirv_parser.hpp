@@ -8,7 +8,6 @@
 #else
 #include <spirv_cross/spirv.h>
 #endif
-#include <vulkan/vulkan.h>
 
 namespace raptor {
 

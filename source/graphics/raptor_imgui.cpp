@@ -121,8 +121,8 @@ void ImGuiService::init( void* configuration ) {
     // consider calling GetTexDataAsAlpha8() instead to save on GPU memory.
     io.Fonts->GetTexDataAsRGBA32( &pixels, &width, &height );
 
-    TextureCreation texture_creation;// = { pixels, ( u16 )width, ( u16 )height, 1, 1, 0, TextureFormat::R8G8B8A8_UNORM, TextureType::Texture2D };
-    texture_creation.set_format_type( VK_FORMAT_R8G8B8A8_UNORM, TextureType::Texture2D ).set_data( pixels ).set_size( width, height, 1 ).set_flags( 1, 0 ).set_name( "ImGui_Font" );
+    TextureCreation texture_creation;
+    texture_creation.set_format_type( VK_FORMAT_R8G8B8A8_UNORM, TextureType::Texture2D ).set_data( pixels ).set_size( width, height, 1 ).set_name( "ImGui_Font" );
     g_font_texture = gpu->create_texture( texture_creation );
 
     // Store our identifier

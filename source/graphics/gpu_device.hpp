@@ -4,13 +4,21 @@
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
+
+#include "foundation/windows_declarations.h"
+
+#include <vulkan/vk_platform.h>
+#include <vulkan/vulkan_core.h>
+
+#include <vulkan/vulkan_win32.h>
+
 #define VK_USE_PLATFORM_WIN32_KHR
 #else
 #define VK_USE_PLATFORM_XLIB_KHR
-#endif
 #include <vulkan/vulkan.h>
+#endif
 
-#include "external/vk_mem_alloc.h"
+VK_DEFINE_HANDLE( VmaAllocator )
 
 #include "graphics/gpu_resources.hpp"
 
@@ -77,7 +85,8 @@ struct GpuDevice : public Service {
     // Helper methods
     static void                     fill_write_descriptor_sets( GpuDevice& gpu, const DescriptorSetLayout* descriptor_set_layout, VkDescriptorSet vk_descriptor_set,
                                                                 VkWriteDescriptorSet* descriptor_write, VkDescriptorBufferInfo* buffer_info, VkDescriptorImageInfo* image_info,
-                                                                VkSampler vk_default_sampler, u32& num_resources, const ResourceHandle* resources, const SamplerHandle* samplers, const u16* bindings );
+                                                                VkSampler vk_default_sampler, u32& num_resources, const ResourceHandle* resources, 
+                                                                const SamplerHandle* samplers, const u16* bindings );
 
     // Init/Terminate methods
     void                            init( const GpuDeviceCreation& creation );
@@ -86,6 +95,7 @@ struct GpuDevice : public Service {
     // Creation/Destruction of resources /////////////////////////////////
     BufferHandle                    create_buffer( const BufferCreation& creation );
     TextureHandle                   create_texture( const TextureCreation& creation );
+    TextureHandle                   create_texture_view( const TextureViewCreation& creation );
     PipelineHandle                  create_pipeline( const PipelineCreation& creation, const char* cache_path = nullptr );
     SamplerHandle                   create_sampler( const SamplerCreation& creation );
     DescriptorSetLayoutHandle       create_descriptor_set_layout( const DescriptorSetLayoutCreation& creation );
@@ -144,7 +154,7 @@ struct GpuDevice : public Service {
     void                            set_buffer_global_offset( BufferHandle buffer, u32 offset );
 
     // Command Buffers ///////////////////////////////////////////////////
-    CommandBuffer*                  get_command_buffer( u32 thread_index, u32 frame_index, bool begin, bool compute = false );
+    CommandBuffer*                  get_command_buffer( u32 thread_index, u32 frame_index, bool begin );
     CommandBuffer*                  get_secondary_command_buffer( u32 thread_index, u32 frame_index );
 
     void                            queue_command_buffer( CommandBuffer* command_buffer );          // Queue command buffer that will not be executed until present is called.
@@ -277,7 +287,6 @@ struct GpuDevice : public Service {
     FramebufferHandle               vulkan_swapchain_framebuffers[ k_max_swapchain_images ]{ k_invalid_index, k_invalid_index, k_invalid_index };
 
     Array<GpuThreadFramePools>      thread_frame_pools;
-    Array<GpuThreadFramePools>      compute_frame_pools;
 
     // Per frame synchronization
     VkSemaphore                     vulkan_render_complete_semaphore[ k_max_frames ];
@@ -309,6 +318,11 @@ struct GpuDevice : public Service {
     PFN_vkCmdEndRendering           cmd_end_rendering;
     PFN_vkQueueSubmit2              queue_submit2;
     PFN_vkCmdPipelineBarrier2       cmd_pipeline_barrier2;
+    
+    // Mesh shaders functions
+    PFN_vkCmdDrawMeshTasksNV        cmd_draw_mesh_tasks;
+    PFN_vkCmdDrawMeshTasksIndirectCountNV cmd_draw_mesh_tasks_indirect_count;
+    PFN_vkCmdDrawMeshTasksIndirectNV cmd_draw_mesh_tasks_indirect;
 
     // These are dynamic - so that workload can be handled correctly.
     Array<ResourceUpdate>           resource_deletion_queue;
@@ -322,6 +336,7 @@ struct GpuDevice : public Service {
     bool                            dynamic_rendering_extension_present     = false;
     bool                            timeline_semaphore_extension_present    = false;
     bool                            synchronization2_extension_present      = false;
+    bool                            mesh_shaders_extension_present = false;
 
     sizet                           ubo_alignment                   = 256;
     sizet                           ssbo_alignemnt                  = 256;
@@ -329,35 +344,35 @@ struct GpuDevice : public Service {
     char                            vulkan_binaries_path[ 512 ];
 
 
-    ShaderState*              access_shader_state( ShaderStateHandle shader );
-    const ShaderState*        access_shader_state( ShaderStateHandle shader ) const;
+    ShaderState*                    access_shader_state( ShaderStateHandle shader );
+    const ShaderState*              access_shader_state( ShaderStateHandle shader ) const;
 
-    Texture*                  access_texture( TextureHandle texture );
-    const Texture*            access_texture( TextureHandle texture ) const;
+    Texture*                        access_texture( TextureHandle texture );
+    const Texture*                  access_texture( TextureHandle texture ) const;
 
-    Buffer*                   access_buffer( BufferHandle buffer );
-    const Buffer*             access_buffer( BufferHandle buffer ) const;
+    Buffer*                         access_buffer( BufferHandle buffer );
+    const Buffer*                   access_buffer( BufferHandle buffer ) const;
 
-    Pipeline*                 access_pipeline( PipelineHandle pipeline );
-    const Pipeline*           access_pipeline( PipelineHandle pipeline ) const;
+    Pipeline*                       access_pipeline( PipelineHandle pipeline );
+    const Pipeline*                 access_pipeline( PipelineHandle pipeline ) const;
 
-    Sampler*                  access_sampler( SamplerHandle sampler );
-    const Sampler*            access_sampler( SamplerHandle sampler ) const;
+    Sampler*                        access_sampler( SamplerHandle sampler );
+    const Sampler*                  access_sampler( SamplerHandle sampler ) const;
 
-    DescriptorSetLayout*       access_descriptor_set_layout( DescriptorSetLayoutHandle layout );
-    const DescriptorSetLayout* access_descriptor_set_layout( DescriptorSetLayoutHandle layout ) const;
+    DescriptorSetLayout*            access_descriptor_set_layout( DescriptorSetLayoutHandle layout );
+    const DescriptorSetLayout*      access_descriptor_set_layout( DescriptorSetLayoutHandle layout ) const;
 
-    DescriptorSetLayoutHandle get_descriptor_set_layout( PipelineHandle pipeline_handle, int layout_index );
-    DescriptorSetLayoutHandle get_descriptor_set_layout( PipelineHandle pipeline_handle, int layout_index ) const;
+    DescriptorSetLayoutHandle       get_descriptor_set_layout( PipelineHandle pipeline_handle, int layout_index );
+    DescriptorSetLayoutHandle       get_descriptor_set_layout( PipelineHandle pipeline_handle, int layout_index ) const;
 
-    DescriptorSet*             access_descriptor_set( DescriptorSetHandle set );
-    const DescriptorSet*       access_descriptor_set( DescriptorSetHandle set ) const;
+    DescriptorSet*                  access_descriptor_set( DescriptorSetHandle set );
+    const DescriptorSet*            access_descriptor_set( DescriptorSetHandle set ) const;
 
-    RenderPass*                access_render_pass( RenderPassHandle render_pass );
-    const RenderPass*          access_render_pass( RenderPassHandle render_pass ) const;
+    RenderPass*                     access_render_pass( RenderPassHandle render_pass );
+    const RenderPass*               access_render_pass( RenderPassHandle render_pass ) const;
 
-    Framebuffer*               access_framebuffer( FramebufferHandle framebuffer );
-    const Framebuffer*         access_framebuffer( FramebufferHandle framebuffer ) const;
+    Framebuffer*                    access_framebuffer( FramebufferHandle framebuffer );
+    const Framebuffer*              access_framebuffer( FramebufferHandle framebuffer ) const;
 
 }; // struct GpuDevice
 

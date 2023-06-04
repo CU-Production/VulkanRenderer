@@ -6,6 +6,11 @@
 
 #include "external/tracy/tracy/Tracy.hpp"
 
+#if defined(_MSC_VER)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
+
 namespace raptor {
 
 void CommandBuffer::reset() {
@@ -79,50 +84,7 @@ void CommandBuffer::shutdown() {
 DescriptorSetHandle CommandBuffer::create_descriptor_set( const DescriptorSetCreation& creation ) {
     ZoneScoped;
 
-    DescriptorSetHandle handle = { descriptor_sets.obtain_resource() };
-    if ( handle.index == k_invalid_index ) {
-        return handle;
-    }
-
-    DescriptorSet* descriptor_set = ( DescriptorSet* )descriptor_sets.access_resource( handle.index );
-    const DescriptorSetLayout* descriptor_set_layout = device->access_descriptor_set_layout( creation.layout );
-
-    // Allocate descriptor set
-    VkDescriptorSetAllocateInfo alloc_info{ VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO };
-    alloc_info.descriptorPool = vk_descriptor_pool;
-    alloc_info.descriptorSetCount = 1;
-    alloc_info.pSetLayouts = &descriptor_set_layout->vk_descriptor_set_layout;
-
-    VkResult result = vkAllocateDescriptorSets( device->vulkan_device, &alloc_info, &descriptor_set->vk_descriptor_set );
-    RASSERT( result == VK_SUCCESS );
-
-    // Cache data
-    u8* memory = rallocam( ( sizeof( ResourceHandle ) + sizeof( SamplerHandle ) + sizeof( u16 ) ) * creation.num_resources, device->allocator );
-    descriptor_set->resources = ( ResourceHandle* )memory;
-    descriptor_set->samplers = ( SamplerHandle* )( memory + sizeof( ResourceHandle ) * creation.num_resources );
-    descriptor_set->bindings = ( u16* )( memory + ( sizeof( ResourceHandle ) + sizeof( SamplerHandle ) ) * creation.num_resources );
-    descriptor_set->num_resources = creation.num_resources;
-    descriptor_set->layout = descriptor_set_layout;
-
-    // Update descriptor set
-    VkWriteDescriptorSet descriptor_write[ 8 ];
-    VkDescriptorBufferInfo buffer_info[ 8 ];
-    VkDescriptorImageInfo image_info[ 8 ];
-
-    Sampler* vk_default_sampler = device->access_sampler( device->default_sampler );
-
-    u32 num_resources = creation.num_resources;
-    GpuDevice::fill_write_descriptor_sets( *device, descriptor_set_layout, descriptor_set->vk_descriptor_set, descriptor_write, buffer_info, image_info, vk_default_sampler->vk_sampler,
-                                           num_resources, creation.resources, creation.samplers, creation.bindings );
-
-    // Cache resources
-    for ( u32 r = 0; r < creation.num_resources; r++ ) {
-        descriptor_set->resources[ r ] = creation.resources[ r ];
-        descriptor_set->samplers[ r ] = creation.samplers[ r ];
-        descriptor_set->bindings[ r ] = creation.bindings[ r ];
-    }
-
-    vkUpdateDescriptorSets( device->vulkan_device, num_resources, descriptor_write, 0, nullptr );
+    DescriptorSetHandle handle = device->create_descriptor_set( creation );
 
     return handle;
 }
@@ -203,6 +165,8 @@ void CommandBuffer::bind_pass( RenderPassHandle handle_, FramebufferHandle frame
                 for ( u32 a = 0; a < framebuffer->num_color_attachments; ++a ) {
                     Texture* texture = device->access_texture( framebuffer->color_attachments[a] );
 
+                    texture->state = RESOURCE_STATE_RENDER_TARGET;
+
                     VkAttachmentLoadOp color_op;
                     switch ( render_pass->output.color_operations[ a ] ) {
                         case RenderPassOperation::Load:
@@ -219,7 +183,7 @@ void CommandBuffer::bind_pass( RenderPassHandle handle_, FramebufferHandle frame
                     VkRenderingAttachmentInfo& color_attachment_info = color_attachments_info[ a ];
                     color_attachment_info.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO_KHR;
                     color_attachment_info.imageView = texture->vk_image_view;
-                    color_attachment_info.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+                    color_attachment_info.imageLayout = device->synchronization2_extension_present ? VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
                     color_attachment_info.resolveMode = VK_RESOLVE_MODE_NONE;
                     color_attachment_info.loadOp = color_op;
                     color_attachment_info.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -246,8 +210,10 @@ void CommandBuffer::bind_pass( RenderPassHandle handle_, FramebufferHandle frame
                             break;
                     }
 
+                    texture->state = RESOURCE_STATE_DEPTH_WRITE;
+
                     depth_attachment_info.imageView = texture->vk_image_view;
-                    depth_attachment_info.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+                    depth_attachment_info.imageLayout = device->synchronization2_extension_present ? VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
                     depth_attachment_info.resolveMode = VK_RESOLVE_MODE_NONE;
                     depth_attachment_info.loadOp = depth_op;
                     depth_attachment_info.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -514,16 +480,35 @@ void CommandBuffer::draw_indirect( BufferHandle buffer_handle, u32 draw_count, u
     VkBuffer vk_buffer = buffer->vk_buffer;
     VkDeviceSize vk_offset = offset;
 
-    vkCmdDrawIndirect( vk_command_buffer, vk_buffer, vk_offset, draw_count, sizeof( VkDrawIndirectCommand ) );
+    vkCmdDrawIndirect( vk_command_buffer, vk_buffer, vk_offset, draw_count, stride );
 }
 
-void CommandBuffer::draw_indexed_indirect( BufferHandle buffer_handle, u32 offset, u32 stride ) {
+void CommandBuffer::draw_indirect_count( BufferHandle argument_buffer, u32 argument_offset, BufferHandle count_buffer, u32 count_offset, u32 max_draws, u32 stride ) {
+    Buffer* argument_buffer_ = device->access_buffer( argument_buffer );
+    Buffer* count_buffer_ = device->access_buffer( count_buffer );
+
+    vkCmdDrawIndirectCount( vk_command_buffer, argument_buffer_->vk_buffer, argument_offset, count_buffer_->vk_buffer, count_offset, max_draws, stride );
+}
+
+void CommandBuffer::draw_indexed_indirect( BufferHandle buffer_handle, u32 draw_count, u32 offset, u32 stride ) {
     Buffer* buffer = device->access_buffer( buffer_handle );
 
     VkBuffer vk_buffer = buffer->vk_buffer;
     VkDeviceSize vk_offset = offset;
 
-    vkCmdDrawIndexedIndirect( vk_command_buffer, vk_buffer, vk_offset, 1, sizeof( VkDrawIndirectCommand ) );
+    vkCmdDrawIndexedIndirect( vk_command_buffer, vk_buffer, vk_offset, draw_count, stride );
+}
+
+void CommandBuffer::draw_mesh_task( u32 task_count, u32 first_task ) {
+
+    device->cmd_draw_mesh_tasks( vk_command_buffer, task_count, first_task );
+}
+
+void CommandBuffer::draw_mesh_task_indirect( BufferHandle argument_buffer, u32 argument_offset, BufferHandle count_buffer, u32 count_offset, u32 max_draws, u32 stride ) {
+    Buffer* argument_buffer_ = device->access_buffer( argument_buffer );
+    Buffer* count_buffer_ = device->access_buffer( count_buffer );
+
+    device->cmd_draw_mesh_tasks_indirect_count( vk_command_buffer, argument_buffer_->vk_buffer, argument_offset, count_buffer_->vk_buffer, count_offset, max_draws, stride );
 }
 
 void CommandBuffer::dispatch_indirect( BufferHandle buffer_handle, u32 offset ) {
@@ -855,14 +840,14 @@ void CommandBuffer::copy_texture( TextureHandle src_, TextureHandle dst_, Resour
     vkCmdCopyImage( vk_command_buffer, src->vk_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst->vk_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region );
 
     // Prepare first mip to create lower mipmaps
-    if ( dst->mipmaps > 1 ) {
+    if ( dst->mip_level_count > 1 ) {
         util_add_image_barrier( device, vk_command_buffer, dst, RESOURCE_STATE_COPY_SOURCE, 0, 1, false );
     }
 
     i32 w = dst->width;
     i32 h = dst->height;
 
-    for ( int mip_index = 1; mip_index < dst->mipmaps; ++mip_index ) {
+    for ( int mip_index = 1; mip_index < dst->mip_level_count; ++mip_index ) {
         util_add_image_barrier( device, vk_command_buffer, dst->vk_image, old_state, RESOURCE_STATE_COPY_DEST, mip_index, 1, false );
 
         VkImageBlit blit_region{ };
@@ -892,7 +877,7 @@ void CommandBuffer::copy_texture( TextureHandle src_, TextureHandle dst_, Resour
     }
 
     // Transition
-    util_add_image_barrier( device, vk_command_buffer, dst, dst_state, 0, dst->mipmaps, false );
+    util_add_image_barrier( device, vk_command_buffer, dst, dst_state, 0, dst->mip_level_count, false );
 }
 
 void CommandBuffer::upload_buffer_data( BufferHandle buffer_handle, void* buffer_data, BufferHandle staging_buffer_handle, sizet staging_buffer_offset ) {
@@ -956,9 +941,6 @@ void CommandBufferManager::init( GpuDevice* gpu_, u32 num_threads ) {
     const u32 total_secondary_buffers = total_pools * k_secondary_command_buffers_count;
     secondary_command_buffers.init( gpu->allocator, total_secondary_buffers );
 
-    const u32 total_compute_buffers = k_max_frames;
-    compute_command_buffers.init( gpu->allocator, k_max_frames, k_max_frames );
-
     for ( u32 i = 0; i < total_buffers; i++ ) {
         VkCommandBufferAllocateInfo cmd = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, nullptr };
 
@@ -1004,21 +986,6 @@ void CommandBufferManager::init( GpuDevice* gpu_, u32 num_threads ) {
         }
     }
 
-    for (u32 i = 0; i < total_compute_buffers; i++) {
-        VkCommandBufferAllocateInfo cmd = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, nullptr };
-
-        cmd.commandPool = gpu->compute_frame_pools[ i ].vulkan_command_pool;
-        cmd.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-        cmd.commandBufferCount = 1;
-
-        CommandBuffer& current_command_buffer = compute_command_buffers[ i ];
-        vkAllocateCommandBuffers( gpu->vulkan_device, &cmd, &current_command_buffer.vk_command_buffer );
-
-        current_command_buffer.handle = i;
-        current_command_buffer.thread_frame_pool = &gpu->compute_frame_pools[ i ];
-        current_command_buffer.init(gpu);
-    }
-
     //rprint( "Done\n" );
 }
 
@@ -1032,13 +999,8 @@ void CommandBufferManager::shutdown() {
         secondary_command_buffers[ i ].shutdown();
     }
 
-    for (u32 i = 0; i < compute_command_buffers.size; ++i) {
-        compute_command_buffers[ i ].shutdown();
-    }
-
     command_buffers.shutdown();
     secondary_command_buffers.shutdown();
-    compute_command_buffers.shutdown();
     used_buffers.shutdown();
     used_secondary_command_buffers.shutdown();
 }
@@ -1054,24 +1016,16 @@ void CommandBufferManager::reset_pools( u32 frame_index ) {
     }
 }
 
-CommandBuffer* CommandBufferManager::get_command_buffer( u32 frame, u32 thread_index, bool begin, bool compute) {
-    CommandBuffer* cb = nullptr;
-
-    if ( compute ) {
-        RASSERT( thread_index == 0 );
-        cb = &compute_command_buffers[ frame ];
-    } else {
-        const u32 pool_index = pool_from_indices( frame, thread_index );
-        u32 current_used_buffer = used_buffers[ pool_index ];
-        // TODO: how to handle fire-and-forget command buffers ?
-        RASSERT( current_used_buffer < num_command_buffers_per_thread );
-        if ( begin ) {
-            used_buffers[ pool_index ] = current_used_buffer + 1;
-        }
-
-        cb = &command_buffers[ ( pool_index * num_command_buffers_per_thread ) + current_used_buffer ];
+CommandBuffer* CommandBufferManager::get_command_buffer( u32 frame, u32 thread_index, bool begin ) {
+    const u32 pool_index = pool_from_indices( frame, thread_index );
+    u32 current_used_buffer = used_buffers[ pool_index ];
+    // TODO: how to handle fire-and-forget command buffers ?
+    RASSERT( current_used_buffer < num_command_buffers_per_thread );
+    if ( begin ) {
+        used_buffers[ pool_index ] = current_used_buffer + 1;
     }
 
+    CommandBuffer* cb = &command_buffers[ ( pool_index * num_command_buffers_per_thread ) + current_used_buffer ];
     if ( begin ) {
         cb->reset();
         cb->begin();
@@ -1081,14 +1035,11 @@ CommandBuffer* CommandBufferManager::get_command_buffer( u32 frame, u32 thread_i
         thread_pools->time_queries->reset();
         vkCmdResetQueryPool( cb->vk_command_buffer, thread_pools->vulkan_timestamp_query_pool, 0, thread_pools->time_queries->time_queries.size );
 
-        if ( !compute ) {
-            // Pipeline statistics
-            vkCmdResetQueryPool( cb->vk_command_buffer, thread_pools->vulkan_pipeline_stats_query_pool, 0, GpuPipelineStatistics::Count );
+        // Pipeline statistics
+        vkCmdResetQueryPool( cb->vk_command_buffer, thread_pools->vulkan_pipeline_stats_query_pool, 0, GpuPipelineStatistics::Count );
 
-            vkCmdBeginQuery( cb->vk_command_buffer, thread_pools->vulkan_pipeline_stats_query_pool, 0, 0 );
-        }
+        vkCmdBeginQuery( cb->vk_command_buffer, thread_pools->vulkan_pipeline_stats_query_pool, 0, 0 );
     }
-
     return cb;
 }
 

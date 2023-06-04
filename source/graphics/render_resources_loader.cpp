@@ -2,6 +2,7 @@
 #include "graphics/frame_graph.hpp"
 
 #include "foundation/file.hpp"
+#include "foundation/time.hpp"
 
 #include "external/json.hpp"
 
@@ -11,12 +12,14 @@
 namespace raptor {
 
 // Utility methods ////////////////////////////////////////////////////////
-static void             shader_concatenate( cstring filename, raptor::StringBuffer& path_buffer, raptor::StringBuffer& shader_buffer, raptor::Allocator* temp_allocator );
+static u64              shader_concatenate( cstring filename, raptor::StringBuffer& path_buffer, raptor::StringBuffer& shader_buffer, raptor::Allocator* temp_allocator );
 static VkBlendFactor    get_blend_factor( const std::string factor );
 static VkBlendOp        get_blend_op( const std::string op );
-static void             parse_gpu_pipeline( nlohmann::json& pipeline, raptor::PipelineCreation& pc, raptor::StringBuffer& path_buffer,
+static bool             parse_gpu_pipeline( nlohmann::json& pipeline, raptor::PipelineCreation& pc, raptor::StringBuffer& path_buffer,
                                             raptor::StringBuffer& shader_buffer, raptor::Allocator* temp_allocator, raptor::Renderer* renderer,
-                                            raptor::FrameGraph* frame_graph, raptor::StringBuffer& pass_name_buffer );
+                                            raptor::FrameGraph* frame_graph, raptor::StringBuffer& pass_name_buffer,
+                                            const Array<VertexInputCreation>& vertex_input_creations, FlatHashMap<u64, u16>& name_to_vertex_inputs,
+                                            cstring technique_name, bool use_cache, bool parent_technique );
 
 // RenderResourcesLoader //////////////////////////////////////////////////
 void RenderResourcesLoader::init( raptor::Renderer* renderer_, raptor::StackAllocator* temp_allocator_, raptor::FrameGraph* frame_graph_ ) {
@@ -28,9 +31,10 @@ void RenderResourcesLoader::init( raptor::Renderer* renderer_, raptor::StackAllo
 void RenderResourcesLoader::shutdown() {
 }
 
-GpuTechnique* RenderResourcesLoader::load_gpu_technique( cstring json_path ) {
+GpuTechnique* RenderResourcesLoader::load_gpu_technique( cstring json_path, bool use_shader_cache ) {
 
     using namespace raptor;
+    i64 begin_time = time_now();
     sizet allocated_marker = temp_allocator->get_marker();
 
     FileReadResult read_result = file_read_text( json_path, temp_allocator );
@@ -39,7 +43,7 @@ GpuTechnique* RenderResourcesLoader::load_gpu_technique( cstring json_path ) {
     path_buffer.init( 1024, temp_allocator );
 
     StringBuffer shader_code_buffer;
-    shader_code_buffer.init( rkilo( 256 ), temp_allocator );
+    shader_code_buffer.init( rmega( 2 ), temp_allocator );
 
     StringBuffer pass_name_buffer;
     pass_name_buffer.init( rkilo( 2 ), temp_allocator );
@@ -59,13 +63,106 @@ GpuTechnique* RenderResourcesLoader::load_gpu_technique( cstring json_path ) {
     GpuTechniqueCreation technique_creation;
     technique_creation.name = name_string.c_str();
 
+    Array<VertexInputCreation> vertex_input_creations;
+
+    FlatHashMap<u64, u16> name_to_vertex_inputs;
+    name_to_vertex_inputs.init( temp_allocator, 8 );
+
+    // Parse vertex inputs
+    json vertex_inputs = json_data[ "vertex_inputs" ];
+    if ( vertex_inputs.is_array() ) {
+
+        u32 size = u32( vertex_inputs.size() );
+
+        vertex_input_creations.init( temp_allocator, size, size );
+
+        for ( u32 i = 0; i < size; ++i ) {
+            json vertex_input = vertex_inputs[ i ];
+
+            std::string name;
+            vertex_input[ "name" ].get_to( name );
+
+            name_to_vertex_inputs.insert( hash_calculate( name.c_str() ), ( u16 )i );
+
+            VertexInputCreation& vertex_input_creation = vertex_input_creations[ i ];
+            vertex_input_creation.reset();
+
+            json vertex_attributes = vertex_input[ "vertex_attributes" ];
+            if ( vertex_attributes.is_array() ) {
+
+                for ( sizet v = 0; v < vertex_attributes.size(); ++v ) {
+                    VertexAttribute vertex_attribute{};
+
+                    json json_vertex_attribute = vertex_attributes[ v ];
+
+                    vertex_attribute.location = ( u16 )json_vertex_attribute.value( "attribute_location", 0u );
+                    vertex_attribute.binding = ( u16 )json_vertex_attribute.value( "attribute_binding", 0u );
+                    vertex_attribute.offset = json_vertex_attribute.value( "attribute_offset", 0u );
+
+                    json attribute_format = json_vertex_attribute[ "attribute_format" ];
+                    if ( attribute_format.is_string() ) {
+                        std::string name;
+                        attribute_format.get_to( name );
+
+                        vertex_attribute.format = VertexComponentFormat::Count;
+
+                        for ( u32 e = 0; e < VertexComponentFormat::Count; ++e ) {
+                            VertexComponentFormat::Enum enum_value = ( VertexComponentFormat::Enum )e;
+                            if ( name == VertexComponentFormat::ToString( enum_value ) ) {
+                                vertex_attribute.format = enum_value;
+                                break;
+                            }
+                        }
+
+                        RASSERT( vertex_attribute.format != VertexComponentFormat::Count );
+                    }
+
+                    vertex_input_creation.add_vertex_attribute( vertex_attribute );
+                }
+            }
+
+            json vertex_streams = vertex_input[ "vertex_streams" ];
+            if ( vertex_streams.is_array() ) {
+
+                for ( sizet v = 0; v < vertex_streams.size(); ++v ) {
+                    VertexStream vertex_stream{};
+
+                    json json_vertex_stream = vertex_streams[ v ];
+
+                    vertex_stream.binding = ( u16 )json_vertex_stream.value( "stream_binding", 0u );
+                    vertex_stream.stride = ( u16 )json_vertex_stream.value( "stream_stride", 0u );
+
+                    json stream_rate = json_vertex_stream[ "stream_rate" ];
+                    if ( stream_rate.is_string() ) {
+                        std::string name;
+                        stream_rate.get_to( name );
+
+                        if ( name == "Vertex" ) {
+                            vertex_stream.input_rate = VertexInputRate::PerVertex;
+                        } else if ( name == "Instance" ) {
+                            vertex_stream.input_rate = VertexInputRate::PerInstance;
+                        } else {
+                            RASSERT( false );
+                        }
+                    }
+
+                    vertex_input_creation.add_vertex_stream( vertex_stream );
+                }
+            }
+        }
+    }
+
+    // Parse pipelines
     json pipelines = json_data[ "pipelines" ];
     if ( pipelines.is_array() ) {
         u32 size = u32( pipelines.size() );
         for ( u32 i = 0; i < size; ++i ) {
             json pipeline = pipelines[ i ];
+
             PipelineCreation pc{};
             pc.shaders.reset();
+
+            bool add_pass = true;
 
             json inherit_from = pipeline[ "inherit_from" ];
             if ( inherit_from.is_string() ) {
@@ -78,15 +175,17 @@ GpuTechnique* RenderResourcesLoader::load_gpu_technique( cstring json_path ) {
                     pipeline_i[ "name" ].get_to( name );
 
                     if ( name == inherited_name ) {
-                        parse_gpu_pipeline( pipeline_i, pc, path_buffer, shader_code_buffer, temp_allocator, renderer, frame_graph, pass_name_buffer );
+                        add_pass = parse_gpu_pipeline( pipeline_i, pc, path_buffer, shader_code_buffer, temp_allocator, renderer, frame_graph, pass_name_buffer, vertex_input_creations, name_to_vertex_inputs, technique_creation.name, false, true );
                         break;
                     }
                 }
             }
 
-            parse_gpu_pipeline( pipeline, pc, path_buffer, shader_code_buffer, temp_allocator, renderer, frame_graph, pass_name_buffer );
+            add_pass = add_pass && parse_gpu_pipeline( pipeline, pc, path_buffer, shader_code_buffer, temp_allocator, renderer, frame_graph, pass_name_buffer, vertex_input_creations, name_to_vertex_inputs, technique_creation.name, use_shader_cache, false );
 
-            technique_creation.creations[ technique_creation.num_creations++ ] = pc;
+            if ( add_pass ) {
+                technique_creation.creations[ technique_creation.num_creations++ ] = pc;
+            }
         }
     }
 
@@ -94,6 +193,8 @@ GpuTechnique* RenderResourcesLoader::load_gpu_technique( cstring json_path ) {
     GpuTechnique* technique = renderer->create_technique( technique_creation );
 
     temp_allocator->free_marker( allocated_marker );
+
+    rprint( "Created technique %s in %f seconds\n", technique_creation.name, time_from_seconds( begin_time ) );
 
     return technique;
 }
@@ -126,7 +227,7 @@ TextureResource* RenderResourcesLoader::load_texture( cstring path, bool generat
     file_name_from_path( copied_path );
 
     TextureCreation creation;
-    creation.set_data( image_data ).set_format_type( VK_FORMAT_R8G8B8A8_UNORM, TextureType::Texture2D ).set_flags( mip_levels, 0 ).set_size( ( u16 )width, ( u16 )height, 1 ).set_name( copied_path );
+    creation.set_data( image_data ).set_format_type( VK_FORMAT_R8G8B8A8_UNORM, TextureType::Texture2D ).set_mips( mip_levels ).set_size( ( u16 )width, ( u16 )height, 1 ).set_name( copied_path );
 
     TextureResource* texture = renderer->create_texture( creation );
 
@@ -222,9 +323,10 @@ VkBlendOp get_blend_op( const std::string op ) {
     return VK_BLEND_OP_ADD;
 }
 
-void shader_concatenate( cstring filename, raptor::StringBuffer& path_buffer, raptor::StringBuffer& shader_buffer, raptor::Allocator* temp_allocator ) {
+u64 shader_concatenate( cstring filename, raptor::StringBuffer& path_buffer, raptor::StringBuffer& shader_buffer, raptor::Allocator* temp_allocator ) {
     using namespace raptor;
 
+    u64 hashed_memory = 0;
     // Read file and concatenate it
     path_buffer.clear();
     cstring shader_path = path_buffer.append_use_f( "%s%s", RAPTOR_SHADER_FOLDER, filename );
@@ -232,14 +334,20 @@ void shader_concatenate( cstring filename, raptor::StringBuffer& path_buffer, ra
     if ( shader_read_result.data ) {
         // Append without null termination and add termination later.
         shader_buffer.append_m( shader_read_result.data, strlen( shader_read_result.data ) );
+        // Using strlne because file can contain impurities after the end, causing different hashes when using shader_read_result.size.
+        hashed_memory = raptor::hash_bytes( shader_read_result.data, strlen( shader_read_result.data ) );
     } else {
         rprint( "Cannot read file %s\n", shader_path );
     }
+
+    return hashed_memory;
 }
 
-void parse_gpu_pipeline( nlohmann::json& pipeline, raptor::PipelineCreation& pc, raptor::StringBuffer& path_buffer,
+bool parse_gpu_pipeline( nlohmann::json& pipeline, raptor::PipelineCreation& pc, raptor::StringBuffer& path_buffer,
                          raptor::StringBuffer& shader_buffer, raptor::Allocator* temp_allocator, raptor::Renderer* renderer,
-                         raptor::FrameGraph* frame_graph, raptor::StringBuffer& pass_name_buffer ) {
+                         raptor::FrameGraph* frame_graph, raptor::StringBuffer& pass_name_buffer,
+                         const Array<VertexInputCreation>& vertex_input_creations, FlatHashMap<u64, u16>& name_to_vertex_inputs,
+                         cstring technique_name, bool use_cache, bool parent_technique ) {
     using json = nlohmann::json;
     using namespace raptor;
 
@@ -251,103 +359,165 @@ void parse_gpu_pipeline( nlohmann::json& pipeline, raptor::PipelineCreation& pc,
         pc.name = pass_name_buffer.append_use_f( "%s", name.c_str() );
     }
 
+    pc.shaders.set_name( pc.name );
+
     bool compute_shader_pass = false;
+
     json shaders = pipeline[ "shaders" ];
     if ( !shaders.is_null() ) {
 
         for ( sizet s = 0; s < shaders.size(); ++s ) {
-            json shader_stage = shaders[ s ];
+            json parsed_shader_stage = shaders[ s ];
 
             std::string name;
 
             path_buffer.clear();
-            // Read file and concatenate it
 
+            // Cache file hashes
+            u64 shader_file_hashes[ 16 ];
+            u32 shader_file_hashes_count = 0;
+            // Read file and concatenate it
+            // Cache current shader code beginning
             cstring code = shader_buffer.current();
 
-            json includes = shader_stage[ "includes" ];
+            json includes = parsed_shader_stage[ "includes" ];
             if ( includes.is_array() ) {
 
+                //rprint( "Shader hash " );
                 for ( sizet in = 0; in < includes.size(); ++in ) {
                     includes[ in ].get_to( name );
-                    shader_concatenate( name.c_str(), path_buffer, shader_buffer, temp_allocator );
+                    u64 shader_file_hash = shader_concatenate( name.c_str(), path_buffer, shader_buffer, temp_allocator );
+                    shader_file_hashes[ shader_file_hashes_count++ ] = shader_file_hash;
+                    //rprint( " %016llx", shader_file_hash );
                 }
             }
 
-            shader_stage[ "shader" ].get_to( name );
+            parsed_shader_stage[ "shader" ].get_to( name );
             // Concatenate main shader code
-            shader_concatenate( name.c_str(), path_buffer, shader_buffer, temp_allocator );
+            u64 shader_file_hash = shader_concatenate( name.c_str(), path_buffer, shader_buffer, temp_allocator );
+            // Cache main shader code hash
+            shader_file_hashes[ shader_file_hashes_count++ ] = shader_file_hash;
+            //rprint( " %016llx", shader_file_hash );
             // Add terminator for final string.
             shader_buffer.close_current_string();
 
-            shader_stage[ "stage" ].get_to( name );
+            parsed_shader_stage[ "stage" ].get_to( name );
 
             // Debug print of final code if needed.
             //rprint( "\n\n%s\n\n\n", code );
+            u32 code_size = u32( strlen( code ) );
+
+            ShaderStage shader_stage;
+            shader_stage.code = code;
+            shader_stage.code_size = code_size;
 
             if ( name == "vertex" ) {
-                pc.shaders.add_stage( code, strlen( code ), VK_SHADER_STAGE_VERTEX_BIT );
+                shader_stage.type = VK_SHADER_STAGE_VERTEX_BIT;
             } else if ( name == "fragment" ) {
-                pc.shaders.add_stage( code, strlen( code ), VK_SHADER_STAGE_FRAGMENT_BIT );
+                shader_stage.type = VK_SHADER_STAGE_FRAGMENT_BIT;
             } else if ( name == "compute" ) {
-                pc.shaders.add_stage( code, strlen( code ), VK_SHADER_STAGE_COMPUTE_BIT );
+                shader_stage.type = VK_SHADER_STAGE_COMPUTE_BIT;
 
                 compute_shader_pass = true;
+            } else if ( name == "mesh" ) {
+                if ( !renderer->gpu->mesh_shaders_extension_present ) {
+                    return false;
+                }
+                shader_stage.type = VK_SHADER_STAGE_MESH_BIT_NV;
+            } else if ( name == "task" ) {
+                if ( !renderer->gpu->mesh_shaders_extension_present ) {
+                    return false;
+                }
+                shader_stage.type = VK_SHADER_STAGE_TASK_BIT_NV;
             }
-        }
-    }
 
-    json vertex_inputs = pipeline[ "vertex_input" ];
-    if ( vertex_inputs.is_array() ) {
+            // Do not compile shaders when parsing the parent technique
+            bool compile_shader = true;
+            cstring shader_spirv_path = nullptr;
+            cstring shader_hash_path = nullptr;
 
-        pc.vertex_input.num_vertex_attributes = 0;
-        pc.vertex_input.num_vertex_streams = 0;
+            if ( use_cache ) {
+                // Check shader cache and eventually compile the code.
+                path_buffer.clear();
+                shader_spirv_path = path_buffer.append_use_f( "%s/%s_%s_%s.spv",
+                                                              renderer->resource_cache.binary_data_folder, technique_name, pc.shaders.name,
+                                                              to_compiler_extension( shader_stage.type ) );
+                shader_hash_path = path_buffer.append_use_f( "%s/%s_%s_%s.hash.cache",
+                                                             renderer->resource_cache.binary_data_folder, technique_name, pc.shaders.name,
+                                                             to_compiler_extension( shader_stage.type ) );
+                //FileReadResult shader_read_result = file_read_text( shader_path, temp_allocator );
+                bool cache_exists = file_exists( shader_hash_path );
 
-        for ( sizet v = 0; v < vertex_inputs.size(); ++v ) {
-            VertexAttribute vertex_attribute{};
+                //rprint( "\nfile %s\n", shader_hash_path );
+                // TODO: still not working
+                if ( cache_exists ) {
 
-            json vertex_input = vertex_inputs[ v ];
+                    FileReadResult frr = file_read_binary( shader_hash_path, temp_allocator );
+                    if ( frr.data ) {
 
-            vertex_attribute.location = ( u16 )vertex_input.value( "attribute_location", 0u );
-            vertex_attribute.binding = ( u16 )vertex_input.value( "attribute_binding", 0u );
-            vertex_attribute.offset = vertex_input.value( "attribute_offset", 0u );
+                        u32 file_entries = frr.size / sizeof( u64 );
+                        if ( file_entries == shader_file_hashes_count ) {
+                            u64* cached_file_hashes = ( u64* )frr.data;
+                            u32 i = 0;
+                            for ( ; i < shader_file_hashes_count; ++i ) {
+                                const u64 a = shader_file_hashes[ i ];
+                                const u64 b = cached_file_hashes[ i ];
+                                if ( a != b ) {
+                                    break;
+                                }
+                            }
 
-            json attribute_format = vertex_input[ "attribute_format" ];
-            if ( attribute_format.is_string() ) {
-                std::string name;
-                attribute_format.get_to( name );
-
-                for ( u32 e = 0; e < VertexComponentFormat::Count; ++e ) {
-                    VertexComponentFormat::Enum enum_value = ( VertexComponentFormat::Enum )e;
-                    if ( name == VertexComponentFormat::ToString( enum_value ) ) {
-                        vertex_attribute.format = enum_value;
-                        break;
+                            compile_shader = i != shader_file_hashes_count;
+                        }
                     }
                 }
             }
-            pc.vertex_input.add_vertex_attribute( vertex_attribute );
 
-            VertexStream vertex_stream{};
+            // Cache is not present or shader has changed, compile shaders.
+            if ( compile_shader ) {
+                VkShaderModuleCreateInfo shader_create_info = renderer->gpu->compile_shader( code, code_size, shader_stage.type, pc.shaders.name );
+                if ( shader_create_info.pCode ) {
+                    shader_stage.code = reinterpret_cast< cstring >( shader_create_info.pCode );
+                    shader_stage.code_size = ( u32 )shader_create_info.codeSize;
 
-            vertex_stream.binding = ( u16 )vertex_input.value( "stream_binding", 0u );
-            vertex_stream.stride = ( u16 )vertex_input.value( "stream_stride", 0u );
-
-            json stream_rate = vertex_input[ "stream_rate" ];
-            if ( stream_rate.is_string() ) {
-                std::string name;
-                stream_rate.get_to( name );
-
-                if ( name == "Vertex" ) {
-                    vertex_stream.input_rate = VertexInputRate::PerVertex;
-                } else if ( name == "Instance" ) {
-                    vertex_stream.input_rate = VertexInputRate::PerInstance;
+                    if ( use_cache ) {
+                        // Write hashes
+                        file_write_binary( shader_hash_path, &shader_file_hashes[ 0 ], sizeof( u64 ) * shader_file_hashes_count );
+                        /*rprint( "Hashes\n%016llx ", shader_file_hashes[0] );
+                        for (u32 i = 1; i < shader_file_hashes_count; ++i ) {
+                            rprint( "%016llx ", shader_file_hashes[ i ] );
+                        }
+                        rprint( "\n\n" );*/
+                        // Write spirv
+                        file_write_binary( shader_spirv_path, ( void* )shader_create_info.pCode, sizeof( u32 ) * shader_create_info.codeSize );
+                    }
                 } else {
-                    RASSERT( false );
+                    rprint( "Error compiling shader %s stage %s", pc.shaders.name, to_compiler_extension( shader_stage.type ) );
+                    return false;
                 }
+            } else {
+                // Shader is the same, read cached SpirV
+                FileReadResult frr = file_read_binary( shader_spirv_path, temp_allocator );
+
+                shader_stage.code = reinterpret_cast< cstring >( frr.data );
+                shader_stage.code_size = ( u32 )frr.size / sizeof( u32 );
             }
 
-            pc.vertex_input.add_vertex_stream( vertex_stream );
+            // Finally add the stage
+            pc.shaders.add_stage( shader_stage.code, shader_stage.code_size, shader_stage.type );
+            // Output always spv compiled shaders
+            pc.shaders.set_spv_input( true );
         }
+    }
+
+    json vertex_input = pipeline[ "vertex_input" ];
+    if ( vertex_input.is_string() ) {
+        std::string name;
+        vertex_input.get_to( name );
+
+        u16 index = name_to_vertex_inputs.get( hash_calculate( name.c_str() ) );
+
+        pc.vertex_input = vertex_input_creations[ index ];
     }
 
     json depth = pipeline[ "depth" ];
@@ -405,6 +575,7 @@ void parse_gpu_pipeline( nlohmann::json& pipeline, raptor::PipelineCreation& pc,
             RASSERT( false );
         }
     }
+    //pc.rasterization.front = VK_FRONT_FACE_CLOCKWISE;
 
     pc.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
 
@@ -433,11 +604,9 @@ void parse_gpu_pipeline( nlohmann::json& pipeline, raptor::PipelineCreation& pc,
             // TODO: handle better
             if ( name == "swapchain" ) {
                 pc.render_pass = renderer->gpu->get_swapchain_output();
-            }
-            else if ( compute_shader_pass ) {
+            } else if ( compute_shader_pass ) {
                 pc.render_pass = renderer->gpu->get_swapchain_output();
-            }
-            else {
+            } else {
                 const RenderPass* render_pass = renderer->gpu->access_render_pass( node->render_pass );
                 if ( render_pass )
                     pc.render_pass = render_pass->output;
@@ -447,6 +616,8 @@ void parse_gpu_pipeline( nlohmann::json& pipeline, raptor::PipelineCreation& pc,
             pc.render_pass = renderer->gpu->get_swapchain_output();
         }
     }
+
+    return true;
 }
 
 

@@ -8,6 +8,13 @@
 #include "foundation/process.hpp"
 #include "foundation/file.hpp"
 
+#if defined(_MSC_VER)
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
+
+#include "external/vk_mem_alloc.h"
+
 template<class T>
 constexpr const T& raptor_min( const T& a, const T& b ) {
     return ( a < b ) ? a : b;
@@ -117,12 +124,13 @@ static VkBool32 debug_utils_callback( VkDebugUtilsMessageSeverityFlagBitsEXT sev
                                                             const VkDebugUtilsMessengerCallbackDataEXT* callback_data,
                                                             void* user_data ) {
     bool triggerBreak = severity & ( VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT );
+    rprint( " MessageID: %s %i\nMessage: %s\n\n", callback_data->pMessageIdName, callback_data->messageIdNumber, callback_data->pMessage );
+
 
     if ( triggerBreak ) {
        // __debugbreak();
     }
 
-    rprint( " MessageID: %s %i\nMessage: %s\n\n", callback_data->pMessageIdName, callback_data->messageIdNumber, callback_data->pMessage );
     return VK_FALSE;
 }
 
@@ -308,6 +316,24 @@ void GpuDevice::init( const GpuDeviceCreation& creation ) {
         synchronization2_extension_present = true;
     }
 
+    {
+        initial_temp_allocator_marker = temp_allocator->get_marker();
+
+        u32 device_extension_count = 0;
+        vkEnumerateDeviceExtensionProperties( vulkan_physical_device, nullptr, &device_extension_count, nullptr );
+        VkExtensionProperties* extensions = ( VkExtensionProperties* )ralloca( sizeof( VkExtensionProperties ) * device_extension_count, temp_allocator );
+        vkEnumerateDeviceExtensionProperties( vulkan_physical_device, nullptr, &device_extension_count, extensions );
+        for ( size_t i = 0; i < device_extension_count; i++ ) {
+
+            if ( !strcmp( extensions[ i ].extensionName, VK_NV_MESH_SHADER_EXTENSION_NAME ) ) {
+                mesh_shaders_extension_present = true;
+                continue;
+            }
+        }
+
+        temp_allocator->free_marker( initial_temp_allocator_marker );
+    }
+
     vkGetPhysicalDeviceProperties( vulkan_physical_device, &vulkan_physical_properties );
     gpu_timestamp_frequency = vulkan_physical_properties.limits.timestampPeriod / ( 1000 * 1000 );
 
@@ -394,6 +420,10 @@ void GpuDevice::init( const GpuDeviceCreation& creation ) {
         // device_extensions.push( VK_KHR_SYNCHRONIZATION_2_EXTENSION_NAME ); // vk 1.3
     }
 
+    if ( mesh_shaders_extension_present ) {
+        device_extensions.push( VK_NV_MESH_SHADER_EXTENSION_NAME );
+    }
+
     const float queue_priority[] = { 1.0f, 1.0f };
     VkDeviceQueueCreateInfo queue_info[ 3 ] = {};
 
@@ -452,6 +482,15 @@ void GpuDevice::init( const GpuDeviceCreation& creation ) {
 //        current_pnext = &synchronization2_features;
 //    }
 
+    VkPhysicalDeviceMeshShaderFeaturesNV mesh_shaders_feature{ VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_FEATURES_NV };
+    if ( mesh_shaders_extension_present ) {
+        mesh_shaders_feature.taskShader = true;
+        mesh_shaders_feature.meshShader = true;
+
+        mesh_shaders_feature.pNext = current_pnext;
+        current_pnext = &mesh_shaders_feature;
+    }
+
     // [TAG: BINDLESS]
     // We also add the bindless needed feature on the device creation.
     if ( bindless_supported ) {
@@ -489,6 +528,12 @@ void GpuDevice::init( const GpuDeviceCreation& creation ) {
     if ( synchronization2_extension_present ) {
         queue_submit2 = ( PFN_vkQueueSubmit2 )vkGetDeviceProcAddr( vulkan_device, "vkQueueSubmit2" );
         cmd_pipeline_barrier2 = ( PFN_vkCmdPipelineBarrier2 )vkGetDeviceProcAddr( vulkan_device, "vkCmdPipelineBarrier2" );
+    }
+
+    if ( mesh_shaders_extension_present ) {
+        cmd_draw_mesh_tasks = (PFN_vkCmdDrawMeshTasksNV)vkGetDeviceProcAddr( vulkan_device, "vkCmdDrawMeshTasksNV" );
+        cmd_draw_mesh_tasks_indirect = (PFN_vkCmdDrawMeshTasksIndirectNV)vkGetDeviceProcAddr( vulkan_device, "vkCmdDrawMeshTasksIndirectNV" );
+        cmd_draw_mesh_tasks_indirect_count = ( PFN_vkCmdDrawMeshTasksIndirectCountNV )vkGetDeviceProcAddr( vulkan_device, "vkCmdDrawMeshTasksIndirectCountNV" );
     }
 
     // Get main queue
@@ -622,11 +667,8 @@ void GpuDevice::init( const GpuDeviceCreation& creation ) {
     num_threads = creation.num_threads;
     thread_frame_pools.init( allocator, num_pools, num_pools );
 
-    // Create compute command pools and command buffers
-    compute_frame_pools.init( allocator, k_max_frames, k_max_frames );
-
     gpu_time_queries_manager = ( GPUTimeQueriesManager* )( memory );
-    gpu_time_queries_manager->init( thread_frame_pools.data, compute_frame_pools.data, allocator, creation.gpu_time_queries_per_frame, creation.num_threads, k_max_frames );
+    gpu_time_queries_manager->init( thread_frame_pools.data, allocator, creation.gpu_time_queries_per_frame, creation.num_threads, k_max_frames );
 
     for ( u32 i = 0; i < thread_frame_pools.size; ++i ) {
         GpuThreadFramePools& pool = thread_frame_pools[ i ];
@@ -655,21 +697,6 @@ void GpuDevice::init( const GpuDeviceCreation& creation ) {
         vkCreateQueryPool( vulkan_device, &statistics_pool_info, vulkan_allocation_callbacks, &pool.vulkan_pipeline_stats_query_pool);
     }
 
-    for ( u32 i = 0; i < compute_frame_pools.size; ++i ) {
-        GpuThreadFramePools& pool = compute_frame_pools[ i ];
-        pool.time_queries = &gpu_time_queries_manager->query_trees[ thread_frame_pools.size + i ];
-
-        VkCommandPoolCreateInfo cmd_pool_info = { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, nullptr };
-        cmd_pool_info.queueFamilyIndex = vulkan_compute_queue_family;
-        cmd_pool_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-
-        vkCreateCommandPool( vulkan_device, &cmd_pool_info, vulkan_allocation_callbacks, &pool.vulkan_command_pool );
-
-        // Create timestamp query pool used for GPU timings.
-        VkQueryPoolCreateInfo timestamp_pool_info{ VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, nullptr, 0, VK_QUERY_TYPE_TIMESTAMP, creation.gpu_time_queries_per_frame * 2u, 0 };
-        vkCreateQueryPool( vulkan_device, &timestamp_pool_info, vulkan_allocation_callbacks, &pool.vulkan_timestamp_query_pool );
-    }
-
     // Create resource pools
     //// Init pools
     buffers.init( allocator, k_buffers_pool_size, sizeof( Buffer ) );
@@ -681,7 +708,6 @@ void GpuDevice::init( const GpuDeviceCreation& creation ) {
     shaders.init( allocator, k_shaders_pool_size, sizeof( ShaderState ) );
     descriptor_sets.init( allocator, k_descriptor_sets_pool_size, sizeof( DescriptorSet ) );
     samplers.init( allocator, k_samplers_pool_size, sizeof( Sampler ) );
-    //command_buffers.init( allocator, 128, sizeof( CommandBuffer ) );
 
     VkSemaphoreCreateInfo semaphore_info{ VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
     vkCreateSemaphore( vulkan_device, &semaphore_info, vulkan_allocation_callbacks, &vulkan_image_acquired_semaphore );
@@ -751,7 +777,8 @@ void GpuDevice::init( const GpuDeviceCreation& creation ) {
     fullscreen_vertex_buffer = create_buffer( fullscreen_vb_creation );
 
     // Init Dummy resources
-    TextureCreation dummy_texture_creation = { nullptr, 1, 1, 1, 1, TextureFlags::Mask::RenderTarget_mask | TextureFlags::Mask::Compute_mask, VK_FORMAT_R8_UINT, TextureType::Texture2D };
+    TextureCreation dummy_texture_creation;
+    dummy_texture_creation.set_size( 1, 1, 1 ).set_flags( TextureFlags::Mask::RenderTarget_mask | TextureFlags::Mask::Compute_mask ).set_format_type( VK_FORMAT_R8_UINT, TextureType::Texture2D ).set_name( "Dummy_texture" );
     dummy_texture = create_texture( dummy_texture_creation );
 
     BufferCreation dummy_constant_buffer_creation = { VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, ResourceUsageType::Immutable, 16, 0, 0, nullptr, "Dummy_cb" };
@@ -825,9 +852,6 @@ void GpuDevice::shutdown() {
 
     MapBufferParameters cb_map = { dynamic_buffer, 0, 0 };
     unmap_buffer( cb_map );
-
-    // Memory: this contains allocations for gpu timestamp memory, queued command buffers and render frames.
-    rfree( gpu_time_queries_manager, allocator );
 
     destroy_descriptor_set_layout( bindless_descriptor_set_layout );
     destroy_descriptor_set( bindless_descriptor_set );
@@ -935,13 +959,10 @@ void GpuDevice::shutdown() {
     destroy_swapchain();
     vkDestroySurfaceKHR( vulkan_instance, vulkan_window_surface, vulkan_allocation_callbacks );
 
-    vmaDestroyAllocator( vma_allocator );
-
     texture_to_update_bindless.shutdown();
     resource_deletion_queue.shutdown();
     descriptor_set_updates.shutdown();
 
-    //command_buffers.shutdown();
     pipelines.shutdown();
     buffers.shutdown();
     shaders.shutdown();
@@ -951,6 +972,7 @@ void GpuDevice::shutdown() {
     descriptor_sets.shutdown();
     render_passes.shutdown();
     framebuffers.shutdown();
+
 #ifdef VULKAN_DEBUG_REPORT
     // Remove the debug report callback
     auto vkDestroyDebugUtilsMessengerEXT = ( PFN_vkDestroyDebugUtilsMessengerEXT )vkGetInstanceProcAddr( vulkan_instance, "vkDestroyDebugUtilsMessengerEXT" );
@@ -964,6 +986,7 @@ void GpuDevice::shutdown() {
 
     vkDestroyDescriptorPool( vulkan_device, vulkan_descriptor_pool, vulkan_allocation_callbacks );
 
+    // Destroy all query and command pools
     for ( u32 i = 0; i < thread_frame_pools.size; ++i ) {
         GpuThreadFramePools& pool = thread_frame_pools[ i ];
         vkDestroyQueryPool( vulkan_device, pool.vulkan_timestamp_query_pool, vulkan_allocation_callbacks );
@@ -971,14 +994,12 @@ void GpuDevice::shutdown() {
         vkDestroyCommandPool( vulkan_device, pool.vulkan_command_pool, vulkan_allocation_callbacks );
     }
 
-    for (u32 i = 0; i < compute_frame_pools.size; ++i) {
-        GpuThreadFramePools& pool = compute_frame_pools[ i ];
-        vkDestroyQueryPool( vulkan_device, pool.vulkan_timestamp_query_pool, vulkan_allocation_callbacks );
-        vkDestroyCommandPool( vulkan_device, pool.vulkan_command_pool, vulkan_allocation_callbacks );
-    }
-
+    // Memory: this contains allocations for gpu timestamp memory, queued command buffers and render frames.
+    rfree( gpu_time_queries_manager, allocator );
     thread_frame_pools.shutdown();
-    compute_frame_pools.shutdown();
+
+    // Put this here so that pools catch which kind of resource has leaked.
+    vmaDestroyAllocator( vma_allocator );
 
     vkDestroyDevice( vulkan_device, vulkan_allocation_callbacks );
 
@@ -990,18 +1011,47 @@ void GpuDevice::shutdown() {
 }
 
 // Resource Creation ////////////////////////////////////////////////////////////
+static void vulkan_create_texture_view( GpuDevice& gpu, const TextureViewCreation& creation, Texture* texture ) {
+
+    //// Create the image view
+    VkImageViewCreateInfo info = { VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
+    info.image = texture->vk_image;
+    info.viewType = to_vk_image_view_type( texture->type );
+    info.format = texture->vk_format;
+
+    if ( TextureFormat::has_depth_or_stencil( texture->vk_format ) ) {
+
+        info.subresourceRange.aspectMask = TextureFormat::has_depth( texture->vk_format ) ? VK_IMAGE_ASPECT_DEPTH_BIT : 0;
+        // TODO:gs
+        //info.subresourceRange.aspectMask |= TextureFormat::has_stencil( creation.format ) ? VK_IMAGE_ASPECT_STENCIL_BIT : 0;
+    } else {
+        info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    }
+
+    info.subresourceRange.baseMipLevel = creation.mip_base_level;
+    info.subresourceRange.levelCount = creation.mip_level_count;
+    info.subresourceRange.baseArrayLayer = creation.array_base_layer;
+    info.subresourceRange.layerCount = creation.array_layer_count;
+    check( vkCreateImageView( gpu.vulkan_device, &info, gpu.vulkan_allocation_callbacks, &texture->vk_image_view ) );
+
+    gpu.set_resource_name( VK_OBJECT_TYPE_IMAGE_VIEW, ( u64 )texture->vk_image_view, creation.name );
+}
+
 static void vulkan_create_texture( GpuDevice& gpu, const TextureCreation& creation, TextureHandle handle, Texture* texture ) {
 
     texture->width = creation.width;
     texture->height = creation.height;
     texture->depth = creation.depth;
-    texture->mipmaps = creation.mipmaps;
+    texture->mip_base_level = 0;        // For new textures, we have a view that is for all mips and layers.
+    texture->array_base_layer = 0;      // For new textures, we have a view that is for all mips and layers.
+    texture->array_layer_count = creation.array_layer_count;
+    texture->mip_level_count = creation.mip_level_count;
     texture->type = creation.type;
     texture->name = creation.name;
     texture->vk_format = creation.format;
     texture->sampler = nullptr;
     texture->flags = creation.flags;
-
+    texture->parent_texture = k_invalid_texture;
     texture->handle = handle;
 
     //// Create the image
@@ -1012,8 +1062,8 @@ static void vulkan_create_texture( GpuDevice& gpu, const TextureCreation& creati
     image_info.extent.width = creation.width;
     image_info.extent.height = creation.height;
     image_info.extent.depth = creation.depth;
-    image_info.mipLevels = creation.mipmaps;
-    image_info.arrayLayers = 1;
+    image_info.mipLevels = creation.mip_level_count;
+    image_info.arrayLayers = creation.array_layer_count;
     image_info.samples = VK_SAMPLE_COUNT_1_BIT;
     image_info.tiling = VK_IMAGE_TILING_OPTIMAL;
 
@@ -1057,27 +1107,11 @@ static void vulkan_create_texture( GpuDevice& gpu, const TextureCreation& creati
 
     gpu.set_resource_name( VK_OBJECT_TYPE_IMAGE, ( u64 )texture->vk_image, creation.name );
 
-    //// Create the image view
-    VkImageViewCreateInfo info = { VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
-    info.image = texture->vk_image;
-    info.viewType = to_vk_image_view_type( creation.type );
-    info.format = image_info.format;
+    // Create default texture view.
+    TextureViewCreation tvc;
+    tvc.set_mips( 0, creation.mip_level_count ).set_array( 0, creation.array_layer_count ).set_name( creation.name );
 
-    if ( TextureFormat::has_depth_or_stencil( creation.format ) ) {
-
-        info.subresourceRange.aspectMask = TextureFormat::has_depth( creation.format ) ? VK_IMAGE_ASPECT_DEPTH_BIT : 0;
-        // TODO:gs
-        //info.subresourceRange.aspectMask |= TextureFormat::has_stencil( creation.format ) ? VK_IMAGE_ASPECT_STENCIL_BIT : 0;
-    } else {
-        info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    }
-
-    info.subresourceRange.levelCount = creation.mipmaps;
-    info.subresourceRange.layerCount = 1;
-    check( vkCreateImageView( gpu.vulkan_device, &info, gpu.vulkan_allocation_callbacks, &texture->vk_image_view ) );
-
-    gpu.set_resource_name( VK_OBJECT_TYPE_IMAGE_VIEW, ( u64 )texture->vk_image_view, creation.name );
-
+    vulkan_create_texture_view( gpu, tvc, texture );
     texture->state = RESOURCE_STATE_UNDEFINED;
 
     // Add deferred bindless update.
@@ -1138,14 +1172,14 @@ static void upload_texture_data( Texture* texture, void* upload_data, GpuDevice&
 
     vkCmdCopyBufferToImage( command_buffer->vk_command_buffer, staging_buffer, texture->vk_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region );
     // Prepare first mip to create lower mipmaps
-    if ( texture->mipmaps > 1 ) {
+    if ( texture->mip_level_count > 1 ) {
         util_add_image_barrier( &gpu, command_buffer->vk_command_buffer, texture->vk_image, RESOURCE_STATE_COPY_DEST, RESOURCE_STATE_COPY_SOURCE, 0, 1, false );
     }
 
     i32 w = texture->width;
     i32 h = texture->height;
 
-    for ( int mip_index = 1; mip_index < texture->mipmaps; ++mip_index ) {
+    for ( int mip_index = 1; mip_index < texture->mip_level_count; ++mip_index ) {
         util_add_image_barrier( &gpu, command_buffer->vk_command_buffer, texture->vk_image, RESOURCE_STATE_UNDEFINED, RESOURCE_STATE_COPY_DEST, mip_index, 1, false );
 
         VkImageBlit blit_region{ };
@@ -1175,7 +1209,7 @@ static void upload_texture_data( Texture* texture, void* upload_data, GpuDevice&
     }
 
     // Transition
-    util_add_image_barrier( &gpu, command_buffer->vk_command_buffer, texture->vk_image, ( texture->mipmaps > 1 ) ? RESOURCE_STATE_COPY_SOURCE : RESOURCE_STATE_COPY_DEST, RESOURCE_STATE_SHADER_RESOURCE, 0, texture->mipmaps, false );
+    util_add_image_barrier( &gpu, command_buffer->vk_command_buffer, texture->vk_image, ( texture->mip_level_count > 1 ) ? RESOURCE_STATE_COPY_SOURCE : RESOURCE_STATE_COPY_DEST, RESOURCE_STATE_SHADER_RESOURCE, 0, texture->mip_level_count, false );
     texture->state = RESOURCE_STATE_SHADER_RESOURCE;
 
     vkEndCommandBuffer( command_buffer->vk_command_buffer );
@@ -1221,6 +1255,29 @@ TextureHandle GpuDevice::create_texture( const TextureCreation& creation ) {
     if ( creation.initial_data ) {
         upload_texture_data( texture, creation.initial_data, *this );
     }
+
+    return handle;
+}
+
+TextureHandle GpuDevice::create_texture_view( const TextureViewCreation& creation ) {
+    u32 resource_index = textures.obtain_resource();
+    TextureHandle handle = { resource_index };
+    if ( resource_index == k_invalid_index ) {
+        return handle;
+    }
+
+    Texture* parent_texture = access_texture( creation.parent_texture );
+    Texture* texture_view = access_texture( handle );
+
+    // Copy parent texture data to texture view
+    memory_copy( texture_view, parent_texture, sizeof( Texture ) );
+    // Add texture view data
+    texture_view->parent_texture = creation.parent_texture;
+    texture_view->handle = handle;
+    texture_view->array_base_layer = creation.array_base_layer;
+    texture_view->mip_base_level = creation.mip_base_level;
+
+    vulkan_create_texture_view( *this, creation, texture_view );
 
     return handle;
 }
@@ -1355,11 +1412,13 @@ ShaderStateHandle GpuDevice::create_shader_state( const ShaderStateCreation& cre
     sizet current_temporary_marker = temporary_allocator->get_marker();
 
     StringBuffer name_buffer;
-    name_buffer.init( 4096, temporary_allocator );
+    name_buffer.init( 8000, temporary_allocator );
 
     // Parse result needs to be always in memory as its used to free descriptor sets.
     shader_state->parse_result = ( spirv::ParseResult* )allocator->allocate( sizeof( spirv::ParseResult ), 64 );
     memset( shader_state->parse_result, 0, sizeof( spirv::ParseResult ) );
+
+    u32 broken_stage = u32_max;
 
     for ( compiled_shaders = 0; compiled_shaders < creation.stages_count; ++compiled_shaders ) {
         const ShaderStage& stage = creation.stages[ compiled_shaders ];
@@ -1386,15 +1445,11 @@ ShaderStateHandle GpuDevice::create_shader_state( const ShaderStateCreation& cre
         shader_stage_info.stage = stage.type;
 
         if ( vkCreateShaderModule( vulkan_device, &shader_create_info, nullptr, &shader_state->shader_stage_info[ compiled_shaders ].module ) != VK_SUCCESS ) {
-
+            broken_stage = compiled_shaders;
             break;
         }
 
         spirv::parse_binary( shader_create_info.pCode, shader_create_info.codeSize, name_buffer, shader_state->parse_result );
-        // Not needed anymore - temp allocator freed at the end.
-        //if ( compiled ) {
-        //    rfree( ( void* )createInfo.pCode, allocator );
-        //}
 
         set_resource_name( VK_OBJECT_TYPE_SHADER_MODULE, ( u64 )shader_state->shader_stage_info[ compiled_shaders ].module, creation.name );
     }
@@ -1412,11 +1467,9 @@ ShaderStateHandle GpuDevice::create_shader_state( const ShaderStateCreation& cre
         destroy_shader_state( handle );
         handle.index = k_invalid_index;
 
-        // Dump shader code
-        rprint( "Error in creation of shader %s. Dumping all shader informations.\n", creation.name );
-        for ( compiled_shaders = 0; compiled_shaders < creation.stages_count; ++compiled_shaders ) {
-            const ShaderStage& stage = creation.stages[ compiled_shaders ];
-            rprint( "%u:\n%s\n", stage.type, stage.code );
+        if ( !creation.spv_input ) {
+            const ShaderStage& stage = creation.stages[ broken_stage ];
+            dump_shader_code( name_buffer, stage.code, stage.type, creation.name );
         }
     }
 
@@ -1813,6 +1866,7 @@ SamplerHandle GpuDevice::create_sampler( const SamplerCreation& creation ) {
     sampler->mag_filter = creation.mag_filter;
     sampler->mip_filter = creation.mip_filter;
     sampler->name = creation.name;
+    sampler->reduction_mode = creation.reduction_mode;
 
     VkSamplerCreateInfo create_info{ VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO };
     create_info.addressModeU = creation.address_mode_u;
@@ -1833,6 +1887,14 @@ SamplerHandle GpuDevice::create_sampler( const SamplerCreation& creation ) {
     VkCompareOp             compareOp;
     VkBorderColor           borderColor;
     VkBool32                unnormalizedCoordinates;*/
+
+    VkSamplerReductionModeCreateInfo createInfoReduction = { VK_STRUCTURE_TYPE_SAMPLER_REDUCTION_MODE_CREATE_INFO };
+    // Add optional reduction mode.
+    if ( creation.reduction_mode != VK_SAMPLER_REDUCTION_MODE_WEIGHTED_AVERAGE ) {
+        createInfoReduction.reductionMode = creation.reduction_mode;
+
+        create_info.pNext = &createInfoReduction;
+    }
 
     vkCreateSampler( vulkan_device, &create_info, vulkan_allocation_callbacks, &sampler->vk_sampler );
 
@@ -1885,7 +1947,8 @@ DescriptorSetLayoutHandle GpuDevice::create_descriptor_set_layout( const Descrip
 
         // [TAG: BINDLESS]
         // Skip bindings for images and textures as they are bindless, thus bound in the global bindless arrays (one for images, one for textures).
-        if ( skip_bindless_bindings && (binding.type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER || binding.type == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE) ) {
+        // TODO(marco): better solution to allow individual image views to be bound
+        if ( creation.set_index == 0 && skip_bindless_bindings && (binding.type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER || binding.type == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE) ) {
             continue;
         }
 
@@ -1938,7 +2001,8 @@ DescriptorSetLayoutHandle GpuDevice::create_descriptor_set_layout( const Descrip
 //
 void GpuDevice::fill_write_descriptor_sets( GpuDevice& gpu, const DescriptorSetLayout* descriptor_set_layout, VkDescriptorSet vk_descriptor_set,
                                             VkWriteDescriptorSet* descriptor_write, VkDescriptorBufferInfo* buffer_info, VkDescriptorImageInfo* image_info,
-                                            VkSampler vk_default_sampler, u32& num_resources, const ResourceHandle* resources, const SamplerHandle* samplers, const u16* bindings ) {
+                                            VkSampler vk_default_sampler, u32& num_resources, const ResourceHandle* resources,
+                                            const SamplerHandle* samplers, const u16* bindings ) {
 
     u32 used_resources = 0;
     const bool skip_bindless_bindings = gpu.bindless_supported && !descriptor_set_layout->bindless;
@@ -1954,7 +2018,7 @@ void GpuDevice::fill_write_descriptor_sets( GpuDevice& gpu, const DescriptorSetL
 
         // [TAG: BINDLESS]
         // Skip bindless descriptors as they are bound in the global bindless arrays.
-        if ( skip_bindless_bindings && (binding.type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER || binding.type == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE) ) {
+        if ( descriptor_set_layout->set_index == 0 && skip_bindless_bindings && (binding.type == VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER || binding.type == VK_DESCRIPTOR_TYPE_STORAGE_IMAGE) ) {
             continue;
         }
 
@@ -1974,23 +2038,30 @@ void GpuDevice::fill_write_descriptor_sets( GpuDevice& gpu, const DescriptorSetL
             {
                 descriptor_write[ i ].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
 
-                TextureHandle texture_handle = { resources[ r ] };
-                Texture* texture_data = gpu.access_texture( texture_handle );
-
                 // Find proper sampler.
                 // TODO: improve. Remove the single texture interface ?
                 image_info[ i ].sampler = vk_default_sampler;
+
+                TextureHandle texture_handle = { resources[ r ] };
+                Texture* texture_data = gpu.access_texture( texture_handle );
+
+                image_info[ i ].imageView = texture_data->vk_image_view;
+
                 if ( texture_data->sampler ) {
                     image_info[ i ].sampler = texture_data->sampler->vk_sampler;
                 }
+
+                if ( gpu.synchronization2_extension_present ) {
+                    image_info[ i ].imageLayout = VK_IMAGE_LAYOUT_READ_ONLY_OPTIMAL_KHR;
+                } else {
+                    image_info[ i ].imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+                }
+
                 // TODO: else ?
                 if ( samplers[ r ].index != k_invalid_index ) {
                     Sampler* sampler = gpu.access_sampler( { samplers[ r ] } );
                     image_info[ i ].sampler = sampler->vk_sampler;
                 }
-
-                image_info[ i ].imageLayout = TextureFormat::has_depth_or_stencil( texture_data->vk_format ) ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-                image_info[ i ].imageView = texture_data->vk_image_view;
 
                 descriptor_write[ i ].pImageInfo = &image_info[ i ];
 
@@ -2001,11 +2072,12 @@ void GpuDevice::fill_write_descriptor_sets( GpuDevice& gpu, const DescriptorSetL
             {
                 descriptor_write[ i ].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
 
+                image_info[ i ].sampler = nullptr;
+                image_info[ i ].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+
                 TextureHandle texture_handle = { resources[ r ] };
                 Texture* texture_data = gpu.access_texture( texture_handle );
 
-                image_info[ i ].sampler = nullptr;
-                image_info[ i ].imageLayout = VK_IMAGE_LAYOUT_GENERAL;
                 image_info[ i ].imageView = texture_data->vk_image_view;
 
                 descriptor_write[ i ].pImageInfo = &image_info[ i ];
@@ -2108,10 +2180,12 @@ DescriptorSetHandle GpuDevice::create_descriptor_set( const DescriptorSetCreatio
     descriptor_set->num_resources = creation.num_resources;
     descriptor_set->layout = descriptor_set_layout;
 
+    RASSERTM( creation.num_resources < k_max_descriptors_per_set, "Overflow in resources, please bump k_max_descriptors_per_set." );
+
     // Update descriptor set
-    VkWriteDescriptorSet descriptor_write[ 8 ];
-    VkDescriptorBufferInfo buffer_info[ 8 ];
-    VkDescriptorImageInfo image_info[ 8 ];
+    VkWriteDescriptorSet descriptor_write[ k_max_descriptors_per_set ];
+    VkDescriptorBufferInfo buffer_info[ k_max_descriptors_per_set ];
+    VkDescriptorImageInfo image_info[ k_max_descriptors_per_set ];
 
     Sampler* vk_default_sampler = access_sampler( default_sampler );
 
@@ -2121,6 +2195,7 @@ DescriptorSetHandle GpuDevice::create_descriptor_set( const DescriptorSetCreatio
 
     // Cache resources
     for ( u32 r = 0; r < creation.num_resources; r++ ) {
+        // TODO(marco): should resources simply be a union of VkBufferView and VkImageView?
         descriptor_set->resources[ r ] = creation.resources[ r ];
         descriptor_set->samplers[ r ] = creation.samplers[ r ];
         descriptor_set->bindings[ r ] = creation.bindings[ r ];
@@ -2370,7 +2445,7 @@ FramebufferHandle GpuDevice::create_framebuffer( const FramebufferCreation& crea
 }
 
 
-// Resource Destruction /////////////////////////////////////////////////////////
+// Resource Destruction ///////////////////////////////////////////////////
 
 void GpuDevice::destroy_buffer( BufferHandle buffer ) {
     if ( buffer.index < buffers.pool_size ) {
@@ -2484,7 +2559,7 @@ void GpuDevice::destroy_texture_instant( ResourceHandle texture ) {
         vkDestroyImageView( vulkan_device, v_texture->vk_image_view, vulkan_allocation_callbacks );
         v_texture->vk_image_view = VK_NULL_HANDLE;
 
-        if ( v_texture->vma_allocation != 0 ) {
+        if ( v_texture->vma_allocation != 0 && v_texture->parent_texture.index == k_invalid_texture.index ) {
             vmaDestroyImage( vma_allocator, v_texture->vk_image, v_texture->vma_allocation );
         } else if ( v_texture->vma_allocation == nullptr ) {
             // Aliased textures
@@ -2701,28 +2776,22 @@ void GpuDevice::create_swapchain() {
         vk_framebuffer->width = swapchain_width;
         vk_framebuffer->height = swapchain_height;
 
+        // Manual creation of texture
         Texture* color = access_texture( vk_framebuffer->color_attachments[ 0 ] );
         color->vk_image = swapchain_images[ iv ];
+        color->vk_format = vulkan_surface_format.format;
+        color->type = TextureType::Texture2D;
 
-        TextureCreation depth_texture_creation = { nullptr, swapchain_width, swapchain_height, 1, 1, 0, VK_FORMAT_D32_SFLOAT, TextureType::Texture2D, k_invalid_texture, "DepthImage_Texture" };
+        TextureViewCreation tvc;
+        tvc.set_mips( 0, 1 ).set_array( 0, 1 ).set_name( "framebuffer" );
+
+        vulkan_create_texture_view( *this, tvc, color );
+
+        TextureCreation depth_texture_creation;// = { nullptr, swapchain_width, swapchain_height, 1, 1, 0, VK_FORMAT_D32_SFLOAT, TextureType::Texture2D, k_invalid_texture, "DepthImage_Texture" };
+        depth_texture_creation.set_size( swapchain_width, swapchain_height, 1 ).set_format_type( VK_FORMAT_D32_SFLOAT, TextureType::Texture2D ).set_name( "DepthImage_Texture" );
         vk_framebuffer->depth_stencil_attachment = create_texture( depth_texture_creation );
 
         Texture* depth_stencil_texture = access_texture( vk_framebuffer->depth_stencil_attachment );
-
-        // Create an image view which we can render into.
-        VkImageViewCreateInfo view_info{ VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO };
-        view_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        view_info.format = vulkan_surface_format.format;
-        view_info.image = swapchain_images[ iv ];
-        view_info.subresourceRange.levelCount = 1;
-        view_info.subresourceRange.layerCount = 1;
-        view_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-        view_info.components.r = VK_COMPONENT_SWIZZLE_R;
-        view_info.components.g = VK_COMPONENT_SWIZZLE_G;
-        view_info.components.b = VK_COMPONENT_SWIZZLE_B;
-        view_info.components.a = VK_COMPONENT_SWIZZLE_A;
-
-        check( vkCreateImageView( vulkan_device, &view_info, vulkan_allocation_callbacks, &color->vk_image_view ) );
 
         if ( !dynamic_rendering_extension_present ) {
             vulkan_create_framebuffer( *this, vk_framebuffer );
@@ -2961,12 +3030,16 @@ void GpuDevice::resize_texture( TextureHandle texture, u32 width, u32 height ) {
 
     // Re-create image in place.
     TextureCreation tc;
-    tc.set_flags( vk_texture->mipmaps, vk_texture->flags ).set_format_type( vk_texture->vk_format, vk_texture->type )
-        .set_name( vk_texture->name ).set_size( width, height, vk_texture->depth );
+    tc.set_flags( vk_texture->flags ).set_format_type( vk_texture->vk_format, vk_texture->type )
+        .set_name( vk_texture->name ).set_size( width, height, vk_texture->depth )
+        .set_mips( vk_texture->mip_level_count );
     vulkan_create_texture( *this, tc, vk_texture->handle, vk_texture );
 
     destroy_texture( texture_to_delete );
 }
+
+//
+//
 
 void GpuDevice::fill_barrier( FramebufferHandle framebuffer, ExecutionBarrier& out_barrier ) {
 
@@ -3103,6 +3176,11 @@ void GpuDevice::present( CommandBuffer* async_compute_command_buffer ) {
             //if ( texture_to_update.current_frame == current_frame )
             {
                 Texture* texture = access_texture({ texture_to_update.handle });
+
+                if (texture->vk_image_view == VK_NULL_HANDLE) {
+                    continue;
+                }
+
                 VkWriteDescriptorSet& descriptor_write = bindless_descriptor_writes[current_write_index];
                 descriptor_write = { VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET };
                 descriptor_write.descriptorCount = 1;
@@ -3138,13 +3216,14 @@ void GpuDevice::present( CommandBuffer* async_compute_command_buffer ) {
                 descriptor_write.pImageInfo = &descriptor_image_info;
 
                 texture_to_update.current_frame = u32_max;
-
+                // Cache this value, as delete_swap will modify the texture_to_update reference.
+                const bool add_texture_to_delete = texture_to_update.deleting;
                 texture_to_update_bindless.delete_swap(it);
 
                 ++current_write_index;
 
                 // Add texture to delete
-                if (texture_to_update.deleting) {
+                if (add_texture_to_delete) {
                     resource_deletion_queue.push({ ResourceUpdateType::Texture, texture->handle.index, current_frame, 1 });
                 }
 
@@ -3172,7 +3251,6 @@ void GpuDevice::present( CommandBuffer* async_compute_command_buffer ) {
             vkUpdateDescriptorSets(vulkan_device, current_write_index, bindless_descriptor_writes, 0, nullptr);
         }
     }
-
 
     // Submit command buffers
     u32 wait_semaphore_count = 1;
@@ -3358,43 +3436,6 @@ void GpuDevice::present( CommandBuffer* async_compute_command_buffer ) {
 
                 for ( u32 i = 0; i < GpuPipelineStatistics::Count; ++i ) {
                     gpu_time_queries_manager->frame_pipeline_statistics.statistics[ i ] += pipeline_statistics_data[ i ];
-                }
-            }
-
-            temporary_allocator->clear();
-        }
-
-        {
-            const u32 pool_index = previous_frame;
-            GpuThreadFramePools& thread_pool = compute_frame_pools[ pool_index ];
-            GpuTimeQueryTree* time_query = thread_pool.time_queries;
-
-            // For each active time query pool
-            if ( time_query && time_query->allocated_time_query ) {
-
-                // Query GPU for all timestamps.
-                const u32 query_offset = ( num_threads * gpu_time_queries_manager->queries_per_thread ) + pool_index;
-                const u32 query_count = time_query->allocated_time_query;
-                u64* timestamps_data = ( u64* )ralloca( query_count * 2 * sizeof( u64 ), temporary_allocator );
-                vkGetQueryPoolResults( vulkan_device, thread_pool.vulkan_timestamp_query_pool, 0, query_count * 2,
-                                       sizeof( u64 ) * query_count * 2, timestamps_data,
-                                       sizeof( u64 ), VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT );
-
-                // Calculate and cache the elapsed time
-                for ( u32 i = 0; i < query_count; i++ ) {
-                    u32 index = ( query_offset) + i;
-
-                    GPUTimeQuery& timestamp = gpu_time_queries_manager->timestamps[ index ];
-
-                    double start = ( double )timestamps_data[ ( i * 2 ) ];
-                    double end = ( double )timestamps_data[ ( i * 2 ) + 1 ];
-                    double range = end - start;
-                    double elapsed_time = range * gpu_timestamp_frequency;
-
-                    timestamp.elapsed_ms = elapsed_time;
-                    timestamp.frame_index = absolute_frame;
-
-                    //print_format( "%s: %2.3f d(%u) - ", timestamp.name, elapsed_time, timestamp.depth );
                 }
             }
 
@@ -3658,8 +3699,8 @@ void GpuDevice::queue_command_buffer( CommandBuffer* command_buffer ) {
 
 //
 //
-CommandBuffer* GpuDevice::get_command_buffer( u32 thread_index, u32 frame_index, bool begin, bool compute /*= false*/ ) {
-    CommandBuffer* cb = command_buffer_ring.get_command_buffer( frame_index, thread_index, begin, compute );
+CommandBuffer* GpuDevice::get_command_buffer( u32 thread_index, u32 frame_index, bool begin ) {
+    CommandBuffer* cb = command_buffer_ring.get_command_buffer( frame_index, thread_index, begin );
     return cb;
 }
 
@@ -3670,7 +3711,7 @@ CommandBuffer* GpuDevice::get_secondary_command_buffer( u32 thread_index, u32 fr
     return cb;
 }
 
-// Resource Description Query ///////////////////////////////////////////////////
+// Resource Description Query /////////////////////////////////////////////
 
 void GpuDevice::query_buffer( BufferHandle buffer, BufferDescription& out_description ) {
     if ( buffer.index != k_invalid_index ) {
@@ -3693,7 +3734,7 @@ void GpuDevice::query_texture( TextureHandle texture, TextureDescription& out_de
         out_description.height = texture_data->height;
         out_description.depth = texture_data->depth;
         out_description.format = texture_data->vk_format;
-        out_description.mipmaps = texture_data->mipmaps;
+        out_description.mipmaps = texture_data->mip_level_count;
         out_description.type = texture_data->type;
         out_description.render_target = ( texture_data->flags & TextureFlags::RenderTarget_mask ) == TextureFlags::RenderTarget_mask;
         out_description.compute_access = ( texture_data->flags & TextureFlags::Compute_mask ) == TextureFlags::Compute_mask;
@@ -3751,9 +3792,7 @@ const RenderPassOutput& GpuDevice::get_render_pass_output( RenderPassHandle rend
     return vulkan_render_pass->output;
 }
 
-// Resource Map/Unmap ///////////////////////////////////////////////////////////
-
-
+// Resource Map/Unmap /////////////////////////////////////////////////////
 void* GpuDevice::map_buffer( const MapBufferParameters& parameters ) {
     if ( parameters.buffer.index == k_invalid_index )
         return nullptr;
@@ -3803,7 +3842,7 @@ u32 GpuDevice::copy_gpu_timestamps( GPUTimeQuery* out_timestamps ) {
 
 }
 
-// Utility methods //////////////////////////////////////////////////////////////
+// Utility methods ////////////////////////////////////////////////////////
 
 void check_result( VkResult result ) {
     if ( result == VK_SUCCESS ) {
@@ -3815,7 +3854,7 @@ void check_result( VkResult result ) {
         RASSERTM( false, "Vulkan error: aborting." );
     }
 }
-// Device ////////////////////////////////////////////////////////////////
+// Device /////////////////////////////////////////////////////////////////
 
 BufferHandle GpuDevice::get_fullscreen_vertex_buffer() const {
     return fullscreen_vertex_buffer;
@@ -3845,7 +3884,7 @@ void GpuDevice::resize( u16 width, u16 height ) {
 }
 
 
-// Resource Access //////////////////////////////////////////////////////////////
+// Resource Access ////////////////////////////////////////////////////////
 ShaderState* GpuDevice::access_shader_state( ShaderStateHandle shader ) {
     return (ShaderState*)shaders.access_resource( shader.index );
 }

@@ -41,7 +41,11 @@ struct CommandBuffer {
     void                            draw( TopologyType::Enum topology, u32 first_vertex, u32 vertex_count, u32 first_instance, u32 instance_count );
     void                            draw_indexed( TopologyType::Enum topology, u32 index_count, u32 instance_count, u32 first_index, i32 vertex_offset, u32 first_instance );
     void                            draw_indirect( BufferHandle handle, u32 draw_count, u32 offset, u32 stride );
-    void                            draw_indexed_indirect( BufferHandle handle, u32 offset, u32 stride );
+    void                            draw_indirect_count( BufferHandle argument_buffer, u32 argument_offset, BufferHandle count_buffer, u32 count_offset, u32 max_draws, u32 stride );
+    void                            draw_indexed_indirect( BufferHandle handle, u32 draw_count, u32 offset, u32 stride );
+
+    void                            draw_mesh_task( u32 task_count, u32 first_task );
+    void                            draw_mesh_task_indirect( BufferHandle argument_buffer, u32 argument_offset, BufferHandle count_buffer, u32 count_offset, u32 max_draws, u32 stride );
 
     void                            dispatch( u32 group_x, u32 group_y, u32 group_z );
     void                            dispatch_indirect( BufferHandle handle, u32 offset );
@@ -95,7 +99,7 @@ struct CommandBufferManager {
 
     void                    reset_pools( u32 frame_index );
 
-    CommandBuffer*          get_command_buffer( u32 frame, u32 thread_index, bool begin, bool compute );
+    CommandBuffer*          get_command_buffer( u32 frame, u32 thread_index, bool begin );
     CommandBuffer*          get_secondary_command_buffer( u32 frame, u32 thread_index );
 
     u16                     pool_from_index( u32 index ) { return (u16)index / num_pools_per_frame; }
@@ -103,7 +107,6 @@ struct CommandBufferManager {
 
     Array<CommandBuffer>    command_buffers;
     Array<CommandBuffer>    secondary_command_buffers;
-    Array<CommandBuffer>    compute_command_buffers;
     Array<u8>               used_buffers;       // Track how many buffers were used per thread per frame.
     Array<u8>               used_secondary_command_buffers;
 

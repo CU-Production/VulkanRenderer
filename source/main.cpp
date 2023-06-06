@@ -18,6 +18,8 @@
 #include "graphics/scene_graph.hpp"
 #include "graphics/render_resources_loader.hpp"
 
+#include "external/cglm/struct/vec2.h"
+#include "external/cglm/struct/mat2.h"
 #include "external/cglm/struct/mat3.h"
 #include "external/cglm/struct/mat4.h"
 #include "external/cglm/struct/cam.h"
@@ -79,12 +81,75 @@ struct AsynchronousLoadTask : enki::IPinnedTask {
 
 //
 //
+vec4s normalize_plane( vec4s plane ) {
+    f32 len = glms_vec3_norm( { plane.x, plane.y, plane.z } );
+    return glms_vec4_scale( plane, 1.0f / len );
+}
+
+f32 linearize_depth( f32 depth, f32 z_far, f32 z_near ) {
+    return z_near * z_far / ( z_far + depth * ( z_near - z_far ) );
+}
+
+// CGLM converted method from:
+// 2D Polyhedral Bounds of a Clipped, Perspective - Projected 3D Sphere
+// By Michael Mara Morgan McGuire
+void getBoundsForAxis( const vec3s& a, // Bounding axis (camera space)
+                       const vec3s& C, // Sphere center (camera space)
+                       float r, // Sphere radius
+                       float nearZ, // Near clipping plane (negative)
+                        vec3s& L, // Tangent point (camera space)
+                        vec3s& U ) { // Tangent point (camera space)
+
+    const vec2s c{ glms_vec3_dot( a, C ), C.z }; // C in the a-z frame
+    vec2s bounds[ 2 ]; // In the a-z reference frame
+    const float tSquared = glms_vec2_dot( c, c ) - ( r * r );
+    const bool cameraInsideSphere = ( tSquared <= 0 );
+    // (cos, sin) of angle theta between c and a tangent vector
+    vec2s v = cameraInsideSphere ? vec2s{ 0.0f, 0.0f } : vec2s{ glms_vec2_divs( vec2s{ sqrt( tSquared ), r }, glms_vec2_norm( c ) ) };
+    // Does the near plane intersect the sphere?
+    const bool clipSphere = ( c.y + r >= nearZ );
+    // Square root of the discriminant; NaN (and unused)
+    // if the camera is in the sphere
+    float k = sqrt( ( r * r ) - ( (nearZ - c.y) * (nearZ - c.y) ) );
+    for ( int i = 0; i < 2; ++i ) {
+        if ( !cameraInsideSphere ) {
+            mat2s transform { v.x, -v.y,
+                              v.y, v.x };
+
+            bounds[ i ] = glms_mat2_mulv( transform, glms_vec2_scale(c, v.x) );
+        }
+
+        const bool clipBound = cameraInsideSphere || ( bounds[ i ].y > nearZ );
+
+        if ( clipSphere && clipBound ) {
+            bounds[ i ] = vec2s{ c.x + k, nearZ };
+        }
+
+        // Set up for the lower bound
+        v.y = -v.y; k = -k;
+    }
+    // Transform back to camera space
+    L = glms_vec3_scale( a, bounds[ 1 ].x );
+    L.z = bounds[ 1 ].y;
+    U = glms_vec3_scale( a, bounds[ 0 ].x );
+    U.z = bounds[ 0 ].y;
+}
+
+vec3s project( const mat4s& P, const vec3s& Q ) {
+    vec4s v = glms_mat4_mulv( P, vec4s{ Q.x, Q.y, Q.z, 1.0f } );
+    v = glms_vec4_divs( v, v.w );
+    //return v.xyz() / v.w;
+    return vec3s{ v.x, v.y, v.z };
+}
+
+//
+//
 int main( int argc, char** argv ) {
 
-//    if ( argc < 2 ) {
-//        printf( "Usage: VulkanRenderer [path to glTF or obj model]\n");
-//        InjectDefault3DModel();
-//    }
+    if ( argc < 2 ) {
+        printf( "Usage: chapter6 [path to glTF model]\n");
+        InjectDefault3DModel();
+    }
 
     using namespace raptor;
     // Init services
@@ -159,6 +224,19 @@ int main( int argc, char** argv ) {
     StringBuffer temporary_name_buffer;
     temporary_name_buffer.init( 1024, &scratch_allocator );
 
+    // Create binaries folders
+    cstring shader_binaries_folder = temporary_name_buffer.append_use_f( "%s/shaders /", RAPTOR_DATA_FOLDER );
+    if ( !directory_exists(shader_binaries_folder) ) {
+        if ( directory_create( shader_binaries_folder ) ) {
+            rprint( "Created folder %s\n", shader_binaries_folder );
+        }
+        else {
+            rprint( "Cannot create folder %s\n" );
+        }
+    }
+    strcpy( renderer.resource_cache.binary_data_folder, shader_binaries_folder );
+    temporary_name_buffer.clear();
+
     // Load frame graph and parse gpu techniques
     {
         cstring frame_graph_path = temporary_name_buffer.append_use_f( "%s/%s", RAPTOR_WORKING_FOLDER, "graph.json" );
@@ -176,30 +254,21 @@ int main( int argc, char** argv ) {
 
         // Parse techniques
         GpuTechniqueCreation gtc;
-        temporary_name_buffer.clear();
-        cstring full_screen_pipeline_path = temporary_name_buffer.append_use_f( "%s/%s", RAPTOR_SHADER_FOLDER, "fullscreen.json" );
-        render_resources_loader.load_gpu_technique( full_screen_pipeline_path );
+        const bool use_shader_cache = true;
+        auto parse_technique = [ & ]( cstring technique_name ) {
+            temporary_name_buffer.clear();
+            cstring path = temporary_name_buffer.append_use_f( "%s/%s", RAPTOR_SHADER_FOLDER, technique_name );
+            render_resources_loader.load_gpu_technique( path, use_shader_cache );
+        };
 
-        temporary_name_buffer.clear();
-        cstring main_pipeline_path = temporary_name_buffer.append_use_f( "%s/%s", RAPTOR_SHADER_FOLDER, "main.json" );
-        render_resources_loader.load_gpu_technique( main_pipeline_path );
+        cstring techniques[] = { "meshlet.json", "fullscreen.json", "main.json",
+                                 "pbr_lighting.json", "dof.json", "cloth.json", "debug.json",
+                                 "culling.json" };
 
-        temporary_name_buffer.clear();
-        cstring pbr_pipeline_path = temporary_name_buffer.append_use_f( "%s/%s", RAPTOR_SHADER_FOLDER, "pbr_lighting.json" );
-        render_resources_loader.load_gpu_technique( pbr_pipeline_path );
-
-        temporary_name_buffer.clear();
-        cstring dof_pipeline_path = temporary_name_buffer.append_use_f( "%s/%s", RAPTOR_SHADER_FOLDER, "dof.json" );
-        render_resources_loader.load_gpu_technique( dof_pipeline_path );
-
-        temporary_name_buffer.clear();
-        cstring cloth_pipeline_path = temporary_name_buffer.append_use_f( "%s/%s", RAPTOR_SHADER_FOLDER, "cloth.json" );
-        render_resources_loader.load_gpu_technique( cloth_pipeline_path );
-
-        temporary_name_buffer.clear();
-        cstring debug_pipeline_path = temporary_name_buffer.append_use_f( "%s/%s", RAPTOR_SHADER_FOLDER, "debug.json" );
-        render_resources_loader.load_gpu_technique( debug_pipeline_path );
-
+        const sizet num_techniques = ArraySize( techniques );
+        for ( sizet t = 0; t < num_techniques; ++t ) {
+            parse_technique( techniques[ t ] );
+        }
     }
 
     SceneGraph scene_graph;
@@ -212,26 +281,15 @@ int main( int argc, char** argv ) {
     Directory cwd{ };
     directory_current(&cwd);
 
-    temporary_name_buffer.clear();
-    cstring scene_path = nullptr;
-    if ( argc > 1 && false ) {
-        scene_path = argv[ 1 ];
-    }
-    else {
-        scene_path = temporary_name_buffer.append_use_f( "%s/%s", RAPTOR_DATA_FOLDER, "plane.obj" );
-    }
-
     char file_base_path[512]{ };
-    memcpy( file_base_path, scene_path, strlen( scene_path ) );
+    memcpy( file_base_path, argv[ 1 ], strlen( argv[ 1] ) );
     file_directory_from_path( file_base_path );
 
     directory_change( file_base_path );
 
     char file_name[512]{ };
-    memcpy( file_name, scene_path, strlen( scene_path ) );
+    memcpy( file_name, argv[ 1 ], strlen( argv[ 1] ) );
     file_name_from_path( file_name );
-
-    scratch_allocator.free_marker( scratch_marker );
 
     RenderScene* scene = nullptr;
 
@@ -243,6 +301,7 @@ int main( int argc, char** argv ) {
         scene = new ObjScene;
     }
 
+    scene->use_meshlets = gpu.mesh_shaders_extension_present;
     scene->init( file_name, file_base_path, allocator, &scratch_allocator, &async_loader );
 
     // NOTE(marco): restore working directory
@@ -276,9 +335,9 @@ int main( int argc, char** argv ) {
 
     f32 spring_stiffness = 10000.0f;
     f32 spring_damping = 5000.0f;
-    f32 air_density = 10.0f;
+    f32 air_density = 2.0f;
     bool reset_simulation = false;
-    vec3s wind_direction{ -5.0f, 0.0f, 0.0f };
+    vec3s wind_direction{ -2.0f, 0.0f, 0.0f };
 
     while ( !window.requested_exit ) {
         ZoneScopedN("RenderLoop");
@@ -316,6 +375,12 @@ int main( int argc, char** argv ) {
         window.center_mouse( game_camera.mouse_dragging );
 
         static f32 animation_speed_multiplier = 0.05f;
+        static bool enable_frustum_cull_meshes = true;
+        static bool enable_frustum_cull_meshlets = true;
+        static bool enable_occlusion_cull_meshes = true;
+        static bool enable_occlusion_cull_meshlets = true;
+        static bool freeze_occlusion_camera = false;
+        static mat4s projection_transpose{ };
 
         {
             ZoneScopedN( "ImGui Recording" );
@@ -334,6 +399,18 @@ int main( int argc, char** argv ) {
                 ImGui::InputFloat( "Spring damping", &spring_damping );
                 ImGui::Checkbox( "Reset simulation", &reset_simulation );
                 ImGui::Separator();
+
+                static bool enable_meshlets = false;
+                enable_meshlets = scene->use_meshlets && gpu.mesh_shaders_extension_present;
+                ImGui::Checkbox( "Use meshlets", &enable_meshlets );
+                scene->use_meshlets = enable_meshlets;
+                ImGui::Checkbox( "Use frustum cull for meshes", &enable_frustum_cull_meshes );
+                ImGui::Checkbox( "Use frustum cull for meshlets", &enable_frustum_cull_meshlets );
+                ImGui::Checkbox( "Use occlusion cull for meshes", &enable_occlusion_cull_meshes );
+                ImGui::Checkbox( "Use occlusion cull for meshlets", &enable_occlusion_cull_meshlets );
+                ImGui::Checkbox( "Freeze occlusion camera", &freeze_occlusion_camera );
+                ImGui::Checkbox( "Show Debug GPU Draws", &scene->show_debug_gpu_draws );
+
                 ImGui::Checkbox( "Dynamically recreate descriptor sets", &recreate_per_thread_descriptors );
                 ImGui::Checkbox( "Use secondary command buffers", &use_secondary_command_buffers );
 
@@ -386,7 +463,18 @@ int main( int argc, char** argv ) {
                 renderer.imgui_draw();
 
                 ImGui::Separator();
+                ImGui::Text( "Cpu Time %fms", delta_time * 1000.f );
                 gpu_profiler.imgui_draw();
+
+            }
+            ImGui::End();
+
+            if ( ImGui::Begin( "Textures Debug" ) ) {
+                const ImVec2 window_size = ImGui::GetWindowSize();
+
+                FrameGraphResource* resource = frame_graph.get_resource( "depth" );
+
+                ImGui::Image( ( ImTextureID )&resource->resource_info.texture.handle, window_size );
 
             }
             ImGui::End();
@@ -406,21 +494,98 @@ int main( int argc, char** argv ) {
         }
 
         {
-            ZoneScopedN( "UniformBufferUpdate" );
+            ZoneScopedN( "Gpu Buffers Update" );
+
+            GpuSceneData& scene_data = scene->scene_data;
+            scene_data.previous_view_projection = scene_data.view_projection;   // Cache previous view projection
+            scene_data.view_projection = game_camera.camera.view_projection;
+            scene_data.inverse_view_projection = glms_mat4_inv( game_camera.camera.view_projection );
+            scene_data.world_to_camera = game_camera.camera.view;
+            scene_data.eye = vec4s{ game_camera.camera.position.x, game_camera.camera.position.y, game_camera.camera.position.z, 1.0f };
+            scene_data.light_position = vec4s{ light_position.x, light_position.y, light_position.z, 1.0f };
+            scene_data.light_range = light_radius;
+            scene_data.light_intensity = light_intensity;
+            scene_data.dither_texture_index = dither_texture ? dither_texture->handle.index : 0;
+
+            scene_data.z_near = game_camera.camera.near_plane;
+            scene_data.z_far = game_camera.camera.far_plane;
+            scene_data.projection_00 = game_camera.camera.projection.m00;
+            scene_data.projection_11 = game_camera.camera.projection.m11;
+            scene_data.frustum_cull_meshes = enable_frustum_cull_meshes ? 1 : 0;
+            scene_data.frustum_cull_meshlets = enable_frustum_cull_meshlets ? 1 : 0;
+            scene_data.occlusion_cull_meshes = enable_occlusion_cull_meshes ? 1 : 0;
+            scene_data.occlusion_cull_meshlets = enable_occlusion_cull_meshlets ? 1 : 0;
+            scene_data.freeze_occlusion_camera = freeze_occlusion_camera ? 1 : 0;
+
+            scene_data.resolution_x = gpu.swapchain_width * 1.f;
+            scene_data.resolution_y = gpu.swapchain_height * 1.f;
+            scene_data.aspect_ratio = gpu.swapchain_width * 1.f / gpu.swapchain_height;
+
+            // Frustum computations
+            if ( !freeze_occlusion_camera ) {
+                scene_data.eye_debug = scene_data.eye;
+                scene_data.world_to_camera_debug = scene_data.world_to_camera;
+                scene_data.view_projection_debug = scene_data.view_projection;
+                projection_transpose = glms_mat4_transpose( game_camera.camera.projection );
+            }
+
+            scene_data.frustum_planes[ 0 ] = normalize_plane( glms_vec4_add( projection_transpose.col[ 3 ], projection_transpose.col[ 0 ] ) ); // x + w  < 0;
+            scene_data.frustum_planes[ 1 ] = normalize_plane( glms_vec4_sub( projection_transpose.col[ 3 ], projection_transpose.col[ 0 ] ) ); // x - w  < 0;
+            scene_data.frustum_planes[ 2 ] = normalize_plane( glms_vec4_add( projection_transpose.col[ 3 ], projection_transpose.col[ 1 ] ) ); // y + w  < 0;
+            scene_data.frustum_planes[ 3 ] = normalize_plane( glms_vec4_sub( projection_transpose.col[ 3 ], projection_transpose.col[ 1 ] ) ); // y - w  < 0;
+            scene_data.frustum_planes[ 4 ] = normalize_plane( glms_vec4_add( projection_transpose.col[ 3 ], projection_transpose.col[ 2 ] ) ); // z + w  < 0;
+            scene_data.frustum_planes[ 5 ] = normalize_plane( glms_vec4_sub( projection_transpose.col[ 3 ], projection_transpose.col[ 2 ] ) ); // z - w  < 0;
 
             // Update scene constant buffer
             MapBufferParameters scene_cb_map = { scene->scene_cb, 0, 0 };
             GpuSceneData* gpu_scene_data = ( GpuSceneData* )gpu.map_buffer( scene_cb_map );
             if ( gpu_scene_data ) {
-                gpu_scene_data->view_projection = game_camera.camera.view_projection;
-                gpu_scene_data->inverse_view_projection = glms_mat4_inv( game_camera.camera.view_projection );
-                gpu_scene_data->eye = vec4s{ game_camera.camera.position.x, game_camera.camera.position.y, game_camera.camera.position.z, 1.0f };
-                gpu_scene_data->light_position = vec4s{ light_position.x, light_position.y, light_position.z, 1.0f };
-                gpu_scene_data->light_range = light_radius;
-                gpu_scene_data->light_intensity = light_intensity;
-                gpu_scene_data->dither_texture_index = dither_texture ? dither_texture->handle.index : 0;
+                memcpy( gpu_scene_data, &scene->scene_data, sizeof( GpuSceneData ) );
 
                 gpu.unmap_buffer( scene_cb_map );
+            }
+
+            // Test math to check correctness.
+            if( false )
+            {
+                vec4s pos{ -14.5f, 1.28f, 0.f, 1.f };
+                f32 radius = 0.5f;
+                vec4s view_space_pos = glms_mat4_mulv( game_camera.camera.view, pos );
+                bool camera_visible = view_space_pos.z < radius + game_camera.camera.near_plane;
+
+                // X is positive, then it returns the same values as the longer method.
+                vec2s cx{ view_space_pos.x, -view_space_pos.z };
+                vec2s vx{ sqrtf( glms_vec2_dot( cx, cx ) - ( radius * radius )), radius };
+                mat2s xtransf_min{ vx.x, vx.y, -vx.y, vx.x };
+                vec2s minx = glms_mat2_mulv( xtransf_min, cx );
+                mat2s xtransf_max{ vx.x, -vx.y, vx.y, vx.x };
+                vec2s maxx = glms_mat2_mulv( xtransf_max, cx );
+
+                vec2s cy{ -view_space_pos.y, -view_space_pos.z };
+                vec2s vy{ sqrtf( glms_vec2_dot( cy, cy ) - ( radius * radius ) ), radius };
+                mat2s ytransf_min{ vy.x, vy.y, -vy.y, vy.x };
+                vec2s miny = glms_mat2_mulv( ytransf_min, cy );
+                mat2s ytransf_max{ vy.x, -vy.y, vy.y, vy.x };
+                vec2s maxy = glms_mat2_mulv( ytransf_max, cy );
+
+                vec4s aabb{minx.x / minx.y * game_camera.camera.projection.m00, miny.x / miny.y * game_camera.camera.projection.m11,
+                           maxx.x / maxx.y * game_camera.camera.projection.m00, maxy.x / maxy.y * game_camera.camera.projection.m11};
+                vec4s aabb2{ aabb.x * 0.5f + 0.5f, aabb.w * -0.5f + 0.5f, aabb.z * 0.5f + 0.5f, aabb.y * -0.5f + 0.5f };
+
+                vec3s left, right, top, bottom;
+                getBoundsForAxis( vec3s{ 1,0,0 }, { view_space_pos.x, view_space_pos.y, view_space_pos.z }, radius, game_camera.camera.near_plane, left, right );
+                getBoundsForAxis( vec3s{ 0,1,0 }, { view_space_pos.x, view_space_pos.y, view_space_pos.z }, radius, game_camera.camera.near_plane, top, bottom );
+
+                left = project( game_camera.camera.projection, left );
+                right = project( game_camera.camera.projection, right );
+                top = project( game_camera.camera.projection, top );
+                bottom = project( game_camera.camera.projection, bottom );
+
+                vec4s clip_space_pos = glms_mat4_mulv( game_camera.camera.projection, view_space_pos );
+
+                // left,right,bottom and top are in clip space (-1,1). Convert to 0..1 for UV, as used from the optimized version to read the depth pyramid.
+                rprint( "Camera visible %u, x %f, %f, widh %f --- %f,%f width %f\n", camera_visible ? 1 : 0, aabb2.x, aabb2.z, aabb2.z - aabb2.x, left.x * 0.5 + 0.5, right.x * 0.5 + 0.5, (left.x - right.x) * 0.5 );
+                rprint( "y %f, %f, height %f --- %f,%f height %f\n", aabb2.y, aabb2.w, aabb2.w - aabb2.y, top.y * 0.5 + 0.5, bottom.y * 0.5 + 0.5, ( top.y - bottom.y ) * 0.5 );
             }
 
             frame_renderer.upload_gpu_data();
@@ -469,6 +634,7 @@ int main( int argc, char** argv ) {
     frame_graph_builder.shutdown();
 
     scene->shutdown( &renderer );
+    frame_renderer.shutdown();
 
     rm.shutdown();
     renderer.shutdown();

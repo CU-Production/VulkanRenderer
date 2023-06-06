@@ -17,7 +17,7 @@
 #include "external/cglm/struct/quat.h"
 
 #include "external/tracy/tracy/Tracy.hpp"
-
+#include "external/meshoptimizer/meshoptimizer.h"
 
 namespace raptor {
 
@@ -97,9 +97,12 @@ u16 glTFScene::get_material_texture( GpuDevice& gpu, glTF::TextureInfo* texture_
     if ( texture_info != nullptr ) {
         glTF::Texture& gltf_texture = gltf_scene.textures[ texture_info->index ];
         TextureResource& texture_gpu = images[ gltf_texture.source ];
-        SamplerResource& sampler_gpu = samplers[ gltf_texture.sampler ];
 
-        gpu.link_texture_sampler( texture_gpu.handle, sampler_gpu.handle );
+        if ( gltf_texture.sampler != i32_max ) {
+            SamplerResource& sampler_gpu = samplers[ gltf_texture.sampler ];
+
+            gpu.link_texture_sampler( texture_gpu.handle, sampler_gpu.handle );
+        }
 
         return texture_gpu.handle.index;
     }
@@ -112,9 +115,12 @@ u16 glTFScene::get_material_texture( GpuDevice& gpu, i32 gltf_texture_index ) {
     if ( gltf_texture_index >= 0 ) {
         glTF::Texture& gltf_texture = gltf_scene.textures[ gltf_texture_index ];
         TextureResource& texture_gpu = images[ gltf_texture.source ];
-        SamplerResource& sampler_gpu = samplers[ gltf_texture.sampler ];
 
-        gpu.link_texture_sampler( texture_gpu.handle, sampler_gpu.handle );
+        if ( gltf_texture.sampler != i32_max ) {
+            SamplerResource& sampler_gpu = samplers[ gltf_texture.sampler ];
+
+            gpu.link_texture_sampler( texture_gpu.handle, sampler_gpu.handle );
+        }
 
         return texture_gpu.handle.index;
     } else {
@@ -166,7 +172,7 @@ void glTFScene::init( cstring filename, cstring path, Allocator* resident_alloca
         }
 
         TextureCreation tc;
-        tc.set_data( nullptr ).set_format_type( VK_FORMAT_R8G8B8A8_UNORM, TextureType::Texture2D ).set_flags( mip_levels, 0 ).set_size( ( u16 )width, ( u16 )height, 1 ).set_name( image.uri.data );
+        tc.set_data( nullptr ).set_format_type( VK_FORMAT_R8G8B8A8_UNORM, TextureType::Texture2D ).set_flags( 0 ).set_size( ( u16 )width, ( u16 )height, 1 ).set_name( image.uri.data ).set_mips( mip_levels );
         TextureResource* tr = renderer->create_texture( tc );
         RASSERT( tr != nullptr );
 
@@ -266,7 +272,6 @@ void glTFScene::init( cstring filename, cstring path, Allocator* resident_alloca
         buffers_data.push( buffer_data.data );
     }
 
-    i64 end_reading_buffers_data = time_now();
 
     // Load all buffers and initialize them with buffer data
     buffers.init( resident_allocator, gltf_scene.buffer_views_count );
@@ -283,6 +288,231 @@ void glTFScene::init( cstring filename, cstring path, Allocator* resident_alloca
         BufferResource* br = renderer->create_buffer( flags, ResourceUsageType::Immutable, buffer.byte_length, buffer_data, buffer_name );
         buffers.push( *br );
     }
+
+
+    i64 end_reading_buffers_data = time_now();
+
+    // Build meshlets
+    const sizet max_vertices = 64;
+    const sizet max_triangles = 124;
+    const f32 cone_weight = 0.0f;
+
+    meshes.init( resident_allocator_, 16 );
+    meshlets.init( resident_allocator, 16 );
+    meshlets_data.init( resident_allocator, 16 );
+    meshlets_vertex_positions.init( resident_allocator, 16 );
+    meshlets_vertex_data.init( resident_allocator, 16 );
+    gltf_mesh_to_mesh_offset.init( resident_allocator_, 16 );
+
+    u32 mesh_index = 0;
+    for ( u32 mi = 0; mi < gltf_scene.meshes_count; ++mi ) {
+        glTF::Mesh& mesh = gltf_scene.meshes[ mi ];
+
+        gltf_mesh_to_mesh_offset.push( meshes.size );
+
+        for ( u32 p = 0; p < mesh.primitives_count; ++p ) {
+            glTF::MeshPrimitive& mesh_primitive = mesh.primitives[ p ];
+
+            /*if ( mesh_primitive.material != glTF::INVALID_INT_VALUE ) {
+                glTF::Material& material = gltf_scene.materials[ mesh_primitive.material ];
+
+                if ( ( material.alpha_mode.data != nullptr && strcmp( material.alpha_mode.data, "MASK" ) == 0 ) ||
+                     ( material.alpha_mode.data != nullptr && strcmp( material.alpha_mode.data, "BLEND" ) == 0 ) ) {
+                    continue;
+                }
+            }*/
+
+            // Add meshes
+            Mesh mesh{};
+            // Load material defaults: flags is modified after this point.
+            mesh.pbr_material = {};
+
+            // Vertex positions
+            const i32 position_accessor_index = gltf_get_attribute_accessor_index( mesh_primitive.attributes, mesh_primitive.attribute_count, "POSITION" );
+            glTF::Accessor& position_buffer_accessor = gltf_scene.accessors[ position_accessor_index ];
+            glTF::BufferView& position_buffer_view = gltf_scene.buffer_views[ position_buffer_accessor.buffer_view ];
+            i32 position_data_offset = glTF::get_data_offset( position_buffer_accessor.byte_offset, position_buffer_view.byte_offset );
+            f32* vertices = ( f32* )((u8*)buffers_data[ position_buffer_view.buffer ] + position_data_offset);
+
+            // Calculate bounding sphere center
+            vec3s position_min{ position_buffer_accessor.min[ 0 ], position_buffer_accessor.min[ 1 ], position_buffer_accessor.min[ 2 ] };
+            vec3s position_max{ position_buffer_accessor.max[ 0 ], position_buffer_accessor.max[ 1 ], position_buffer_accessor.max[ 2 ] };
+            vec3s bounding_center = glms_vec3_add( position_min, position_max );
+            bounding_center = glms_vec3_divs( bounding_center, 2.0f );
+
+            // Calculate bounding sphere radius
+            f32 radius = raptor::max( glms_vec3_distance( position_max, bounding_center ), glms_vec3_distance( position_min, bounding_center ) );
+            mesh.bounding_sphere = { bounding_center.x, bounding_center.y, bounding_center.z, radius };
+
+            // Vertex normals
+            const i32 normal_accessor_index = gltf_get_attribute_accessor_index( mesh_primitive.attributes, mesh_primitive.attribute_count, "NORMAL" );
+            f32* normals = nullptr;
+            if ( normal_accessor_index != -1 ) {
+                glTF::Accessor& normal_buffer_accessor = gltf_scene.accessors[ normal_accessor_index ];
+                glTF::BufferView& normal_buffer_view = gltf_scene.buffer_views[ normal_buffer_accessor.buffer_view ];
+                i32 normal_data_offset = glTF::get_data_offset( normal_buffer_accessor.byte_offset, normal_buffer_view.byte_offset );
+                normals = ( f32* )((u8*)buffers_data[ normal_buffer_view.buffer ] + normal_data_offset);
+            }
+
+            // Vertex texture coords
+            const i32 tex_coord_accessor_index = gltf_get_attribute_accessor_index( mesh_primitive.attributes, mesh_primitive.attribute_count, "TEXCOORD_0" );
+            f32* tex_coords = nullptr;
+            if ( tex_coord_accessor_index != -1 ) {
+                glTF::Accessor& tex_coord_buffer_accessor = gltf_scene.accessors[ tex_coord_accessor_index ];
+                glTF::BufferView& tex_coord_buffer_view = gltf_scene.buffer_views[ tex_coord_buffer_accessor.buffer_view ];
+                i32 tex_coord_data_offset = glTF::get_data_offset( tex_coord_buffer_accessor.byte_offset, tex_coord_buffer_view.byte_offset );
+                tex_coords = ( f32* )((u8*)buffers_data[ tex_coord_buffer_view.buffer ] + tex_coord_data_offset);
+            }
+
+            // Vertex tangents
+            const i32 tangent_accessor_index = gltf_get_attribute_accessor_index( mesh_primitive.attributes, mesh_primitive.attribute_count, "TANGENT" );
+            f32* tangents = nullptr;
+            if ( tangent_accessor_index != -1 ) {
+                glTF::Accessor& tangent_buffer_accessor = gltf_scene.accessors[ tangent_accessor_index ];
+                glTF::BufferView& tangent_buffer_view = gltf_scene.buffer_views[ tangent_buffer_accessor.buffer_view ];
+                i32 tangent_data_offset = glTF::get_data_offset( tangent_buffer_accessor.byte_offset, tangent_buffer_view.byte_offset );
+                tangents = ( f32* )((u8*)buffers_data[ tangent_buffer_view.buffer ] + tangent_data_offset);
+            }
+
+            // Cache vertex buffers
+            get_mesh_vertex_buffer( position_accessor_index, 0, mesh.position_buffer, mesh.position_offset, mesh.pbr_material.flags );
+            get_mesh_vertex_buffer( tangent_accessor_index, DrawFlags_HasTangents, mesh.tangent_buffer, mesh.tangent_offset, mesh.pbr_material.flags );
+            get_mesh_vertex_buffer( normal_accessor_index, DrawFlags_HasNormals, mesh.normal_buffer, mesh.normal_offset, mesh.pbr_material.flags );
+            get_mesh_vertex_buffer( tex_coord_accessor_index, DrawFlags_HasTexCoords, mesh.texcoord_buffer, mesh.texcoord_offset, mesh.pbr_material.flags );
+
+            const i32 joints_accessor_index = gltf_get_attribute_accessor_index( mesh_primitive.attributes, mesh_primitive.attribute_count, "JOINTS_0" );
+            const i32 weights_accessor_index = gltf_get_attribute_accessor_index( mesh_primitive.attributes, mesh_primitive.attribute_count, "WEIGHTS_0" );
+
+            get_mesh_vertex_buffer( joints_accessor_index, DrawFlags_HasJoints, mesh.joints_buffer, mesh.joints_offset, mesh.pbr_material.flags );
+            get_mesh_vertex_buffer( weights_accessor_index, DrawFlags_HasWeights, mesh.weights_buffer, mesh.weights_offset, mesh.pbr_material.flags );
+
+
+            // Index buffer
+            glTF::Accessor& indices_accessor = gltf_scene.accessors[ mesh_primitive.indices ];
+            glTF::BufferView& indices_buffer_view = gltf_scene.buffer_views[ indices_accessor.buffer_view ];
+            u8* buffer_data = ( u8* )buffers_data[ indices_buffer_view.buffer ];
+            i32 index_data_offset = glTF::get_data_offset( indices_accessor.byte_offset, indices_buffer_view.byte_offset );
+            u16* indices = ( u16* )(buffer_data + index_data_offset);
+
+            // Read pbr material data if present
+            if ( mesh_primitive.material != glTF::INVALID_INT_VALUE ) {
+                glTF::Material& material = gltf_scene.materials[ mesh_primitive.material ];
+                fill_pbr_material( *renderer, material, mesh.pbr_material );
+            }
+
+            BufferResource& indices_buffer_gpu = buffers[ indices_buffer_view.buffer ];
+            mesh.index_buffer = indices_buffer_gpu.handle;
+            mesh.index_offset = glTF::get_data_offset( indices_accessor.byte_offset, indices_buffer_view.byte_offset );
+            mesh.primitive_count = indices_accessor.count;
+
+            mesh.gpu_mesh_index = meshes.size;
+
+            const sizet max_meshlets = meshopt_buildMeshletsBound( indices_accessor.count, max_vertices, max_triangles );
+            sizet temp_marker = temp_allocator->get_marker();
+
+            Array<meshopt_Meshlet> local_meshlets;
+            local_meshlets.init( temp_allocator, max_meshlets, max_meshlets );
+
+            Array<u32> meshlet_vertex_indices;
+            meshlet_vertex_indices.init( temp_allocator, max_meshlets * max_vertices, max_meshlets* max_vertices );
+
+            Array<u8> meshlet_triangles;
+            meshlet_triangles.init( temp_allocator, max_meshlets * max_triangles * 3, max_meshlets* max_triangles * 3 );
+
+            sizet meshlet_count = meshopt_buildMeshlets( local_meshlets.data, meshlet_vertex_indices.data, meshlet_triangles.data, indices,
+                                                         indices_accessor.count, vertices, position_buffer_accessor.count, sizeof( vec3s ),
+                                                         max_vertices, max_triangles, cone_weight );
+
+            u32 meshlet_vertex_offset = meshlets_vertex_positions.size;
+            for ( u32 v = 0; v < position_buffer_accessor.count; ++v ) {
+                GpuMeshletVertexPosition meshlet_vertex_pos{ };
+
+                meshlet_vertex_pos.position[ 0 ] = vertices[ v * 3 + 0 ];
+                meshlet_vertex_pos.position[ 1 ] = vertices[ v * 3 + 1 ];
+                meshlet_vertex_pos.position[ 2 ] = vertices[ v * 3 + 2 ];
+
+                meshlets_vertex_positions.push( meshlet_vertex_pos );
+
+                GpuMeshletVertexData meshlet_vertex_data{ };
+
+                if ( normals != nullptr ) {
+                    meshlet_vertex_data.normal[ 0 ] = ( normals[ v * 3 + 0 ] + 1.0f ) * 127.0f;
+                    meshlet_vertex_data.normal[ 1 ] = ( normals[ v * 3 + 1 ] + 1.0f ) * 127.0f;
+                    meshlet_vertex_data.normal[ 2 ] = ( normals[ v * 3 + 2 ] + 1.0f ) * 127.0f;
+                }
+
+                if ( tangents != nullptr ) {
+                    meshlet_vertex_data.tangent[ 0 ] = ( tangents[ v * 3 + 0 ] + 1.0f ) * 127.0f;
+                    meshlet_vertex_data.tangent[ 1 ] = ( tangents[ v * 3 + 1 ] + 1.0f ) * 127.0f;
+                    meshlet_vertex_data.tangent[ 2 ] = ( tangents[ v * 3 + 2 ] + 1.0f ) * 127.0f;
+                    meshlet_vertex_data.tangent[ 3 ] = ( tangents[ v * 3 + 3 ] + 1.0f ) * 127.0f;
+                }
+
+                meshlet_vertex_data.uv_coords[ 0 ] = meshopt_quantizeHalf( tex_coords[ v * 2 + 0 ] );
+                meshlet_vertex_data.uv_coords[ 1 ] = meshopt_quantizeHalf( tex_coords[ v * 2 + 1 ] );
+
+                meshlets_vertex_data.push( meshlet_vertex_data );
+            }
+
+            // Cache meshlet offset
+            mesh.meshlet_offset = meshlets.size;
+            mesh.meshlet_count = meshlet_count;
+
+            meshes.push( mesh );
+
+            // Append meshlet data
+            for ( u32 m = 0; m < meshlet_count; ++m ) {
+                meshopt_Meshlet& local_meshlet = local_meshlets[ m ];
+
+                meshopt_Bounds meshlet_bounds = meshopt_computeMeshletBounds(meshlet_vertex_indices.data + local_meshlet.vertex_offset,
+                                                                             meshlet_triangles.data + local_meshlet.triangle_offset, local_meshlet.triangle_count,
+                                                                             vertices, position_buffer_accessor.count, sizeof( vec3s ));
+
+                GpuMeshlet meshlet{};
+                meshlet.data_offset = meshlets_data.size;
+                meshlet.vertex_count = local_meshlet.vertex_count;
+                meshlet.triangle_count = local_meshlet.triangle_count;
+
+                meshlet.center = vec3s{ meshlet_bounds.center[ 0 ], meshlet_bounds.center[ 1 ], meshlet_bounds.center[ 2 ] };
+                meshlet.radius = meshlet_bounds.radius;
+
+                meshlet.cone_axis[ 0 ] = meshlet_bounds.cone_axis_s8[ 0 ];
+                meshlet.cone_axis[ 1 ] = meshlet_bounds.cone_axis_s8[ 1 ];
+                meshlet.cone_axis[ 2 ] = meshlet_bounds.cone_axis_s8[ 2 ];
+
+                meshlet.cone_cutoff = meshlet_bounds.cone_cutoff_s8;
+                meshlet.mesh_index = meshes.size - 1;
+
+                // Resize data array
+                const u32 index_group_count = ( local_meshlet.triangle_count * 3 + 3 ) / 4;
+                meshlets_data.set_capacity( meshlets_data.size + local_meshlet.vertex_count + index_group_count );
+
+                for ( u32 i = 0; i < meshlet.vertex_count; ++i ) {
+                    u32 vertex_index = meshlet_vertex_offset + meshlet_vertex_indices[ local_meshlet.vertex_offset + i ];
+                    meshlets_data.push( vertex_index );
+                }
+
+                // Store indices as uint32
+                // NOTE(marco): we write 4 indices at at time, it will come in handy in the mesh shader
+                const u32* index_groups = reinterpret_cast< const u32* >( meshlet_triangles.data + local_meshlet.triangle_offset );
+                for ( u32 i = 0; i < index_group_count; ++i ) {
+                    const u32 index_group = index_groups[ i ];
+                    meshlets_data.push( index_group );
+                }
+
+                meshlets.push( meshlet );
+            }
+
+            while ( meshlets.size % 32 )
+                meshlets.push( GpuMeshlet() );
+
+            temp_allocator->free_marker( temp_marker );
+
+            mesh_index++;
+        }
+    }
+
+    i64 end_building_meshlets = time_now();
 
     // Before unloading buffer data, load animations
     animations.init( resident_allocator, gltf_scene.animations_count );
@@ -424,8 +654,8 @@ void glTFScene::init( cstring filename, cstring path, Allocator* resident_alloca
     //resource_name_buffer.shutdown();
     temp_allocator->free_marker( temp_allocator_initial_marker );
 
-    // Init runtime meshes
-    meshes.init( resident_allocator, gltf_scene.meshes_count );
+    // Init mesh instances with at least meshes count.
+    mesh_instances.init( resident_allocator_, meshes.size );
 
     i64 end_loading = time_now();
 
@@ -462,6 +692,13 @@ void glTFScene::shutdown( Renderer* renderer ) {
     }
     skins.shutdown();
 
+    // Unload meshlets
+    meshlets.shutdown();
+    meshlets_vertex_data.shutdown();
+    meshlets_vertex_positions.shutdown();
+    meshlets_data.shutdown();
+    gltf_mesh_to_mesh_offset.shutdown();
+
     // Unload meshes
     for ( u32 mesh_index = 0; mesh_index < meshes.size; ++mesh_index ) {
         Mesh& mesh = meshes[ mesh_index ];
@@ -471,6 +708,29 @@ void glTFScene::shutdown( Renderer* renderer ) {
     }
 
     gpu.destroy_buffer( scene_cb );
+    gpu.destroy_buffer( meshes_sb );
+    gpu.destroy_buffer( mesh_bounds_sb );
+    gpu.destroy_buffer( mesh_instances_sb );
+    gpu.destroy_buffer( meshlets_sb );
+    gpu.destroy_buffer( meshlets_vertex_pos_sb );
+    gpu.destroy_buffer( meshlets_vertex_data_sb );
+    gpu.destroy_buffer( meshlets_data_sb );
+
+    gpu.destroy_buffer( debug_line_sb );
+    gpu.destroy_buffer( debug_line_count_sb );
+    gpu.destroy_buffer( debug_line_commands_sb );
+
+    for ( u32 i = 0; i < k_max_frames; ++i ) {
+        gpu.destroy_buffer( mesh_task_indirect_early_commands_sb[ i ] );
+        gpu.destroy_buffer( mesh_task_indirect_culled_commands_sb[ i ] );
+        gpu.destroy_buffer( mesh_task_indirect_count_early_sb[ i ] );
+
+        gpu.destroy_buffer( mesh_task_indirect_late_commands_sb[ i ] );
+        gpu.destroy_buffer( mesh_task_indirect_count_late_sb[ i ] );
+
+        gpu.destroy_descriptor_set( mesh_shader_early_descriptor_set[ i ] );
+        gpu.destroy_descriptor_set( mesh_shader_late_descriptor_set[ i ] );
+    }
 
     for ( u32 i = 0; i < images.size; ++i) {
         renderer->destroy_texture( &images[ i ] );
@@ -485,6 +745,7 @@ void glTFScene::shutdown( Renderer* renderer ) {
     }
 
     meshes.shutdown();
+    mesh_instances.shutdown();
 
     names_buffer.shutdown();
 
@@ -508,6 +769,15 @@ void glTFScene::prepare_draws( Renderer* renderer, StackAllocator* scratch_alloc
     BufferCreation buffer_creation;
     buffer_creation.reset().set( VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, ResourceUsageType::Dynamic, sizeof( GpuSceneData ) ).set_name( "scene_cb" );
     scene_cb = renderer->gpu->create_buffer( buffer_creation );
+
+    buffer_creation.reset().set( VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, ResourceUsageType::Immutable, sizeof( u32 ) * meshlets_data.size ).set_name( "meshlet_data_sb" ).set_data( meshlets_data.data );
+    meshlets_data_sb = renderer->gpu->create_buffer( buffer_creation );
+
+    buffer_creation.reset().set( VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, ResourceUsageType::Immutable, sizeof( GpuMeshletVertexPosition ) * meshlets_vertex_positions.size ).set_name( "meshlet_vertex_sb" ).set_data( meshlets_vertex_positions.data );
+    meshlets_vertex_pos_sb = renderer->gpu->create_buffer( buffer_creation );
+
+    buffer_creation.reset().set( VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, ResourceUsageType::Immutable, sizeof( GpuMeshletVertexData ) * meshlets_vertex_data.size ).set_name( "meshlet_vertex_sb" ).set_data( meshlets_vertex_data.data );
+    meshlets_vertex_data_sb = renderer->gpu->create_buffer( buffer_creation );
 
     // Create material
     const u64 hashed_name = hash_calculate( "main" );
@@ -623,87 +893,136 @@ void glTFScene::prepare_draws( Renderer* renderer, StackAllocator* scratch_alloc
 
         // Start mesh part
         glTF::Mesh& gltf_mesh = gltf_scene.meshes[ node.mesh ];
+        u32 gltf_mesh_offset = gltf_mesh_to_mesh_offset[ node.mesh ];
 
         // Gltf primitives are conceptually submeshes.
         for ( u32 primitive_index = 0; primitive_index < gltf_mesh.primitives_count; ++primitive_index ) {
-            Mesh mesh{ };
+            MeshInstance mesh_instance{ };
             // Assign scene graph node index
-            mesh.scene_graph_node_index = node_index;
+            mesh_instance.scene_graph_node_index = node_index;
 
             glTF::MeshPrimitive& mesh_primitive = gltf_mesh.primitives[ primitive_index ];
 
-            // Load material defaults: flags is modified after this point.
-            mesh.pbr_material = {};
+            // Cache parent mesh and assign material
+            u32 mesh_primitive_index = gltf_mesh_offset + primitive_index;
+            mesh_instance.mesh = &meshes[ mesh_primitive_index ];
+            mesh_instance.mesh->pbr_material.material = pbr_material;
+            // Cache gpu mesh instance index, used to retrieve data on gpu.
+            mesh_instance.gpu_mesh_instance_index = mesh_instances.size;
 
-            const i32 position_accessor_index = gltf_get_attribute_accessor_index( mesh_primitive.attributes, mesh_primitive.attribute_count, "POSITION" );
-            const i32 tangent_accessor_index = gltf_get_attribute_accessor_index( mesh_primitive.attributes, mesh_primitive.attribute_count, "TANGENT" );
-            const i32 normal_accessor_index = gltf_get_attribute_accessor_index( mesh_primitive.attributes, mesh_primitive.attribute_count, "NORMAL" );
-            const i32 texcoord_accessor_index = gltf_get_attribute_accessor_index( mesh_primitive.attributes, mesh_primitive.attribute_count, "TEXCOORD_0" );
-
-            get_mesh_vertex_buffer( position_accessor_index, 0, mesh.position_buffer, mesh.position_offset, mesh.pbr_material.flags );
-            get_mesh_vertex_buffer( tangent_accessor_index, DrawFlags_HasTangents, mesh.tangent_buffer, mesh.tangent_offset, mesh.pbr_material.flags );
-            get_mesh_vertex_buffer( normal_accessor_index, DrawFlags_HasNormals, mesh.normal_buffer, mesh.normal_offset, mesh.pbr_material.flags );
-            get_mesh_vertex_buffer( texcoord_accessor_index, DrawFlags_HasTexCoords, mesh.texcoord_buffer, mesh.texcoord_offset, mesh.pbr_material.flags );
-
-            // Read skinning data
-            mesh.skin_index = i32_max;
+            // Found a skin index, cache it
+            mesh_instance.mesh->skin_index = i32_max;
             if ( node.skin != glTF::INVALID_INT_VALUE ) {
                 RASSERT( node.skin < skins.size );
-                const i32 joints_accessor_index = gltf_get_attribute_accessor_index( mesh_primitive.attributes, mesh_primitive.attribute_count, "JOINTS_0" );
-                const i32 weights_accessor_index = gltf_get_attribute_accessor_index( mesh_primitive.attributes, mesh_primitive.attribute_count, "WEIGHTS_0" );
 
-                get_mesh_vertex_buffer( joints_accessor_index, DrawFlags_HasJoints, mesh.joints_buffer, mesh.joints_offset, mesh.pbr_material.flags );
-                get_mesh_vertex_buffer( weights_accessor_index, DrawFlags_HasWeights, mesh.weights_buffer, mesh.weights_offset, mesh.pbr_material.flags );
-
-                mesh.skin_index = node.skin;
+                mesh_instance.mesh->skin_index = node.skin;
             }
 
-            // Create index buffer
-            glTF::Accessor& indices_accessor = gltf_scene.accessors[ mesh_primitive.indices ];
-            RASSERT( indices_accessor.component_type == glTF::Accessor::ComponentType::UNSIGNED_SHORT || indices_accessor.component_type == glTF::Accessor::ComponentType::UNSIGNED_INT );
-            mesh.index_type = ( indices_accessor.component_type == glTF::Accessor::ComponentType::UNSIGNED_SHORT ) ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32;
-
-            glTF::BufferView& indices_buffer_view = gltf_scene.buffer_views[ indices_accessor.buffer_view ];
-            BufferResource& indices_buffer_gpu = buffers[ indices_buffer_view.buffer ];
-            mesh.index_buffer = indices_buffer_gpu.handle;
-            mesh.index_offset = glTF::get_data_offset( indices_accessor.byte_offset, indices_buffer_view.byte_offset );
-            mesh.primitive_count = indices_accessor.count;
-
-            // Read pbr material data if present
-            if ( mesh_primitive.material != glTF::INVALID_INT_VALUE ) {
-                glTF::Material& material = gltf_scene.materials[ mesh_primitive.material ];
-                fill_pbr_material( *renderer, material, mesh.pbr_material );
-            }
-
-            // Create material buffer
-            BufferCreation buffer_creation;
-            buffer_creation.reset().set( VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, ResourceUsageType::Dynamic, sizeof( GpuMeshData ) ).set_name( "mesh_data" );
-            mesh.pbr_material.material_buffer = renderer->gpu->create_buffer( buffer_creation );
-
-            DescriptorSetCreation ds_creation{};
-            u32 pass_index = 0;
-            if ( mesh.has_skinning() ) {
-                pass_index = main_technique->name_hash_to_index.get( hash_calculate( "transparent_skinning_no_cull" ) );
-            }
-            else {
-                pass_index = main_technique->name_hash_to_index.get( hash_calculate( "transparent_no_cull" ) );
-            }
-
-            DescriptorSetLayoutHandle layout = renderer->gpu->get_descriptor_set_layout( main_technique->passes[ pass_index ].pipeline, k_material_descriptor_set_index );
-            ds_creation.buffer( scene_cb, 0 ).buffer( mesh.pbr_material.material_buffer, 2 ).set_layout(layout);
-
-            if ( mesh.has_skinning() ) {
-                ds_creation.buffer( skins[ mesh.skin_index ].joint_transforms, 3 );
-            }
-            mesh.pbr_material.descriptor_set = renderer->gpu->create_descriptor_set( ds_creation );
-
-            mesh.pbr_material.material = pbr_material;
-
-            meshes.push(mesh);
+            mesh_instances.push( mesh_instance );
         }
     }
 
-    //qsort( meshes.data, meshes.size, sizeof( Mesh ), gltf_mesh_material_compare );
+    // Meshlets buffers
+    buffer_creation.reset().set( VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, ResourceUsageType::Immutable, sizeof( GpuMeshlet ) * meshlets.size ).set_name( "meshlet_sb" ).set_data( meshlets.data );
+    meshlets_sb = renderer->gpu->create_buffer( buffer_creation );
+
+    // Create mesh ssbo
+    // TODO[gabriel] : move this to be static?
+    buffer_creation.reset().set( VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, ResourceUsageType::Dynamic, sizeof( GpuMaterialData ) * meshes.size ).set_name( "meshes_sb" );
+    meshes_sb = renderer->gpu->create_buffer( buffer_creation );
+
+    // Create mesh bound ssbo
+    buffer_creation.reset().set( VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, ResourceUsageType::Dynamic, sizeof( vec4s ) * meshes.size ).set_name( "mesh_bound_sb" );
+    mesh_bounds_sb = renderer->gpu->create_buffer( buffer_creation );
+
+    // Create mesh instances ssbo
+    buffer_creation.reset().set( VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, ResourceUsageType::Dynamic, sizeof( GpuMeshInstanceData ) * mesh_instances.size ).set_name( "mesh_instances_sb" );
+    mesh_instances_sb = renderer->gpu->create_buffer( buffer_creation );
+
+    // Create indirect buffers, dynamic so need multiple buffering.
+    for ( u32 i = 0; i < k_max_frames; ++i ) {
+        // This buffer contains both opaque and transparent commands, thus is multiplied by two.
+        buffer_creation.reset().set( VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, ResourceUsageType::Dynamic, mesh_instances.size * sizeof( GpuMeshDrawCommand ) * 2).set_name( "early_draw_commands_sb" );
+        mesh_task_indirect_early_commands_sb[ i ] = renderer->gpu->create_buffer( buffer_creation );
+
+        buffer_creation.reset().set( VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, ResourceUsageType::Dynamic, mesh_instances.size * sizeof( GpuMeshDrawCommand ) * 2).set_name( "culled_draw_commands_sb" );
+        mesh_task_indirect_culled_commands_sb[ i ] = renderer->gpu->create_buffer( buffer_creation );
+
+        buffer_creation.reset().set( VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, ResourceUsageType::Dynamic, mesh_instances.size * sizeof( GpuMeshDrawCommand ) * 2).set_name( "late_draw_commands_sb" );
+        mesh_task_indirect_late_commands_sb[ i ] = renderer->gpu->create_buffer( buffer_creation );
+
+        buffer_creation.reset().set( VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, ResourceUsageType::Dynamic, sizeof( GpuMeshDrawCounts ) ).set_name( "early_mesh_count_sb" );
+        mesh_task_indirect_count_early_sb[ i ] = renderer->gpu->create_buffer( buffer_creation );
+
+        buffer_creation.reset().set( VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, ResourceUsageType::Dynamic, sizeof( GpuMeshDrawCounts ) ).set_name( "late_mesh_count_sb" );
+        mesh_task_indirect_count_late_sb[ i ] = renderer->gpu->create_buffer( buffer_creation );
+
+        // TODO(marco): create buffer to track meshlet visibility
+    }
+
+    // Create per mesh descriptor sets, using the mesh draw ssbo
+    for ( u32 m = 0; m < meshes.size; ++m ) {
+        Mesh& mesh = meshes[ m ];
+
+        // Create material buffer
+        BufferCreation buffer_creation;
+        buffer_creation.reset().set( VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, ResourceUsageType::Dynamic, sizeof( GpuMaterialData ) ).set_name( "mesh_data" );
+        mesh.pbr_material.material_buffer = renderer->gpu->create_buffer( buffer_creation );
+
+        DescriptorSetCreation ds_creation{};
+        u32 pass_index = 0;
+        if ( mesh.has_skinning() ) {
+            pass_index = main_technique->name_hash_to_index.get( hash_calculate( "transparent_skinning_no_cull" ) );
+        } else {
+            pass_index = main_technique->name_hash_to_index.get( hash_calculate( "transparent_no_cull" ) );
+        }
+
+        DescriptorSetLayoutHandle layout = renderer->gpu->get_descriptor_set_layout( main_technique->passes[ pass_index ].pipeline, k_material_descriptor_set_index );
+        ds_creation.buffer( scene_cb, 0 ).buffer( meshes_sb, 2 ).buffer( mesh_instances_sb, 10 ).set_layout( layout );
+
+        if ( mesh.has_skinning() ) {
+            ds_creation.buffer( skins[ mesh.skin_index ].joint_transforms, 3 );
+        }
+        mesh.pbr_material.descriptor_set = renderer->gpu->create_descriptor_set( ds_creation );
+    }
+
+    // Create debug draw buffers
+    {
+        static constexpr u32 k_max_lines = 64000 + 64000;   // 3D + 2D lines in the same buffer
+        buffer_creation.reset().set( VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, ResourceUsageType::Dynamic, k_max_lines * sizeof( vec4s ) * 2 ).set_name( "debug_line_sb" );
+        debug_line_sb = renderer->gpu->create_buffer( buffer_creation );
+
+        buffer_creation.reset().set( VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, ResourceUsageType::Dynamic, sizeof( vec4s ) ).set_name( "debug_line_count_sb" );
+        debug_line_count_sb = renderer->gpu->create_buffer( buffer_creation );
+
+        // Gather 3D and 2D gpu drawing commands
+        buffer_creation.reset().set( VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, ResourceUsageType::Dynamic, sizeof( VkDrawIndirectCommand ) * 2 ).set_name( "debug_line_commands_sb" );
+        debug_line_commands_sb = renderer->gpu->create_buffer( buffer_creation );
+    }
+
+    if ( renderer->gpu->mesh_shaders_extension_present ) {
+        const u64 meshlet_hashed_name = hash_calculate( "meshlet" );
+        GpuTechnique* meshlet_technique = renderer->resource_cache.techniques.get( meshlet_hashed_name );
+
+        DescriptorSetLayoutHandle layout = renderer->gpu->get_descriptor_set_layout( meshlet_technique->passes[ 0 ].pipeline, k_material_descriptor_set_index );
+
+        for ( u32 i = 0; i < k_max_frames; ++i ) {
+            DescriptorSetCreation ds_creation{};
+            ds_creation.buffer( scene_cb, 0 ).buffer( meshes_sb, 2 ).buffer( mesh_instances_sb, 10 ).buffer( meshlets_sb, 1 )
+                .buffer( meshlets_data_sb, 3 ).buffer( meshlets_vertex_pos_sb, 4 ).buffer( meshlets_vertex_data_sb, 5 )
+                .buffer( mesh_task_indirect_early_commands_sb[ i ], 6 ).buffer( mesh_task_indirect_count_early_sb[ i ], 7 )
+                .buffer( mesh_bounds_sb, 12 ).buffer( debug_line_sb, 20 ).buffer( debug_line_count_sb, 21 ).buffer( debug_line_commands_sb, 22 ).set_layout(layout);
+
+            mesh_shader_early_descriptor_set[ i ] = renderer->gpu->create_descriptor_set( ds_creation );
+
+            ds_creation.reset().buffer( scene_cb, 0 ).buffer( meshes_sb, 2 ).buffer( mesh_instances_sb, 10 ).buffer( meshlets_sb, 1 )
+                .buffer( meshlets_data_sb, 3 ).buffer( meshlets_vertex_pos_sb, 4 ).buffer( meshlets_vertex_data_sb, 5 )
+                .buffer( mesh_task_indirect_late_commands_sb[ i ], 6 ).buffer( mesh_task_indirect_count_late_sb[ i ], 7 )
+                .buffer( mesh_bounds_sb, 12 ).buffer( debug_line_sb, 20 ).buffer( debug_line_count_sb, 21 ).buffer( debug_line_commands_sb, 22 ).set_layout(layout);
+
+            mesh_shader_late_descriptor_set[ i ] = renderer->gpu->create_descriptor_set( ds_creation );
+        }
+    }
 
     scratch_allocator->free_marker( cached_scratch_size );
 }

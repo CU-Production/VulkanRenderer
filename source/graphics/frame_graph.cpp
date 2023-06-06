@@ -13,6 +13,8 @@
 
 #include <string>
 
+#define FRAME_GRAPH_DEBUG 0
+
 namespace raptor
 {
 
@@ -69,10 +71,7 @@ void FrameGraph::shutdown() {
         FrameGraphNode* node = builder->access_node( handle );
 
         builder->device->destroy_render_pass( node->render_pass );
-
-        for ( u32 f = 0; f < k_max_frames; ++f ) {
-            builder->device->destroy_framebuffer( node->framebuffer[ f ] );
-        }
+        builder->device->destroy_framebuffer( node->framebuffer );
 
         node->inputs.shutdown();
         node->outputs.shutdown();
@@ -148,12 +147,19 @@ void FrameGraph::parse( cstring file_path, StackAllocator* temp_allocator ) {
             std::string output_name = pass_output.value( "name", "" );
             RASSERT( !output_name.empty() );
 
+            bool external = pass_output.value( "external", false );
+            output_creation.resource_info.external = external;
+
             output_creation.type = string_to_resource_type( output_type.c_str() );
             output_creation.name = string_buffer.append_use_f( "%s", output_name.c_str() );
 
             switch ( output_creation.type ) {
-                case FrameGraphResourceType_Attachment:
                 case FrameGraphResourceType_Texture:
+                {
+                    // NOTE(marco): for now output textures are all managed manually. We add them to the graph
+                    // to make sure they are considered when performing the topological sort
+                } break;
+                case FrameGraphResourceType_Attachment:
                 {
                     std::string format = pass_output.value( "format", "" );
                     RASSERT( !format.empty() );
@@ -218,8 +224,8 @@ void FrameGraph::parse( cstring file_path, StackAllocator* temp_allocator ) {
                 } break;
                 case FrameGraphResourceType_Buffer:
                 {
-                    // TODO(marco)
-                    RASSERT( false );
+                    // NOTE(marco): for now buffers are all managed manually. We add them to the graph
+                    // to make sure they are considered when performing the topological sort
                 } break;
             }
 
@@ -242,115 +248,140 @@ void FrameGraph::parse( cstring file_path, StackAllocator* temp_allocator ) {
 }
 
 static void compute_edges( FrameGraph* frame_graph, FrameGraphNode* node, u32 node_index ) {
+
+    FrameGraphNodeHandle node_handle = frame_graph->all_nodes[ node_index ];
+
     for ( u32 r = 0; r < node->inputs.size; ++r ) {
         FrameGraphResource* resource = frame_graph->access_resource( node->inputs[ r ] );
 
-        FrameGraphResource* output_resource = frame_graph->get_resource( resource->name );
-        if ( output_resource == nullptr && !resource->resource_info.external ) {
-            // TODO(marco): external resources
-            RASSERTM( false, "Requested resource is not produced by any node and is not external." );
-            continue;
+        {
+            FrameGraphResource* output_resource = frame_graph->get_resource( resource->name );
+            if ( output_resource == nullptr && !resource->resource_info.external ) {
+                // TODO(marco): external resources
+                rprint( "Requested resource %s is not produced by any node and is not external.", resource->name );
+                continue;
+            }
+
+            resource->producer = output_resource->producer;
+            resource->resource_info = output_resource->resource_info;
+            resource->output_handle = output_resource->output_handle;
         }
 
-        resource->producer = output_resource->producer;
-        resource->resource_info = output_resource->resource_info;
-        resource->output_handle = output_resource->output_handle;
+        for ( u32 n = 0; n < frame_graph->all_nodes.size; ++n ) {
+            if ( n == node_index ) {
+                continue;
+            }
 
-        FrameGraphNode* parent_node = frame_graph->access_node( resource->producer );
+            FrameGraphNodeHandle parent_handle = frame_graph->all_nodes[ n ];
+            FrameGraphNode* parent_node = frame_graph->access_node( parent_handle );
 
-        // rprint( "Adding edge from %s [%d] to %s [%d]\n", parent_node->name, resource->producer.index, node->name, node_index )
+            for ( u32 o = 0; o < parent_node->outputs.size; ++o ) {
+                FrameGraphResource* output_resource = frame_graph->access_resource( parent_node->outputs[ o ] );
 
-        parent_node->edges.push( frame_graph->all_nodes[ node_index ] );
+                if ( strcmp( resource->name, output_resource->name ) != 0 ) {
+                    continue;
+                }
+
+#if FRAME_GRAPH_DEBUG
+                rprint( "Adding edge for resource %s from %s [%d] to %s [%d]\n", output_resource->name, parent_node->name, n, node->name, node_index )
+#endif
+
+                parent_node->edges.push( node_handle );
+            }
+        }
     }
 }
 
 static void create_framebuffer( FrameGraph* frame_graph, FrameGraphNode* node ) {
-    for ( u32 f = 0; f < k_max_frames; ++f ) {
-        FramebufferCreation framebuffer_creation{ };
-        framebuffer_creation.render_pass = node->render_pass;
-        framebuffer_creation.set_name( node->name );
 
-        u32 width = 0;
-        u32 height = 0;
-        f32 scale_width = 0.f;
-        f32 scale_height = 0.f;
+    FramebufferCreation framebuffer_creation{ };
+    framebuffer_creation.render_pass = node->render_pass;
+    framebuffer_creation.set_name( node->name );
 
-        for ( u32 r = 0; r < node->outputs.size; ++r ) {
-            FrameGraphResource* resource = frame_graph->access_resource( node->outputs[ r ] );
+    u32 width = 0;
+    u32 height = 0;
+    f32 scale_width = 0.f;
+    f32 scale_height = 0.f;
 
-            FrameGraphResourceInfo& info = resource->resource_info;
+    for ( u32 r = 0; r < node->outputs.size; ++r ) {
+        FrameGraphResource* resource = frame_graph->access_resource( node->outputs[ r ] );
 
-            if ( resource->type == FrameGraphResourceType_Buffer || resource->type == FrameGraphResourceType_Reference ) {
-                continue;
-            }
+        FrameGraphResourceInfo& info = resource->resource_info;
 
-            if ( width == 0 ) {
-                width = info.texture.width;
-                scale_width = info.texture.scale_width > 0.f ? info.texture.scale_width : 1.f;
-            } else {
-                RASSERT( width == info.texture.width );
-            }
-
-            if ( height == 0 ) {
-                height = info.texture.height;
-                scale_height = info.texture.scale_height > 0.f ? info.texture.scale_height : 1.f;
-            } else {
-                RASSERT( height == info.texture.height );
-            }
-
-            if ( TextureFormat::has_depth( info.texture.format ) ) {
-                framebuffer_creation.set_depth_stencil_texture( info.texture.handle[ f ] );
-            } else {
-                framebuffer_creation.add_render_texture( info.texture.handle[ f ] );
-            }
+        if ( resource->type != FrameGraphResourceType_Attachment ) {
+            continue;
         }
 
-        for ( u32 r = 0; r < node->inputs.size; ++r ) {
-            FrameGraphResource* input_resource = frame_graph->access_resource( node->inputs[ r ] );
-
-            if ( input_resource->type == FrameGraphResourceType_Buffer || input_resource->type == FrameGraphResourceType_Reference ) {
-                continue;
-            }
-
-            FrameGraphResource* resource = frame_graph->get_resource( input_resource->name );
-
-            FrameGraphResourceInfo& info = resource->resource_info;
-
-            input_resource->resource_info.texture.handle[ f ] = info.texture.handle[ f ];
-
-            if ( width == 0 ) {
-                width = info.texture.width;
-                scale_width = info.texture.scale_width > 0.f ? info.texture.scale_width : 1.f;
-            } else {
-                RASSERT( width == info.texture.width );
-            }
-
-            if ( height == 0 ) {
-                height = info.texture.height;
-                scale_height = info.texture.scale_height > 0.f ? info.texture.scale_height : 1.f;
-            } else {
-                RASSERT( height == info.texture.height );
-            }
-
-            if ( input_resource->type == FrameGraphResourceType_Texture ) {
-                continue;
-            }
-
-            if ( TextureFormat::has_depth( info.texture.format ) ) {
-                framebuffer_creation.set_depth_stencil_texture( info.texture.handle[ f ] );
-            } else {
-                framebuffer_creation.add_render_texture( info.texture.handle[ f ] );
-            }
+        if ( width == 0 ) {
+            width = info.texture.width;
+            scale_width = info.texture.scale_width > 0.f ? info.texture.scale_width : 1.f;
+        } else {
+            RASSERT( width == info.texture.width );
         }
 
-        framebuffer_creation.width = width;
-        framebuffer_creation.height = height;
-        framebuffer_creation.set_scaling( scale_width, scale_height, 1 );
-        node->framebuffer[0] = frame_graph->builder->device->create_framebuffer(framebuffer_creation);
+        if ( height == 0 ) {
+            height = info.texture.height;
+            scale_height = info.texture.scale_height > 0.f ? info.texture.scale_height : 1.f;
+        } else {
+            RASSERT( height == info.texture.height );
+        }
 
-        node->resolution_scale_width = scale_width;
-        node->resolution_scale_height = scale_height;
+        if ( TextureFormat::has_depth( info.texture.format ) ) {
+            framebuffer_creation.set_depth_stencil_texture( info.texture.handle );
+        } else {
+            framebuffer_creation.add_render_texture( info.texture.handle );
+        }
     }
+
+    for ( u32 r = 0; r < node->inputs.size; ++r ) {
+        FrameGraphResource* input_resource = frame_graph->access_resource( node->inputs[ r ] );
+
+        if ( input_resource->type != FrameGraphResourceType_Attachment ) {
+            continue;
+        }
+
+        FrameGraphResource* resource = frame_graph->get_resource( input_resource->name );
+
+        if ( resource == nullptr ) {
+            continue;
+        }
+
+        FrameGraphResourceInfo& info = resource->resource_info;
+
+        input_resource->resource_info.texture.handle = info.texture.handle;
+
+        if ( width == 0 ) {
+            width = info.texture.width;
+            scale_width = info.texture.scale_width > 0.f ? info.texture.scale_width : 1.f;
+        } else {
+            RASSERT( width == info.texture.width );
+        }
+
+        if ( height == 0 ) {
+            height = info.texture.height;
+            scale_height = info.texture.scale_height > 0.f ? info.texture.scale_height : 1.f;
+        } else {
+            RASSERT( height == info.texture.height );
+        }
+
+        if ( input_resource->type == FrameGraphResourceType_Texture ) {
+            continue;
+        }
+
+        if ( TextureFormat::has_depth( info.texture.format ) ) {
+            framebuffer_creation.set_depth_stencil_texture( info.texture.handle );
+        } else {
+            framebuffer_creation.add_render_texture( info.texture.handle );
+        }
+    }
+
+    framebuffer_creation.width = width;
+    framebuffer_creation.height = height;
+    framebuffer_creation.set_scaling( scale_width, scale_height, 1 );
+    node->framebuffer = frame_graph->builder->device->create_framebuffer( framebuffer_creation );
+
+    node->resolution_scale_width = scale_width;
+    node->resolution_scale_height = scale_height;
 }
 
 static void create_render_pass( FrameGraph* frame_graph, FrameGraphNode* node ) {
@@ -494,7 +525,9 @@ void FrameGraph::compile() {
 
     for ( i32 i = sorted_nodes.size - 1; i >= 0; --i ) {
         FrameGraphNode* node = builder->access_node( sorted_nodes[ i ] );
-        // rprint( "Node %s is at position %d\n", node->name, nodes.size );
+#if FRAME_GRAPH_DEBUG
+        rprint( "Node %s is at position %d\n", node->name, nodes.size );
+#endif
 
         nodes.push( sorted_nodes[ i ] );
     }
@@ -533,6 +566,10 @@ void FrameGraph::compile() {
             FrameGraphResource* input_resource = builder->access_resource( node->inputs[ j ] );
             FrameGraphResource* resource = builder->access_resource( input_resource->output_handle );
 
+            if ( resource == nullptr ) {
+                continue;
+            }
+
             resource->ref_count++;
         }
     }
@@ -562,28 +599,28 @@ void FrameGraph::compile() {
 
                     TextureFlags::Mask texture_creation_flags = info.texture.compute ? ( TextureFlags::Mask )(TextureFlags::RenderTarget_mask | TextureFlags::Compute_mask) : TextureFlags::RenderTarget_mask;
 
-                    for ( u32 f = 0; f < k_max_frames; ++f ) {
-                        if ( free_list.size > 0 ) {
-                            // TODO(marco): find best fit
-                            TextureHandle alias_texture = free_list.back();
-                            free_list.pop();
+                    if ( free_list.size > 0 ) {
+                        // TODO(marco): find best fit
+                        TextureHandle alias_texture = free_list.back();
+                        free_list.pop();
 
-                            TextureCreation texture_creation{ };
-                            texture_creation.set_data( nullptr ).set_alias( alias_texture ).set_name( resource->name ).set_format_type( info.texture.format, TextureType::Enum::Texture2D ).set_size( info.texture.width, info.texture.height, info.texture.depth ).set_flags( 1, texture_creation_flags );
-                            TextureHandle handle = builder->device->create_texture( texture_creation );
+                        TextureCreation texture_creation{ };
+                        texture_creation.set_data( nullptr ).set_alias( alias_texture ).set_name( resource->name ).set_format_type( info.texture.format, TextureType::Enum::Texture2D ).set_size( info.texture.width, info.texture.height, info.texture.depth ).set_flags( texture_creation_flags );
+                        TextureHandle handle = builder->device->create_texture( texture_creation );
 
-                            info.texture.handle[ f ] = handle;
-                        } else {
-                            TextureCreation texture_creation{ };
-                            texture_creation.set_data( nullptr ).set_name( resource->name ).set_format_type( info.texture.format, TextureType::Enum::Texture2D ).set_size( info.texture.width, info.texture.height, info.texture.depth ).set_flags( 1, texture_creation_flags );
-                            TextureHandle handle = builder->device->create_texture( texture_creation );
+                        info.texture.handle = handle;
+                    } else {
+                        TextureCreation texture_creation{ };
+                        texture_creation.set_data( nullptr ).set_name( resource->name ).set_format_type( info.texture.format, TextureType::Enum::Texture2D ).set_size( info.texture.width, info.texture.height, info.texture.depth ).set_flags( texture_creation_flags );
+                        TextureHandle handle = builder->device->create_texture( texture_creation );
 
-                            info.texture.handle[ f ] = handle;
-                        }
+                        info.texture.handle = handle;
                     }
                 }
 
+#if FRAME_GRAPH_DEBUG
                 rprint( "Output %s allocated on node %d\n", resource->name, nodes[ i ].index );
+#endif
             }
         }
 
@@ -593,19 +630,23 @@ void FrameGraph::compile() {
             u32 resource_index = input_resource->output_handle.index;
             FrameGraphResource* resource = builder->access_resource( input_resource->output_handle );
 
+            if ( resource == nullptr ) {
+                continue;
+            }
+
             resource->ref_count--;
 
             if ( !resource->resource_info.external && resource->ref_count == 0 ) {
                 RASSERT( deallocations[ resource_index ].index == k_invalid_index );
                 deallocations[ resource_index ] = nodes[ i ];
 
-                for ( u32 f = 0; f < k_max_frames; ++f ) {
-                    if ( resource->type == FrameGraphResourceType_Attachment || resource->type == FrameGraphResourceType_Texture ) {
-                        free_list.push( resource->resource_info.texture.handle[ f ] );
-                    }
+                if ( resource->type == FrameGraphResourceType_Attachment || resource->type == FrameGraphResourceType_Texture ) {
+                    free_list.push( resource->resource_info.texture.handle );
                 }
 
+#if FRAME_GRAPH_DEBUG
                 rprint( "Output %s deallocated on node %d\n", resource->name, nodes[ i ].index );
+#endif
             }
         }
     }
@@ -622,7 +663,7 @@ void FrameGraph::compile() {
             create_render_pass( this, node );
         }
 
-        if ( node->framebuffer[ 0 ].index == k_invalid_index ) {
+        if ( node->framebuffer.index == k_invalid_index ) {
             create_framebuffer( this, node );
         }
     }
@@ -647,15 +688,20 @@ void FrameGraph::render( u32 current_frame_index, CommandBuffer* gpu_commands, R
             gpu_commands->push_marker( node->name );
 
             for ( u32 i = 0; i < node->inputs.size; ++i ) {
-                FrameGraphResource* resource = builder->access_resource( node->inputs[ i ] );
+                FrameGraphResource* input_resource = builder->access_resource( node->inputs[ i ] );
+                FrameGraphResource* resource = builder->access_resource( input_resource->output_handle );
 
-                if ( resource->type == FrameGraphResourceType_Texture ) {
-                    Texture* texture = gpu_commands->device->access_texture( resource->resource_info.texture.handle[ current_frame_index ] );
+                if ( resource == nullptr || resource->resource_info.external ) {
+                    continue;
+                }
+
+                if ( input_resource->type == FrameGraphResourceType_Texture ) {
+                    Texture* texture = gpu_commands->device->access_texture( resource->resource_info.texture.handle );
 
                     util_add_image_barrier( gpu_commands->device, gpu_commands->vk_command_buffer, texture, RESOURCE_STATE_SHADER_RESOURCE, 0, 1, TextureFormat::has_depth(texture->vk_format) );
-                } else if ( resource->type == FrameGraphResourceType_Attachment ) {
+                } else if ( input_resource->type == FrameGraphResourceType_Attachment ) {
                     // TODO: what to do with attachments ?
-                    Texture* texture = gpu_commands->device->access_texture( resource->resource_info.texture.handle[ current_frame_index ] );
+                    Texture* texture = gpu_commands->device->access_texture( resource->resource_info.texture.handle );
                     texture = texture;
                 }
             }
@@ -664,7 +710,7 @@ void FrameGraph::render( u32 current_frame_index, CommandBuffer* gpu_commands, R
                 FrameGraphResource* resource = builder->access_resource( node->outputs[ o ] );
 
                 if ( resource->type == FrameGraphResourceType_Attachment ) {
-                    Texture* texture = gpu_commands->device->access_texture( resource->resource_info.texture.handle[ current_frame_index ] );
+                    Texture* texture = gpu_commands->device->access_texture( resource->resource_info.texture.handle );
 
                     if ( TextureFormat::has_depth( texture->vk_format ) ) {
                         // Is this supported even ?
@@ -677,6 +723,7 @@ void FrameGraph::render( u32 current_frame_index, CommandBuffer* gpu_commands, R
 
             node->graph_render_pass->pre_render( current_frame_index, gpu_commands, this );
             node->graph_render_pass->render( gpu_commands, render_scene );
+            node->graph_render_pass->post_render( current_frame_index, gpu_commands, this );
 
             gpu_commands->pop_marker();
         }
@@ -687,14 +734,19 @@ void FrameGraph::render( u32 current_frame_index, CommandBuffer* gpu_commands, R
             u32 height = 0;
 
             for ( u32 i = 0; i < node->inputs.size; ++i ) {
-                FrameGraphResource* resource = builder->access_resource( node->inputs[ i ] );
+                FrameGraphResource* input_resource = builder->access_resource( node->inputs[ i ] );
+                FrameGraphResource* resource = builder->access_resource( input_resource->output_handle );
 
-                if ( resource->type == FrameGraphResourceType_Texture ) {
-                    Texture* texture = gpu_commands->device->access_texture( resource->resource_info.texture.handle[ current_frame_index ] );
+                if ( resource == nullptr || resource->resource_info.external ) {
+                    continue;
+                }
+
+                if ( input_resource->type == FrameGraphResourceType_Texture ) {
+                    Texture* texture = gpu_commands->device->access_texture( resource->resource_info.texture.handle );
 
                     util_add_image_barrier( gpu_commands->device, gpu_commands->vk_command_buffer, texture, RESOURCE_STATE_PIXEL_SHADER_RESOURCE, 0, 1, TextureFormat::has_depth( texture->vk_format ) );
-                } else if ( resource->type == FrameGraphResourceType_Attachment ) {
-                    Texture* texture = gpu_commands->device->access_texture( resource->resource_info.texture.handle[ current_frame_index ] );
+                } else if ( input_resource->type == FrameGraphResourceType_Attachment ) {
+                    Texture* texture = gpu_commands->device->access_texture( resource->resource_info.texture.handle );
 
                     width = texture->width;
                     height = texture->height;
@@ -713,7 +765,7 @@ void FrameGraph::render( u32 current_frame_index, CommandBuffer* gpu_commands, R
                 FrameGraphResource* resource = builder->access_resource( node->outputs[ o ] );
 
                 if ( resource->type == FrameGraphResourceType_Attachment ) {
-                    Texture* texture = gpu_commands->device->access_texture( resource->resource_info.texture.handle[ current_frame_index ] );
+                    Texture* texture = gpu_commands->device->access_texture( resource->resource_info.texture.handle );
 
                     width = texture->width;
                     height = texture->height;
@@ -745,11 +797,14 @@ void FrameGraph::render( u32 current_frame_index, CommandBuffer* gpu_commands, R
 
             node->graph_render_pass->pre_render( current_frame_index, gpu_commands, this );
 
-            gpu_commands->bind_pass( node->render_pass, node->framebuffer[ current_frame_index ], false );
+            gpu_commands->bind_pass( node->render_pass, node->framebuffer, false );
 
             node->graph_render_pass->render( gpu_commands, render_scene );
 
             gpu_commands->end_current_render_pass();
+
+            node->graph_render_pass->post_render( current_frame_index, gpu_commands, this );
+
             gpu_commands->pop_marker();
         }
     }
@@ -760,11 +815,11 @@ void FrameGraph::on_resize( GpuDevice& gpu, u32 new_width, u32 new_height ) {
         FrameGraphNode* node = builder->access_node( nodes[ n ] );
         RASSERT( node->enabled );
 
-        node->graph_render_pass->on_resize( gpu, new_width, new_height );
-
-        for ( u32 f = 0; f < k_max_frames; ++f ) {
-            gpu.resize_output_textures( node->framebuffer[ f ], new_width, new_height );
+        {
+            gpu.resize_output_textures( node->framebuffer, new_width, new_height );
         }
+
+        node->graph_render_pass->on_resize( gpu, this, new_width, new_height );
     }
 }
 
@@ -814,15 +869,15 @@ void FrameGraphResourceCache::shutdown( )
         u32 resource_index = resource_map.get( it );
         FrameGraphResource* resource = resources.get( resource_index );
 
-        for ( u32 f = 0; f < k_max_frames; ++f ) {
-            if ( resource->type == FrameGraphResourceType_Texture || resource->type == FrameGraphResourceType_Attachment ) {
-                Texture* texture = device->access_texture( resource->resource_info.texture.handle[ f ] );
-                device->destroy_texture( texture->handle );
-            }
-            else if ( resource->type == FrameGraphResourceType_Buffer ) {
-                Buffer* buffer = device->access_buffer( resource->resource_info.buffer.handle[ f ] );
-                device->destroy_buffer( buffer->handle );
-            }
+        if ( ( resource->type == FrameGraphResourceType_Texture || resource->type == FrameGraphResourceType_Attachment )
+             && ( resource->resource_info.texture.handle.index > 0 ) ) {
+            Texture* texture = device->access_texture( resource->resource_info.texture.handle );
+            device->destroy_texture( texture->handle );
+        } 
+        else if ( ( resource->type == FrameGraphResourceType_Buffer )
+                   && ( resource->resource_info.buffer.handle.index > 0 ) ) {
+            Buffer* buffer = device->access_buffer( resource->resource_info.buffer.handle );
+            device->destroy_buffer( buffer->handle );
         }
 
         resource_map.iterator_advance( it );
@@ -939,9 +994,7 @@ FrameGraphNodeHandle FrameGraphBuilder::create_node( const FrameGraphNodeCreatio
     node->outputs.init( allocator, creation.outputs.size );
     node->edges.init( allocator, creation.outputs.size );
 
-    for ( u32 f = 0; f < k_max_frames; ++f ) {
-        node->framebuffer[ f ] = k_invalid_framebuffer;
-    }
+    node->framebuffer = k_invalid_framebuffer;
     node->render_pass = { k_invalid_index };
 
     node_cache.node_map.insert( hash_bytes( ( void* )node->name, strlen( node->name ) ), node_handle.index );
@@ -1010,10 +1063,12 @@ void FrameGraphBuilder::register_render_pass( cstring name, FrameGraphRenderPass
         return;
     }
 
-    render_pass_cache.render_pass_map.insert( key, render_pass );
-
     it = node_cache.node_map.find( key );
-    RASSERT( it.is_valid() );
+    if ( it.is_invalid() ) {
+        return;
+    }
+
+    render_pass_cache.render_pass_map.insert( key, render_pass );
 
     FrameGraphNode* node = ( FrameGraphNode* )node_cache.nodes.access_resource( node_cache.node_map.get( it ) );
     node->graph_render_pass = render_pass;

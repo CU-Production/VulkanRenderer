@@ -23,6 +23,9 @@
 #include <assimp/scene.h>
 #include <assimp/postprocess.h>
 
+#define DEBUG_DRAW_MESHLET_SPHERES 0
+#define DEBUG_DRAW_MESHLET_CONES 0
+
 namespace raptor {
 
 
@@ -37,7 +40,7 @@ static int mesh_material_compare( const void* a, const void* b ) {
 
 //
 //
-static void copy_gpu_material_data( GpuMeshData& gpu_mesh_data, const Mesh& mesh ) {
+static void copy_gpu_material_data( GpuMaterialData& gpu_mesh_data, const Mesh& mesh ) {
     gpu_mesh_data.textures[ 0 ] = mesh.pbr_material.diffuse_texture_index;
     gpu_mesh_data.textures[ 1 ] = mesh.pbr_material.roughness_texture_index;
     gpu_mesh_data.textures[ 2 ] = mesh.pbr_material.normal_texture_index;
@@ -55,22 +58,37 @@ static void copy_gpu_material_data( GpuMeshData& gpu_mesh_data, const Mesh& mesh
     gpu_mesh_data.ambient_colour = mesh.pbr_material.ambient_colour;
 
     gpu_mesh_data.flags = mesh.pbr_material.flags;
+
+    gpu_mesh_data.mesh_index = mesh.gpu_mesh_index;
+    gpu_mesh_data.meshlet_offset = mesh.meshlet_offset;
+    gpu_mesh_data.meshlet_count = mesh.meshlet_count;
 }
 
 //
 //
-static void copy_gpu_mesh_matrix( GpuMeshData& gpu_mesh_data, const Mesh& mesh, const f32 global_scale, const SceneGraph* scene_graph ) {
+static void copy_gpu_mesh_transform( GpuMeshInstanceData& gpu_mesh_data, const MeshInstance& mesh_instance, const f32 global_scale, const SceneGraph* scene_graph ) {
     if ( scene_graph ) {
         // Apply global scale matrix
         // NOTE: for left-handed systems (as defined in cglm) need to invert positive and negative Z.
         const mat4s scale_matrix = glms_scale_make( { global_scale, global_scale, -global_scale } );
-        gpu_mesh_data.world = glms_mat4_mul( scale_matrix, scene_graph->world_matrices[ mesh.scene_graph_node_index ] );
+        gpu_mesh_data.world = glms_mat4_mul( scale_matrix, scene_graph->world_matrices[ mesh_instance.scene_graph_node_index ] );
 
         gpu_mesh_data.inverse_world = glms_mat4_inv( glms_mat4_transpose( gpu_mesh_data.world ) );
     } else {
         gpu_mesh_data.world = glms_mat4_identity();
         gpu_mesh_data.inverse_world = glms_mat4_identity();
     }
+
+    gpu_mesh_data.mesh_index = mesh_instance.mesh->gpu_mesh_index;
+}
+
+static FrameGraphResource* get_output_texture( FrameGraph* frame_graph, FrameGraphResourceHandle input ) {
+    FrameGraphResource* input_resource = frame_graph->access_resource( input );
+
+    FrameGraphResource* output_resource = frame_graph->access_resource( input_resource->output_handle );
+    RASSERT( output_resource != nullptr );
+
+    return output_resource;
 }
 
 //
@@ -89,21 +107,41 @@ void PhysicsVertex::add_joint( u32 vertex_index ) {
 //
 // DepthPrePass ///////////////////////////////////////////////////////
 void DepthPrePass::render( CommandBuffer* gpu_commands, RenderScene* render_scene ) {
+    if ( !enabled )
+        return;
 
-    Material* last_material = nullptr;
-    for ( u32 mesh_index = 0; mesh_index < mesh_instances.size; ++mesh_index ) {
-        MeshInstance& mesh_instance = mesh_instances[ mesh_index ];
-        Mesh& mesh = *mesh_instance.mesh;
+    if ( render_scene->use_meshlets ) {
+        Renderer* renderer = render_scene->renderer;
 
-        if ( mesh.pbr_material.material != last_material ) {
-            PipelineHandle pipeline = renderer->get_pipeline( mesh.pbr_material.material, mesh_instance.material_pass_index );
+        // Draw meshlets
+        const u64 meshlet_hashed_name = hash_calculate( "meshlet" );
+        GpuTechnique* meshlet_technique = renderer->resource_cache.techniques.get( meshlet_hashed_name );
 
-            gpu_commands->bind_pipeline( pipeline );
+        PipelineHandle pipeline = meshlet_technique->passes[ meshlet_technique_index ].pipeline;
 
-            last_material = mesh.pbr_material.material;
+        gpu_commands->bind_pipeline( pipeline );
+
+        u32 buffer_frame_index = renderer->gpu->current_frame;
+        gpu_commands->bind_descriptor_set( &render_scene->mesh_shader_early_descriptor_set[ buffer_frame_index ], 1, nullptr, 0);
+
+        gpu_commands->draw_mesh_task_indirect( render_scene->mesh_task_indirect_early_commands_sb[ buffer_frame_index ], offsetof( GpuMeshDrawCommand, indirectMS ), render_scene->mesh_task_indirect_early_commands_sb[ buffer_frame_index ], 0, render_scene->mesh_instances.size, sizeof( GpuMeshDrawCommand ) );
+    }
+    else {
+        Material* last_material = nullptr;
+        for ( u32 mesh_index = 0; mesh_index < mesh_instance_draws.size; ++mesh_index ) {
+            MeshInstanceDraw& mesh_instance_draw = mesh_instance_draws[ mesh_index ];
+            Mesh& mesh = *mesh_instance_draw.mesh_instance->mesh;
+
+            if ( mesh.pbr_material.material != last_material ) {
+                PipelineHandle pipeline = renderer->get_pipeline( mesh.pbr_material.material, mesh_instance_draw.material_pass_index );
+
+                gpu_commands->bind_pipeline( pipeline );
+
+                last_material = mesh.pbr_material.material;
+            }
+
+            render_scene->draw_mesh_instance( gpu_commands, *mesh_instance_draw.mesh_instance );
         }
-
-        render_scene->draw_mesh( gpu_commands, mesh );
     }
 }
 

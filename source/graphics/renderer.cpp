@@ -7,8 +7,13 @@
 #include "foundation/file.hpp"
 
 #include "external/imgui/imgui.h"
+#include "external/vk_mem_alloc.h"
+
+#include <mutex>
 
 namespace raptor {
+
+std::mutex                  texture_update_mutex;
 
 // GpuTechniqueCreation ///////////////////////////////////////////////////
 GpuTechniqueCreation& GpuTechniqueCreation::reset() {
@@ -227,7 +232,7 @@ GpuTechnique* Renderer::create_technique( const GpuTechniqueCreation& creation )
             GpuTechniquePass& pass = technique->passes[ i ];
             const PipelineCreation& pass_creation = creation.creations[ i ];
             if ( pass_creation.name != nullptr ) {
-                char* cache_path = pipeline_cache_path.append_use_f( "%s%s.cache", RAPTOR_SHADER_FOLDER, pass_creation.name );
+                char* cache_path = pipeline_cache_path.append_use_f( "%s/%s.cache", resource_cache.binary_data_folder, pass_creation.name );
 
                 pass.pipeline = gpu->create_pipeline( pass_creation, cache_path );
             } else {
@@ -402,14 +407,14 @@ void Renderer::add_texture_to_update( raptor::TextureHandle texture ) {
 static void generate_mipmaps( raptor::Texture* texture, raptor::CommandBuffer* cb, bool from_transfer_queue ) {
     using namespace raptor;
 
-    if ( texture->mipmaps > 1 ) {
+    if ( texture->mip_level_count > 1 ) {
         util_add_image_barrier( cb->device, cb->vk_command_buffer, texture->vk_image, from_transfer_queue ? RESOURCE_STATE_COPY_SOURCE : RESOURCE_STATE_COPY_SOURCE, RESOURCE_STATE_COPY_SOURCE, 0, 1, false );
     }
 
     i32 w = texture->width;
     i32 h = texture->height;
 
-    for ( int mip_index = 1; mip_index < texture->mipmaps; ++mip_index ) {
+    for ( int mip_index = 1; mip_index < texture->mip_level_count; ++mip_index ) {
         util_add_image_barrier( cb->device, cb->vk_command_buffer, texture->vk_image, RESOURCE_STATE_UNDEFINED, RESOURCE_STATE_COPY_DEST, mip_index, 1, false );
 
         VkImageBlit blit_region{ };
@@ -440,10 +445,10 @@ static void generate_mipmaps( raptor::Texture* texture, raptor::CommandBuffer* c
 
     // Transition
     if ( from_transfer_queue ) {
-        util_add_image_barrier( cb->device, cb->vk_command_buffer, texture->vk_image, ( texture->mipmaps > 1 ) ? RESOURCE_STATE_COPY_SOURCE : RESOURCE_STATE_COPY_DEST, RESOURCE_STATE_SHADER_RESOURCE, 0, texture->mipmaps, false );
+        util_add_image_barrier( cb->device, cb->vk_command_buffer, texture->vk_image, ( texture->mip_level_count > 1 ) ? RESOURCE_STATE_COPY_SOURCE : RESOURCE_STATE_COPY_DEST, RESOURCE_STATE_SHADER_RESOURCE, 0, texture->mip_level_count, false );
     }
     else {
-        util_add_image_barrier( cb->device, cb->vk_command_buffer, texture->vk_image, RESOURCE_STATE_UNDEFINED, RESOURCE_STATE_SHADER_RESOURCE, 0, texture->mipmaps, false );
+        util_add_image_barrier( cb->device, cb->vk_command_buffer, texture->vk_image, RESOURCE_STATE_UNDEFINED, RESOURCE_STATE_SHADER_RESOURCE, 0, texture->mip_level_count, false );
     }
 }
 
@@ -538,6 +543,12 @@ void ResourceCache::shutdown( Renderer* renderer ) {
     samplers.shutdown();
     materials.shutdown();
     techniques.shutdown();
+}
+
+// GpuTechnique ///////////////////////////////////////////////////////////
+u32 GpuTechnique::get_pass_index( cstring name ) {
+    const u64 name_hash = hash_calculate( name );
+    return name_hash_to_index.get( name_hash );
 }
 
 } // namespace raptor

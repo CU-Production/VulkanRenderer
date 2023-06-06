@@ -7,8 +7,6 @@
 
 #include "graphics/gpu_resources.hpp"
 
-#include <vulkan/vulkan.h>
-
 namespace raptor {
 
 struct Allocator;
@@ -44,7 +42,7 @@ struct FrameGraphResourceInfo {
             sizet                           size;
             VkBufferUsageFlags              flags;
 
-            BufferHandle                    handle[ k_max_frames ];
+            BufferHandle                    handle;
         } buffer;
 
         struct {
@@ -59,7 +57,7 @@ struct FrameGraphResourceInfo {
 
             RenderPassOperation::Enum       load_op;
 
-            TextureHandle                   handle[ k_max_frames ];
+            TextureHandle                   handle;
             f32                             clear_values[ 4 ];  // Reused between color or depth/stencil.
 
             bool                            compute;
@@ -114,14 +112,17 @@ struct FrameGraphRenderPass
     virtual void                            add_ui() { }
     virtual void                            pre_render( u32 current_frame_index, CommandBuffer* gpu_commands, FrameGraph* frame_graph ) { }
     virtual void                            render( CommandBuffer* gpu_commands, RenderScene* render_scene ) { }
-    virtual void                            on_resize( GpuDevice& gpu, u32 new_width, u32 new_height ) {}
+    virtual void                            post_render( u32 current_frame_index, CommandBuffer* gpu_commands, FrameGraph* frame_graph ) { }
+    virtual void                            on_resize( GpuDevice& gpu, FrameGraph* frame_graph, u32 new_width, u32 new_height ) {}
+
+    bool                                    enabled = true;
 };
 
 struct FrameGraphNode {
     i32                                     ref_count = 0;
 
     RenderPassHandle                        render_pass;
-    FramebufferHandle                       framebuffer[ k_max_frames ];
+    FramebufferHandle                       framebuffer;
 
     FrameGraphRenderPass*                   graph_render_pass;
 

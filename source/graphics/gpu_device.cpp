@@ -1347,7 +1347,8 @@ VkShaderModuleCreateInfo GpuDevice::compile_shader( cstring code, u32 code_size,
     // TODO: add optional debug information in shaders (option -g).
     // -gVS instructs the compiler to embed the source string in the DebugSource instruction (similar to the -fspv-debug=vulkan-with-source argument in DXC).
     // https://www.khronos.org/assets/uploads/developers/presentations/Source-level_Shader_Debugging_in_Vulkan_with_RenderDoc_VULOCT2022.pdf
-    char* arguments = temp_string_buffer.append_use_f( "glslangValidator.exe %s -V -gVS --target-env vulkan1.3 -o %s -S %s --D %s --D %s", temp_filename, final_spirv_filename, to_compiler_extension( stage ), stage_define, to_stage_defines( stage ) );
+//    char* arguments = temp_string_buffer.append_use_f( "glslangValidator.exe %s -V -gVS --target-env vulkan1.3 -o %s -S %s --D %s --D %s", temp_filename, final_spirv_filename, to_compiler_extension( stage ), stage_define, to_stage_defines( stage ) );
+    char* arguments = temp_string_buffer.append_use_f( "glslangValidator.exe %s -V --target-env vulkan1.3 -o %s -S %s --D %s --D %s", temp_filename, final_spirv_filename, to_compiler_extension( stage ), stage_define, to_stage_defines( stage ) );
 #else
     char* glsl_compiler_path = temp_string_buffer.append_use_f( "%sglslangValidator", vulkan_binaries_path );
     char* final_spirv_filename = temp_string_buffer.append_use( "shader_final.spv" );

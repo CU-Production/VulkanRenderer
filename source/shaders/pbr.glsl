@@ -14,7 +14,7 @@ layout ( std140, set = MATERIAL_SET, binding = 1 ) uniform LightingConstants {
 };
 
 
-#if defined(VERTEX)
+#if defined(VERTEX_MAIN)
 
 layout(location=0) in vec3 position;
 
@@ -29,7 +29,7 @@ void main() {
 
 #endif // VERTEX
 
-#if defined (FRAGMENT)
+#if defined (FRAGMENT_MAIN)
 
 layout (location = 0) in vec2 vTexcoord0;
 
@@ -48,7 +48,7 @@ void main() {
 
 #endif // FRAGMENT
 
-#if defined(COMPUTE)
+#if defined(COMPUTE_COMPUTE)
 
 layout (local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 void main() {

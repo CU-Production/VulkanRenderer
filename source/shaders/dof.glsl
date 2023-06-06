@@ -1,6 +1,6 @@
 
 
-#if defined(VERTEX)
+#if defined(VERTEX_MAIN)
 
 layout(location=0) in vec3 position;
 
@@ -15,7 +15,7 @@ void main() {
 
 #endif // VERTEX
 
-#if defined (FRAGMENT)
+#if defined (FRAGMENT_MAIN)
 
 layout ( std140, set = MATERIAL_SET, binding = 0 ) uniform CameraParameters {
 

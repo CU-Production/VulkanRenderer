@@ -240,6 +240,7 @@ int main( int argc, char** argv ) {
     // Load frame graph and parse gpu techniques
     {
         cstring frame_graph_path = temporary_name_buffer.append_use_f( "%s/%s", RAPTOR_WORKING_FOLDER, "graph.json" );
+//        cstring frame_graph_path = temporary_name_buffer.append_use_f( "%s/%s", RAPTOR_WORKING_FOLDER, "graph_meshlet.json" );
 
         frame_graph.parse( frame_graph_path, &scratch_allocator );
         frame_graph.compile();

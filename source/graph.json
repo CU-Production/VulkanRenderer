@@ -3,14 +3,55 @@
     "passes":
     [
         {
+            "name": "mesh_occlusion_early_pass",
+            "type": "compute",
+            "outputs":
+            [
+                {
+                    "type": "buffer",
+                    "name": "early_mesh_indirect_draw_list"
+                },
+                {
+                    "type": "buffer",
+                    "name": "early_task_indirect_draw_list"
+                }
+            ]
+        },
+        {
             "inputs":
             [
                 {
-                    "type": "attachment",
-                    "name": "depth"
+                    "type": "texture",
+                    "name": "depth_pyramid"
                 }
             ],
-            "name": "gbuffer_pass",
+            "name": "mesh_occlusion_late_pass",
+            "type": "compute",
+            "outputs":
+            [
+                {
+                    "type": "buffer",
+                    "name": "late_mesh_indirect_draw_list"
+                },
+                {
+                    "type": "buffer",
+                    "name": "late_task_indirect_draw_list"
+                }
+            ]
+        },
+        {
+            "inputs":
+            [
+                {
+                    "type": "buffer",
+                    "name": "early_mesh_indirect_draw_list"
+                },
+                {
+                    "type": "buffer",
+                    "name": "early_task_indirect_draw_list"
+                }
+            ],
+            "name": "gbuffer_pass_early",
             "outputs":
             [
                 {
@@ -44,6 +85,91 @@
                     "resolution_scale": [ 1.0, 1.0 ],
                     "load_operation": "clear",
                     "clear_color":[0.0, 0.0, 0.0, 1]
+                },
+                {
+                    "type": "attachment",
+                    "name": "depth",
+                    "format": "VK_FORMAT_D32_SFLOAT",
+                    "resolution_scale": [ 1.0, 1.0 ],
+                    "load_operation": "clear",
+                    "clear_depth" : 1.0,
+                    "clear_stencil" : 0
+                }
+            ]
+        },
+        {
+            "inputs":
+            [
+                {
+                    "type": "buffer",
+                    "name": "late_mesh_indirect_draw_list"
+                },
+                {
+                    "type": "buffer",
+                    "name": "late_task_indirect_draw_list"
+                },
+                {
+                    "type": "attachment",
+                    "name": "gbuffer_colour"
+                },
+                {
+                    "type": "attachment",
+                    "name": "gbuffer_normals"
+                },
+                {
+                    "type": "attachment",
+                    "name": "gbuffer_occlusion_roughness_metalness"
+                },
+                {
+                    "type": "attachment",
+                    "name": "gbuffer_emissive"
+                },
+                {
+                    "type": "attachment",
+                    "name": "depth"
+                },
+                {
+                    "type": "texture",
+                    "name": "depth_pyramid"
+                }
+            ],
+            "outputs":
+            [
+                {
+                    "type": "reference",
+                    "name": "gbuffer_colour"
+                },
+                {
+                    "type": "reference",
+                    "name": "gbuffer_normals"
+                },
+                {
+                    "type": "reference",
+                    "name": "gbuffer_occlusion_roughness_metalness"
+                },
+                {
+                    "type": "reference",
+                    "name": "gbuffer_emissive"
+                }
+            ],
+            "name": "gbuffer_pass_late"
+        },
+        {
+            "inputs":
+            [
+                {
+                    "type": "texture",
+                    "name": "depth"
+                }
+            ],
+            "name": "depth_pyramid_pass",
+            "type": "compute",
+            "outputs":
+            [
+                {
+                    "type": "texture",
+                    "external": true,
+                    "name": "depth_pyramid"
                 }
             ]
         },
@@ -93,6 +219,10 @@
                 {
                     "type": "attachment",
                     "name": "final"
+                },
+                {
+                    "type": "attachment",
+                    "name": "depth"
                 }
             ],
             "name": "debug_pass"
@@ -136,8 +266,15 @@
             ]
         },
         {
-            "inputs": [],
+            "inputs":
+            [
+                {
+                    "type" : "texture",
+                    "name" : "dummy_resource"
+                }
+            ],
             "name": "depth_pre_pass",
+            "enabled": false,
             "outputs":
             [
                 {

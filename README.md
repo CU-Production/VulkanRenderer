@@ -16,6 +16,16 @@
 
 # Features
 
+## 20230606
+
+- [x] GPU culling using compute shader (per primitive)
+  - indirectMeshDispatch
+- [x] meshlet culling using task shader (per meshlet inside a primitive)
+
+![](screenshots/Snipaste_2023-06-06_22-58-24.png)
+![](screenshots/Snipaste_2023-06-06_22-58-34.png)
+![](screenshots/Snipaste_2023-06-06_22-59-18.png)
+
 ## 20230603
 
 - [x] compute queue for async compute

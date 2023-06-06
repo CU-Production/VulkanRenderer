@@ -1,6 +1,6 @@
 
 
-#if defined(VERTEX)
+#if defined(VERTEX_MAIN)
 
 layout (location = 0) out vec2 vTexCoord;
 layout (location = 1) flat out uint out_texture_id;
@@ -14,9 +14,9 @@ void main() {
     out_texture_id = gl_InstanceIndex;
 }
 
-#endif // VERTEX
+#endif // VERTEX_MAIN
 
-#if defined(FRAGMENT)
+#if defined(FRAGMENT_MAIN)
 
 layout (location = 0) in vec2 vTexCoord;
 layout (location = 1) flat in uint texture_id;
@@ -37,4 +37,4 @@ void main() {
     out_color = color;
 }
 
-#endif // FRAGMENT
+#endif // FRAGMENT_MAIN

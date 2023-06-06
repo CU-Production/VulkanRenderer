@@ -10,31 +10,45 @@ struct PhysicsVertex {
     uint joints[ 12 ];
 };
 
-layout ( set = MATERIAL_SET, binding = 1 ) buffer PhysicsMesh {
-    uint index_count;
-    uint vertex_count;
-
-    PhysicsVertex physics_vertices[];
+layout ( set = MATERIAL_SET, binding = 1 ) readonly buffer SphereTransforms {
+    mat4 transforms[];
 };
 
-#if defined(VERTEX)
+#if defined(VERTEX_DEBUG_MESH)
 
 layout(location=0) in vec3 position;
 
+layout(location=0) flat out uint draw_id;
+
 void main() {
-    gl_Position = view_projection * vec4( ( position * vec3( 0.02, 0.02, 0.02 ) + physics_vertices[ gl_InstanceIndex ].position ), 1.0);
+    draw_id = gl_DrawIDARB;
+    gl_Position = view_projection * vec4( transforms[gl_DrawIDARB] * vec4( position, 1.0 ) );
 }
 
 #endif // VERTEX
 
 
-#if defined (FRAGMENT)
+#if defined (FRAGMENT_DEBUG_MESH)
+
+layout (location = 0) flat in uint draw_id;
 
 layout (location = 0) out vec4 colour;
 
+uint hash(uint a)
+{
+   a = (a+0x7ed55d16) + (a<<12);
+   a = (a^0xc761c23c) ^ (a>>19);
+   a = (a+0x165667b1) + (a<<5);
+   a = (a+0xd3a2646c) ^ (a<<9);
+   a = (a+0xfd7046c5) + (a<<3);
+   a = (a^0xb55a4f09) ^ (a>>16);
+   return a;
+}
+
 void main() {
 
-    colour = vec4( 0.2, 0.7, 0.2, 1.0 );
+    uint mhash = hash(draw_id);
+    colour = vec4( vec3(float(mhash & 255), float((mhash >> 8) & 255), float((mhash >> 16) & 255)) / 255.0, 0.6 );
 }
 
 #endif // FRAGMENT

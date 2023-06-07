@@ -23,6 +23,7 @@ GpuTechniqueCreation& GpuTechniqueCreation::reset() {
 }
 
 GpuTechniqueCreation& GpuTechniqueCreation::add_pipeline( const PipelineCreation& pipeline ) {
+    RASSERT( num_creations < 16 );
     creations[ num_creations++ ] = pipeline;
     return *this;
 }
@@ -221,6 +222,7 @@ GpuTechnique* Renderer::create_technique( const GpuTechniqueCreation& creation )
     if ( technique ) {
         technique->passes.init( resident_allocator, creation.num_creations, creation.num_creations );
         technique->name_hash_to_index.init( resident_allocator, creation.num_creations );
+        technique->name_hash_to_index.set_default_value( u16_max );
         technique->name = creation.name;
 
         temporary_allocator.clear();

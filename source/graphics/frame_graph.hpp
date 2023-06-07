@@ -110,9 +110,9 @@ struct FrameGraphNodeCreation {
 struct FrameGraphRenderPass
 {
     virtual void                            add_ui() { }
-    virtual void                            pre_render( u32 current_frame_index, CommandBuffer* gpu_commands, FrameGraph* frame_graph ) { }
-    virtual void                            render( CommandBuffer* gpu_commands, RenderScene* render_scene ) { }
-    virtual void                            post_render( u32 current_frame_index, CommandBuffer* gpu_commands, FrameGraph* frame_graph ) { }
+    virtual void                            pre_render( u32 current_frame_index, CommandBuffer* gpu_commands, FrameGraph* frame_graph, RenderScene* render_scene ) { }
+    virtual void                            render( u32 current_frame_index, CommandBuffer* gpu_commands, RenderScene* render_scene ) { }
+    virtual void                            post_render( u32 current_frame_index, CommandBuffer* gpu_commands, FrameGraph* frame_graph, RenderScene* render_scene ) { }
     virtual void                            on_resize( GpuDevice& gpu, FrameGraph* frame_graph, u32 new_width, u32 new_height ) {}
 
     bool                                    enabled = true;

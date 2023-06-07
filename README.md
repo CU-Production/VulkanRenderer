@@ -16,6 +16,13 @@
 
 # Features
 
+## 20230607
+
+- [x] clustered deferred rendering
+
+![](screenshots/Snipaste_2023-06-07_23-23-35.png)
+![](screenshots/Snipaste_2023-06-07_23-24-09.png)
+
 ## 20230606
 
 - [x] GPU culling using compute shader (per primitive)

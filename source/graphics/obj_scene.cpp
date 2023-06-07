@@ -6,6 +6,7 @@
 
 #include "foundation/file.hpp"
 #include "foundation/time.hpp"
+#include "foundation/numerics.hpp"
 
 #include "external/stb_image.h"
 
@@ -215,6 +216,7 @@ void ObjScene::init( cstring filename, cstring path, Allocator* resident_allocat
     for ( u32 material_index = 0; material_index < assimp_scene->mNumMaterials; ++material_index ) {
         aiMaterial* material = assimp_scene->mMaterials[ material_index ];
 
+        // Important to init with default values.
         PBRMaterial raptor_material{ };
 
         aiString texture_file;
@@ -237,24 +239,21 @@ void ObjScene::init( cstring filename, cstring path, Allocator* resident_allocat
 
         aiColor4D color;
         if ( aiGetMaterialColor( material, AI_MATKEY_COLOR_DIFFUSE, &color ) == AI_SUCCESS ) {
-            raptor_material.diffuse_colour = { color.r, color.g, color.b, 1.0f };
+            raptor_material.base_color_factor = { color.r, color.g, color.b, 1.0f };
         }
-
-        if ( aiGetMaterialColor( material, AI_MATKEY_COLOR_AMBIENT, &color ) == AI_SUCCESS ) {
-            raptor_material.ambient_colour = { color.r, color.g, color.b };
-        }
-
-        if ( aiGetMaterialColor( material, AI_MATKEY_COLOR_SPECULAR, &color ) == AI_SUCCESS ) {
-            raptor_material.specular_colour = { color.r, color.g, color.b };
+        else {
+            raptor_material.base_color_factor = { 1.0f, 1.0f, 1.0f, 1.0f };
         }
 
         float f_value;
         if ( aiGetMaterialFloat( material, AI_MATKEY_SHININESS, &f_value ) == AI_SUCCESS ) {
-            raptor_material.specular_exp = f_value;
+            const f32 specular_exp = f_value;
+
+            raptor_material.occlusion = raptor::max( powf( ( 1.f - specular_exp ), 2.f ), 0.0001f );
         }
 
         if ( aiGetMaterialFloat( material, AI_MATKEY_OPACITY, &f_value ) == AI_SUCCESS ) {
-            raptor_material.diffuse_colour.w = f_value;
+            raptor_material.base_color_factor.w = f_value;
         }
 
         materials.push( raptor_material );
@@ -728,7 +727,7 @@ void ObjScene::prepare_draws( Renderer* renderer, StackAllocator* scratch_alloca
         mesh.pbr_material.material = pbr_material;
 
         mesh.pbr_material.flags |= DrawFlags_Phong;
-        if ( mesh.pbr_material.diffuse_colour.w < 1.0f ) {
+        if ( mesh.pbr_material.base_color_factor.w < 1.0f ) {
             mesh.pbr_material.flags |= DrawFlags_Transparent;
         }
 

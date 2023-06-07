@@ -8,6 +8,8 @@
 #include "foundation/time.hpp"
 #include "foundation/numerics.hpp"
 
+#include "application/game_camera.hpp"
+
 #include "external/imgui/imgui.h"
 #include "external/stb_image.h"
 
@@ -23,8 +25,15 @@
 #include <assimp/scene.h>
 #include <assimp/postprocess.h>
 
+#include "external/cglm/struct/vec2.h"
+#include "external/cglm/struct/mat2.h"
+#include "external/cglm/struct/mat3.h"
+#include "external/cglm/struct/mat4.h"
+#include "external/cglm/struct/cam.h"
+
 #define DEBUG_DRAW_MESHLET_SPHERES 0
 #define DEBUG_DRAW_MESHLET_CONES 0
+#define DEBUG_DRAW_POINT_LIGHT_SPHERES 0
 
 namespace raptor {
 
@@ -49,19 +58,17 @@ static void copy_gpu_material_data( GpuMaterialData& gpu_mesh_data, const Mesh& 
     gpu_mesh_data.emissive = { mesh.pbr_material.emissive_factor.x, mesh.pbr_material.emissive_factor.y, mesh.pbr_material.emissive_factor.z, ( float )mesh.pbr_material.emissive_texture_index };
 
     gpu_mesh_data.base_color_factor = mesh.pbr_material.base_color_factor;
-    gpu_mesh_data.metallic_roughness_occlusion_factor = mesh.pbr_material.metallic_roughness_occlusion_factor;
+    gpu_mesh_data.metallic_roughness_occlusion_factor.x = mesh.pbr_material.metallic;
+    gpu_mesh_data.metallic_roughness_occlusion_factor.y = mesh.pbr_material.roughness;
+    gpu_mesh_data.metallic_roughness_occlusion_factor.z = mesh.pbr_material.occlusion;
     gpu_mesh_data.alpha_cutoff = mesh.pbr_material.alpha_cutoff;
-
-    gpu_mesh_data.diffuse_colour = mesh.pbr_material.diffuse_colour;
-    gpu_mesh_data.specular_colour = mesh.pbr_material.specular_colour;
-    gpu_mesh_data.specular_exp = mesh.pbr_material.specular_exp;
-    gpu_mesh_data.ambient_colour = mesh.pbr_material.ambient_colour;
 
     gpu_mesh_data.flags = mesh.pbr_material.flags;
 
     gpu_mesh_data.mesh_index = mesh.gpu_mesh_index;
     gpu_mesh_data.meshlet_offset = mesh.meshlet_offset;
     gpu_mesh_data.meshlet_count = mesh.meshlet_count;
+    gpu_mesh_data.meshlet_index_count = mesh.meshlet_index_count;
 }
 
 //
@@ -106,7 +113,7 @@ void PhysicsVertex::add_joint( u32 vertex_index ) {
 
 //
 // DepthPrePass ///////////////////////////////////////////////////////
-void DepthPrePass::render( CommandBuffer* gpu_commands, RenderScene* render_scene ) {
+void DepthPrePass::render( u32 current_frame_index, CommandBuffer* gpu_commands, RenderScene* render_scene ) {
     if ( !enabled )
         return;
 
@@ -121,10 +128,9 @@ void DepthPrePass::render( CommandBuffer* gpu_commands, RenderScene* render_scen
 
         gpu_commands->bind_pipeline( pipeline );
 
-        u32 buffer_frame_index = renderer->gpu->current_frame;
-        gpu_commands->bind_descriptor_set( &render_scene->mesh_shader_early_descriptor_set[ buffer_frame_index ], 1, nullptr, 0);
+        gpu_commands->bind_descriptor_set( &render_scene->mesh_shader_early_descriptor_set[ current_frame_index ], 1, nullptr, 0);
 
-        gpu_commands->draw_mesh_task_indirect( render_scene->mesh_task_indirect_early_commands_sb[ buffer_frame_index ], offsetof( GpuMeshDrawCommand, indirectMS ), render_scene->mesh_task_indirect_early_commands_sb[ buffer_frame_index ], 0, render_scene->mesh_instances.size, sizeof( GpuMeshDrawCommand ) );
+        gpu_commands->draw_mesh_task_indirect( render_scene->mesh_task_indirect_early_commands_sb[ current_frame_index ], offsetof( GpuMeshDrawCommand, indirectMS ), render_scene->mesh_task_indirect_early_commands_sb[ current_frame_index ], 0, render_scene->mesh_instances.size, sizeof( GpuMeshDrawCommand ) );
     }
     else {
         Material* last_material = nullptr;
@@ -201,14 +207,14 @@ void DepthPrePass::free_gpu_resources() {
 
 //
 // DepthPrePass ///////////////////////////////////////////////////////
-void DepthPyramidPass::render( CommandBuffer* gpu_commands, RenderScene* render_scene ) {
+void DepthPyramidPass::render( u32 current_frame_index, CommandBuffer* gpu_commands, RenderScene* render_scene ) {
     if ( !enabled )
         return;
 
     update_depth_pyramid = ( render_scene->scene_data.freeze_occlusion_camera == 0 );
 }
 
-void DepthPyramidPass::post_render( u32 current_frame_index, CommandBuffer* gpu_commands, FrameGraph* frame_graph ) {
+void DepthPyramidPass::post_render( u32 current_frame_index, CommandBuffer* gpu_commands, FrameGraph* frame_graph, RenderScene* render_scene ) {
     if ( !enabled )
         return;
 
@@ -361,24 +367,75 @@ void DepthPyramidPass::create_depth_pyramid_resource( Texture* depth_texture ) {
 
 //
 // GBufferPass ////////////////////////////////////////////////////////
-void GBufferPass::render( CommandBuffer* gpu_commands, RenderScene* render_scene ) {
+void GBufferPass::pre_render( u32 current_frame_index, CommandBuffer* gpu_commands, FrameGraph* frame_graph, RenderScene* render_scene ) {
+
+    GpuDevice* gpu = renderer->gpu;
+
+    if ( render_scene->use_meshlets_emulation ) {
+
+        // TODO: remove
+        gpu_commands->global_debug_barrier();
+
+        // Generate meshlet list
+        gpu_commands->bind_pipeline( generate_meshlets_instances_pipeline );
+        gpu_commands->bind_descriptor_set( &generate_meshlets_instances_descriptor_set[ current_frame_index ], 1, nullptr, 0 );
+        gpu_commands->dispatch( (render_scene->mesh_instances.size + 31) / 32, 1, 1 );
+
+        // TODO: remove
+        gpu_commands->global_debug_barrier();
+
+        // Cull visible meshlets
+        gpu_commands->bind_pipeline( meshlet_instance_culling_pipeline );
+        gpu_commands->bind_descriptor_set( &meshlet_instance_culling_descriptor_set[ current_frame_index ], 1, nullptr, 0 );
+        gpu_commands->dispatch_indirect( render_scene->meshlet_instances_indirect_count_sb[ current_frame_index ], 0 );
+
+        // TODO: remove
+        gpu_commands->global_debug_barrier();
+
+        // Write counts
+        gpu_commands->bind_pipeline( meshlet_write_counts_pipeline );
+        gpu_commands->bind_descriptor_set( &meshlet_instance_culling_descriptor_set[ current_frame_index ], 1, nullptr, 0 );
+        gpu_commands->dispatch( 1, 1, 1 );
+
+        // TODO: remove
+        gpu_commands->global_debug_barrier();
+
+        // Generate index buffer
+        BufferHandle meshlet_index_buffer = render_scene->meshlets_index_buffer_sb[ current_frame_index ];
+
+        gpu_commands->buffer_barrier( meshlet_index_buffer, RESOURCE_STATE_INDEX_BUFFER, RESOURCE_STATE_UNORDERED_ACCESS, QueueType::Graphics, QueueType::Compute );
+
+        gpu_commands->bind_pipeline( generate_meshlet_index_buffer_pipeline );
+        gpu_commands->bind_descriptor_set( &generate_meshlet_index_buffer_descriptor_set[ current_frame_index ], 1, nullptr, 0 );
+        gpu_commands->dispatch_indirect( generate_meshlet_dispatch_indirect_buffer[ current_frame_index ], offsetof( GpuMeshDrawCounts, dispatch_task_x ) );
+
+        gpu_commands->buffer_barrier( meshlet_index_buffer, RESOURCE_STATE_UNORDERED_ACCESS, RESOURCE_STATE_INDEX_BUFFER, QueueType::Compute, QueueType::Graphics );
+
+        gpu_commands->global_debug_barrier();
+    }
+}
+
+void GBufferPass::render( u32 current_frame_index, CommandBuffer* gpu_commands, RenderScene* render_scene ) {
     if ( !enabled )
         return;
 
-    if ( render_scene->use_meshlets ) {
-        Renderer* renderer = render_scene->renderer;
+    Renderer* renderer = render_scene->renderer;
+    if ( render_scene->use_meshlets_emulation ) {
 
-        const u64 meshlet_hashed_name = hash_calculate( "meshlet" );
-        GpuTechnique* meshlet_technique = renderer->resource_cache.techniques.get( meshlet_hashed_name );
+        gpu_commands->bind_pipeline( meshlet_emulation_draw_pipeline );
 
-        PipelineHandle pipeline = meshlet_technique->passes[ meshlet_technique_index ].pipeline;
+        gpu_commands->bind_descriptor_set( &render_scene->meshlet_emulation_descriptor_set[ current_frame_index ], 1, nullptr, 0 );
 
-        gpu_commands->bind_pipeline( pipeline );
+        gpu_commands->bind_index_buffer( render_scene->meshlets_index_buffer_sb[ current_frame_index ], 0, VK_INDEX_TYPE_UINT32 );
+        gpu_commands->draw_indexed_indirect( render_scene->mesh_task_indirect_early_commands_sb[ current_frame_index ], 1, offsetof( GpuMeshDrawCommand, indirect ), sizeof( GpuMeshDrawCommand ) );
+    }
+    else if ( render_scene->use_meshlets ) {
 
-        u32 buffer_frame_index = renderer->gpu->current_frame;
-        gpu_commands->bind_descriptor_set( &render_scene->mesh_shader_early_descriptor_set[ buffer_frame_index ], 1, nullptr, 0);
+        gpu_commands->bind_pipeline( meshlet_draw_pipeline );
 
-        gpu_commands->draw_mesh_task_indirect( render_scene->mesh_task_indirect_early_commands_sb[ buffer_frame_index ], offsetof( GpuMeshDrawCommand, indirectMS ), render_scene->mesh_task_indirect_count_early_sb[ buffer_frame_index ], 0, render_scene->mesh_instances.size, sizeof( GpuMeshDrawCommand ) );
+        gpu_commands->bind_descriptor_set( &render_scene->mesh_shader_early_descriptor_set[ current_frame_index ], 1, nullptr, 0 );
+
+        gpu_commands->draw_mesh_task_indirect( render_scene->mesh_task_indirect_early_commands_sb[ current_frame_index ], offsetof( GpuMeshDrawCommand, indirectMS ), render_scene->mesh_task_indirect_count_early_sb[ current_frame_index ], 0, render_scene->mesh_instances.size, sizeof( GpuMeshDrawCommand ) );
     }
     else {
         Material* last_material = nullptr;
@@ -416,11 +473,6 @@ void GBufferPass::prepare_draws( RenderScene& scene, FrameGraph* frame_graph, Al
     const u64 hashed_name = hash_calculate( "main" );
     GpuTechnique* main_technique = renderer->resource_cache.techniques.get( hashed_name );
 
-    MaterialCreation material_creation;
-
-    material_creation.set_name( "material_no_cull" ).set_technique( main_technique ).set_render_index( 0 );
-    Material* material = renderer->create_material( material_creation );
-
     mesh_instance_draws.init( resident_allocator, 16 );
 
     // Copy all mesh draws and change only material.
@@ -439,12 +491,60 @@ void GBufferPass::prepare_draws( RenderScene& scene, FrameGraph* frame_graph, Al
         mesh_instance_draws.push( mesh_instance_draw );
     }
 
-    //qsort( mesh_draws.data, mesh_draws.size, sizeof( MeshDraw ), gltf_mesh_material_compare );
-
     // Cache meshlet technique index
-    if ( renderer->gpu->mesh_shaders_extension_present ) {
-        GpuTechnique* main_technique = renderer->resource_cache.techniques.get( hash_calculate( "meshlet" ) );
-        meshlet_technique_index = main_technique->get_pass_index( "gbuffer_culling" );
+    GpuTechnique* meshlet_technique = renderer->resource_cache.techniques.get( hash_calculate( "meshlet" ) );
+
+    u32 technique_index = meshlet_technique->get_pass_index( "gbuffer_culling" );
+    if ( technique_index != u16_max ) {
+        meshlet_draw_pipeline = meshlet_technique->passes[ technique_index ].pipeline;
+    }
+
+    technique_index = meshlet_technique->get_pass_index( "emulation_gbuffer_culling" );
+    meshlet_emulation_draw_pipeline = meshlet_technique->passes[ technique_index ].pipeline;
+
+    technique_index = meshlet_technique->get_pass_index( "generate_meshlet_index_buffer" );
+    generate_meshlet_index_buffer_pipeline = meshlet_technique->passes[ technique_index ].pipeline;
+
+    technique_index = meshlet_technique->get_pass_index( "generate_meshlet_instances" );
+    generate_meshlets_instances_pipeline = meshlet_technique->passes[ technique_index ].pipeline;
+
+    technique_index = meshlet_technique->get_pass_index( "meshlet_instance_culling" );
+    meshlet_instance_culling_pipeline = meshlet_technique->passes[ technique_index ].pipeline;
+
+    technique_index = meshlet_technique->get_pass_index( "meshlet_write_counts" );
+    meshlet_write_counts_pipeline = meshlet_technique->passes[ technique_index ].pipeline;
+
+    DescriptorSetLayoutHandle layout_generate_ib = renderer->gpu->get_descriptor_set_layout( generate_meshlet_index_buffer_pipeline, k_material_descriptor_set_index );
+    DescriptorSetLayoutHandle layout_generate_instances = renderer->gpu->get_descriptor_set_layout( generate_meshlets_instances_pipeline, k_material_descriptor_set_index );
+    DescriptorSetLayoutHandle layout_instance_culling = renderer->gpu->get_descriptor_set_layout( meshlet_instance_culling_pipeline, k_material_descriptor_set_index );
+
+    for ( u32 i = 0; i < k_max_frames; ++i ) {
+        DescriptorSetCreation ds_creation{};
+        ds_creation.set_layout( layout_generate_ib ).buffer( scene.meshlets_sb, 1 ).buffer( scene.meshlets_data_sb, 3 )
+            .buffer( scene.mesh_task_indirect_early_commands_sb[ i ], 6 ).buffer( scene.mesh_task_indirect_count_early_sb[ i ], 7 )
+            .buffer( scene.meshlets_index_buffer_sb[ i ], 8 ).buffer( scene.meshlets_instances_sb[ i ], 9 ).buffer( scene.meshes_sb, 2 )
+            .buffer( scene.mesh_instances_sb, 10 ).buffer( scene.meshlets_visible_instances_sb[ i ], 19 );
+        generate_meshlet_index_buffer_descriptor_set[ i ] = renderer->gpu->create_descriptor_set( ds_creation );
+
+        ds_creation.reset().set_layout( layout_generate_instances ).buffer( scene.meshlets_sb, 1 ).buffer( scene.meshlets_data_sb, 3 )
+            .buffer( scene.mesh_task_indirect_early_commands_sb[ i ], 6 ).buffer( scene.mesh_task_indirect_count_early_sb[ i ], 7 )
+            .buffer( scene.meshlets_index_buffer_sb[ i ], 8 ).buffer( scene.meshlets_instances_sb[ i ], 9 ).buffer( scene.meshes_sb, 2 )
+            .buffer( scene.mesh_instances_sb, 10 ).buffer( scene.meshlet_instances_indirect_count_sb[ i ], 17 );
+        generate_meshlets_instances_descriptor_set[ i ] = renderer->gpu->create_descriptor_set( ds_creation );
+
+        BufferCreation buffer_creation;
+        buffer_creation.reset().set( VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, ResourceUsageType::Dynamic, sizeof( u32 ) * 4 ).set_name( "meshlet_instance_culling_indirect_buffer" );
+        meshlet_instance_culling_indirect_buffer[ i ] = renderer->gpu->create_buffer( buffer_creation );
+
+        ds_creation.reset().set_layout( layout_instance_culling ).buffer( scene.meshlets_sb, 1 )
+            .buffer( scene.meshlets_instances_sb[ i ], 9 ).buffer( scene.meshes_sb, 2 ).buffer( scene.scene_cb, 0 )
+            .buffer( scene.mesh_instances_sb, 10 ).buffer( scene.meshlets_visible_instances_sb[ i ], 19 )
+            .buffer( scene.mesh_bounds_sb, 12 ).buffer( scene.mesh_task_indirect_count_early_sb[ i ], 7 )
+            .buffer( scene.mesh_task_indirect_early_commands_sb[ i ], 6 ).buffer( meshlet_instance_culling_indirect_buffer[ i ], 17 );
+        meshlet_instance_culling_descriptor_set[ i ] = renderer->gpu->create_descriptor_set( ds_creation );
+
+        // Cache indirect buffer
+        generate_meshlet_dispatch_indirect_buffer[ i ] = scene.mesh_task_indirect_count_early_sb[ i ];
     }
 }
 
@@ -455,6 +555,15 @@ void GBufferPass::free_gpu_resources() {
     GpuDevice& gpu = *renderer->gpu;
 
     mesh_instance_draws.shutdown();
+
+    for ( u32 i = 0; i < k_max_frames; ++i ) {
+
+        gpu.destroy_buffer( meshlet_instance_culling_indirect_buffer[ i ] );
+
+        gpu.destroy_descriptor_set( generate_meshlet_index_buffer_descriptor_set[ i ] );
+        gpu.destroy_descriptor_set( generate_meshlets_instances_descriptor_set[ i ] );
+        gpu.destroy_descriptor_set( meshlet_instance_culling_descriptor_set[ i ] );
+    }
 }
 
 // LateGBufferPass /////////////////////////////////////////////////////////
@@ -474,11 +583,6 @@ void LateGBufferPass::prepare_draws( RenderScene& scene, FrameGraph* frame_graph
 
     const u64 hashed_name = hash_calculate( "main" );
     GpuTechnique* main_technique = renderer->resource_cache.techniques.get( hashed_name );
-
-    MaterialCreation material_creation;
-
-    material_creation.set_name( "material_no_cull_late" ).set_technique( main_technique ).set_render_index( 0 );
-    Material* material = renderer->create_material( material_creation );
 
     mesh_instance_draws.init( resident_allocator, 16 );
 
@@ -514,13 +618,12 @@ void LateGBufferPass::free_gpu_resources() {
     mesh_instance_draws.shutdown();
 }
 
-void LateGBufferPass::render( CommandBuffer* gpu_commands, RenderScene* render_scene ) {
+void LateGBufferPass::render( u32 current_frame_index, CommandBuffer* gpu_commands, RenderScene* render_scene ) {
 
     if ( !enabled )
         return;
 
     if ( render_scene->use_meshlets ) {
-        u32 buffer_frame_index = renderer->gpu->current_frame;
 
         const u64 meshlet_hashed_name = hash_calculate( "meshlet" );
         GpuTechnique* meshlet_technique = renderer->resource_cache.techniques.get( meshlet_hashed_name );
@@ -529,9 +632,9 @@ void LateGBufferPass::render( CommandBuffer* gpu_commands, RenderScene* render_s
 
         gpu_commands->bind_pipeline( pipeline );
 
-        gpu_commands->bind_descriptor_set( &render_scene->mesh_shader_late_descriptor_set[ buffer_frame_index ], 1, nullptr, 0);
+        gpu_commands->bind_descriptor_set( &render_scene->mesh_shader_late_descriptor_set[ current_frame_index ], 1, nullptr, 0);
 
-        gpu_commands->draw_mesh_task_indirect( render_scene->mesh_task_indirect_late_commands_sb[ buffer_frame_index ], offsetof(GpuMeshDrawCommand, indirectMS), render_scene->mesh_task_indirect_count_late_sb[ buffer_frame_index ], 0, render_scene->mesh_instances.size, sizeof(GpuMeshDrawCommand) );
+        gpu_commands->draw_mesh_task_indirect( render_scene->mesh_task_indirect_late_commands_sb[ current_frame_index ], offsetof(GpuMeshDrawCommand, indirectMS), render_scene->mesh_task_indirect_count_late_sb[ current_frame_index ], 0, render_scene->mesh_instances.size, sizeof(GpuMeshDrawCommand) );
     }
 }
 
@@ -552,14 +655,14 @@ struct LightingConstants {
     u32             emissive;
 }; // struct LightingConstants
 
-void LightPass::render( CommandBuffer* gpu_commands, RenderScene* render_scene ) {
+void LightPass::render( u32 current_frame_index, CommandBuffer* gpu_commands, RenderScene* render_scene ) {
     if ( !enabled )
         return;
 
     if ( use_compute ) {
         PipelineHandle pipeline = renderer->get_pipeline( mesh.pbr_material.material, 1 );
         gpu_commands->bind_pipeline( pipeline );
-        gpu_commands->bind_descriptor_set( &mesh.pbr_material.descriptor_set, 1, nullptr, 0 );
+        gpu_commands->bind_descriptor_set( &lighting_descriptor_set[ current_frame_index ], 1, nullptr, 0 );
 
         gpu_commands->dispatch( ceilu32( renderer->gpu->swapchain_width * 1.f / 8 ), ceilu32( renderer->gpu->swapchain_height * 1.f / 8 ), 1 );
     } else {
@@ -567,7 +670,7 @@ void LightPass::render( CommandBuffer* gpu_commands, RenderScene* render_scene )
 
         gpu_commands->bind_pipeline( pipeline );
         gpu_commands->bind_vertex_buffer( mesh.position_buffer, 0, 0 );
-        gpu_commands->bind_descriptor_set( &mesh.pbr_material.descriptor_set, 1, nullptr, 0 );
+        gpu_commands->bind_descriptor_set( &lighting_descriptor_set[ current_frame_index ], 1, nullptr, 0 );
 
         gpu_commands->draw( TopologyType::Triangle, 0, 3, 0, 1 );
     }
@@ -601,12 +704,6 @@ void LightPass::prepare_draws( RenderScene& scene, FrameGraph* frame_graph, Allo
     buffer_creation.reset().set( VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, ResourceUsageType::Dynamic, sizeof( LightingConstants ) ).set_name( "lighting_constants" );
     mesh.pbr_material.material_buffer = renderer->gpu->create_buffer( buffer_creation );
 
-    const u32 pass_index = use_compute ? 1 : 0;
-    DescriptorSetCreation ds_creation{};
-    DescriptorSetLayoutHandle layout = renderer->gpu->get_descriptor_set_layout( main_technique->passes[ pass_index ].pipeline, k_material_descriptor_set_index );
-    ds_creation.buffer( scene.scene_cb, 0 ).buffer( mesh.pbr_material.material_buffer, 1 ).set_layout( layout );
-    mesh.pbr_material.descriptor_set = renderer->gpu->create_descriptor_set( ds_creation );
-
     BufferHandle fs_vb = renderer->gpu->get_fullscreen_vertex_buffer();
     mesh.position_buffer = fs_vb;
 
@@ -621,7 +718,7 @@ void LightPass::prepare_draws( RenderScene& scene, FrameGraph* frame_graph, Allo
     mesh.pbr_material.material = material_pbr;
 }
 
-void LightPass::upload_gpu_data() {
+void LightPass::upload_gpu_data( RenderScene& scene ) {
     if ( !enabled )
         return;
 
@@ -641,6 +738,48 @@ void LightPass::upload_gpu_data() {
 
         renderer->gpu->unmap_buffer( cb_map );
     }
+
+    const u64 hashed_name = hash_calculate( "pbr_lighting" );
+    GpuTechnique* main_technique = renderer->resource_cache.techniques.get( hashed_name );
+
+    if ( last_lights_buffer.index != scene.lights_tiles_sb[ 0 ].index ) {
+        scene.renderer->gpu->destroy_descriptor_set( mesh.pbr_material.descriptor_set );
+
+        const u32 pass_index = use_compute ? 1 : 0;
+        DescriptorSetCreation ds_creation{};
+        DescriptorSetLayoutHandle layout = renderer->gpu->get_descriptor_set_layout( main_technique->passes[ pass_index ].pipeline, k_material_descriptor_set_index );
+
+        for ( u32 i = 0; i < k_max_frames; ++i ) {
+
+            scene.renderer->gpu->destroy_descriptor_set( lighting_descriptor_set[ i ] );
+
+            ds_creation.reset().buffer( scene.scene_cb, 0 ).buffer( mesh.pbr_material.material_buffer, 1 ).buffer( scene.lights_lut_sb[ i ], 20 ).
+                buffer( scene.lights_list_sb, 21 ).buffer( scene.lights_tiles_sb[ i ], 22 ).buffer( scene.lights_indices_sb[ i ], 25 ).set_layout( layout );
+
+            lighting_descriptor_set[ i ] = renderer->gpu->create_descriptor_set( ds_creation );
+
+            // TODO(marco): this shouldn't be created here
+            if ( scene.use_meshlets ) {
+                scene.renderer->gpu->destroy_descriptor_set( scene.mesh_shader_transparent_descriptor_set[ i ] );
+
+                GpuTechnique* transparent_technique = renderer->resource_cache.techniques.get( hash_calculate( "meshlet" ) );
+                u32 meshlet_technique_index = transparent_technique->get_pass_index( "transparent_no_cull" );
+
+                DescriptorSetLayoutHandle transparent_layout = renderer->gpu->get_descriptor_set_layout( transparent_technique->passes[ meshlet_technique_index ].pipeline, k_material_descriptor_set_index );
+
+                ds_creation.reset().buffer( scene.scene_cb, 0 ).buffer( scene.meshlets_sb, 1 ).buffer( scene.meshes_sb, 2 )
+                    .buffer( scene.meshlets_data_sb, 3 ).buffer( scene.meshlets_vertex_pos_sb, 4 ).buffer( scene.meshlets_vertex_data_sb, 5 )
+                    .buffer( scene.mesh_task_indirect_early_commands_sb[ i ], 6 ).buffer( scene.mesh_task_indirect_count_early_sb[ i ], 7 )
+                    .buffer( scene.mesh_instances_sb, 10 ).buffer( scene.mesh_bounds_sb, 12 )
+                    .buffer( scene.lights_lut_sb[ i ], 20 ).buffer( scene.lights_list_sb, 21 )
+                    .buffer( scene.lights_tiles_sb[ i ], 22 ).buffer( scene.lights_indices_sb[ i ], 25 ).set_layout( transparent_layout );
+
+                scene.mesh_shader_transparent_descriptor_set[ i ] = renderer->gpu->create_descriptor_set( ds_creation );
+            }
+        }
+
+        last_lights_buffer.index = scene.lights_tiles_sb[ 0 ].index;
+    }
 }
 
 void LightPass::free_gpu_resources() {
@@ -651,16 +790,24 @@ void LightPass::free_gpu_resources() {
 
     gpu.destroy_buffer( mesh.pbr_material.material_buffer );
     gpu.destroy_descriptor_set( mesh.pbr_material.descriptor_set );
+
+    for ( u32 i = 0; i < k_max_frames; ++i ) {
+        gpu.destroy_descriptor_set( lighting_descriptor_set[ i ] );
+    }
 }
 
 //
 // TransparentPass ////////////////////////////////////////////////////////
-void TransparentPass::render( CommandBuffer* gpu_commands, RenderScene* render_scene ) {
+void TransparentPass::render( u32 current_frame_index, CommandBuffer* gpu_commands, RenderScene* render_scene ) {
     if ( !enabled )
         return;
 
-    if ( render_scene->use_meshlets ) {
-        Renderer* renderer = render_scene->renderer;
+    Renderer* renderer = render_scene->renderer;
+
+    if ( render_scene->use_meshlets_emulation ) {
+        // TODO:
+    }
+    else if ( render_scene->use_meshlets ) {
 
         const u64 meshlet_hashed_name = hash_calculate( "meshlet" );
         GpuTechnique* meshlet_technique = renderer->resource_cache.techniques.get( meshlet_hashed_name );
@@ -669,17 +816,15 @@ void TransparentPass::render( CommandBuffer* gpu_commands, RenderScene* render_s
 
         gpu_commands->bind_pipeline( pipeline );
 
-        u32 buffer_frame_index = renderer->gpu->current_frame;
-        gpu_commands->bind_descriptor_set( &render_scene->mesh_shader_early_descriptor_set[ buffer_frame_index ], 1, nullptr, 0 );
+        gpu_commands->bind_descriptor_set( &render_scene->mesh_shader_transparent_descriptor_set[ current_frame_index ], 1, nullptr, 0 );
 
         // Transparent commands are put after mesh instances count commands.
         const u32 indirect_commands_offset = offsetof( GpuMeshDrawCommand, indirectMS ) + sizeof( GpuMeshDrawCommand ) * render_scene->mesh_instances.size;
         // Transparent count is after opaque and total count offset.
         const u32 indirect_count_offset = sizeof( u32 ) * 2;
 
-        // TODO(marco): separate transparent draw command list as we need only one
-        gpu_commands->draw_mesh_task_indirect( render_scene->mesh_task_indirect_early_commands_sb[ buffer_frame_index ], indirect_commands_offset,
-                                               render_scene->mesh_task_indirect_count_early_sb[ buffer_frame_index ], indirect_count_offset, render_scene->mesh_instances.size, sizeof( GpuMeshDrawCommand ) );
+        gpu_commands->draw_mesh_task_indirect( render_scene->mesh_task_indirect_early_commands_sb[ current_frame_index ], indirect_commands_offset,
+                                               render_scene->mesh_task_indirect_count_early_sb[ current_frame_index ], indirect_count_offset, render_scene->mesh_instances.size, sizeof( GpuMeshDrawCommand ) );
     }
     else {
         Material* last_material = nullptr;
@@ -819,7 +964,7 @@ static void load_debug_mesh( cstring filename, Allocator* resident_allocator, Re
     indices.shutdown();
 }
 
-void DebugPass::render( CommandBuffer* gpu_commands, RenderScene* render_scene ) {
+void DebugPass::render( u32 current_frame_index, CommandBuffer* gpu_commands, RenderScene* render_scene ) {
     if ( !enabled )
         return;
 
@@ -827,7 +972,7 @@ void DebugPass::render( CommandBuffer* gpu_commands, RenderScene* render_scene )
 
     gpu_commands->bind_pipeline( pipeline );
 
-#if DEBUG_DRAW_MESHLET_SPHERES
+#if ( DEBUG_DRAW_MESHLET_SPHERES || DEBUG_DRAW_POINT_LIGHT_SPHERES )
     gpu_commands->bind_vertex_buffer( sphere_mesh_buffer->handle, 0, 0 );
     gpu_commands->bind_index_buffer( sphere_mesh_indices->handle, 0, VK_INDEX_TYPE_UINT32 );
 
@@ -875,7 +1020,7 @@ void DebugPass::render( CommandBuffer* gpu_commands, RenderScene* render_scene )
     }
 }
 
-void DebugPass::pre_render( u32 current_frame_index, CommandBuffer* gpu_commands, FrameGraph* frame_graph ) {
+void DebugPass::pre_render( u32 current_frame_index, CommandBuffer* gpu_commands, FrameGraph* frame_graph, RenderScene* render_scene ) {
 
     if ( !enabled ) {
         return;
@@ -927,11 +1072,15 @@ void DebugPass::prepare_draws( RenderScene& scene, FrameGraph* frame_graph, Allo
     mesh_name.init( 1024, scratch_allocator );
     cstring filename = mesh_name.append_use_f( "%s/sphere.obj", RAPTOR_DATA_FOLDER );
 
+#if ( DEBUG_DRAW_MESHLET_SPHERES | DEBUG_DRAW_POINT_LIGHT_SPHERES)
     load_debug_mesh( filename, resident_allocator, renderer, sphere_index_count, &sphere_mesh_buffer, &sphere_mesh_indices );
+#endif // DEBUG_DRAW_MESHLET_SPHERES | DEBUG_DRAW_POINT_LIGHT_SPHERES
 
     filename = mesh_name.append_use_f( "%s/cone.obj", RAPTOR_DATA_FOLDER );
 
+#if DEBUG_DRAW_MESHLET_CONES
     load_debug_mesh( filename, resident_allocator, renderer, cone_index_count, &cone_mesh_buffer, &cone_mesh_indices );
+#endif // DEBUG_DRAW_MESHLET_CONES
 
     scratch_allocator->free_marker( marker );
 
@@ -942,6 +1091,7 @@ void DebugPass::prepare_draws( RenderScene& scene, FrameGraph* frame_graph, Allo
     Array<VkDrawIndexedIndirectCommand> sphere_indirect_commands;
     sphere_indirect_commands.init( resident_allocator, 4096 );
 
+#if DEBUG_DRAW_MESHLET_SPHERES
     Array<mat4s> cone_matrices;
     cone_matrices.init( resident_allocator, 4096 );
 
@@ -1055,11 +1205,59 @@ void DebugPass::prepare_draws( RenderScene& scene, FrameGraph* frame_graph, Allo
         cone_mesh_descriptor_set = renderer->gpu->create_descriptor_set( creation );
     }
 
-    bounding_matrices.shutdown();
-    sphere_indirect_commands.shutdown();
 
     cone_matrices.shutdown();
     cone_indirect_commands.shutdown();
+#endif
+
+#if DEBUG_DRAW_POINT_LIGHT_SPHERES
+    for ( u32 i = 0; i < k_num_lights; ++i ) {
+        Light& light = scene.lights[ i ];
+
+        // Meshlet bounding spheres
+        mat4s sphere_bounding_matrix = glms_mat4_identity();
+        sphere_bounding_matrix = glms_translate( sphere_bounding_matrix, light.world_position );
+        sphere_bounding_matrix = glms_scale( sphere_bounding_matrix, vec3s{ light.radius, light.radius, light.radius } );
+
+        bounding_matrices.push( sphere_bounding_matrix );
+
+        VkDrawIndexedIndirectCommand draw_command{ };
+        draw_command.indexCount = sphere_index_count;
+        draw_command.instanceCount = 1;
+
+        sphere_indirect_commands.push( draw_command );
+    }
+
+    bounding_sphere_count = bounding_matrices.size;
+
+    {
+       BufferCreation creation{ };
+       sizet buffer_size = bounding_matrices.size * sizeof( mat4s );
+       creation.set( VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, ResourceUsageType::Immutable, buffer_size ).set_data( bounding_matrices.data ).set_name( "lights_bounding_spheres_transform" );
+
+       sphere_matrices_buffer = renderer->create_buffer( creation );
+    }
+
+    {
+       BufferCreation creation{ };
+       sizet buffer_size = sphere_indirect_commands.size * sizeof( VkDrawIndexedIndirectCommand );
+       creation.set( VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT, ResourceUsageType::Immutable, buffer_size ).set_data( sphere_indirect_commands.data ).set_name( "lights_bound_sphere_draw_commands" );
+
+       sphere_draw_indirect_buffer = renderer->create_buffer( creation );
+    }
+
+    {
+        DescriptorSetLayoutHandle layout = renderer->gpu->get_descriptor_set_layout( main_technique->passes[ 0 ].pipeline, k_material_descriptor_set_index );
+
+        DescriptorSetCreation creation{ };
+        creation.buffer( scene.scene_cb, 0 ).buffer( sphere_matrices_buffer->handle, 1 ).set_layout( layout );
+
+        sphere_mesh_descriptor_set = renderer->gpu->create_descriptor_set( creation );
+    }
+#endif
+
+    bounding_matrices.shutdown();
+    sphere_indirect_commands.shutdown();
 
     // Prepare gpu debug line resources
     {
@@ -1094,18 +1292,23 @@ void DebugPass::free_gpu_resources() {
     if ( !enabled )
         return;
 
+#if ( DEBUG_DRAW_MESHLET_SPHERES | DEBUG_DRAW_POINT_LIGHT_SPHERES)
     renderer->destroy_buffer( sphere_mesh_indices );
     renderer->destroy_buffer( sphere_mesh_buffer );
     renderer->destroy_buffer( sphere_matrices_buffer );
     renderer->destroy_buffer( sphere_draw_indirect_buffer );
 
+    renderer->gpu->destroy_descriptor_set( sphere_mesh_descriptor_set );
+#endif
+
+#if DEBUG_DRAW_MESHLET_CONES
     renderer->destroy_buffer( cone_mesh_indices );
     renderer->destroy_buffer( cone_mesh_buffer );
     renderer->destroy_buffer( cone_matrices_buffer );
     renderer->destroy_buffer( cone_draw_indirect_buffer );
 
-    renderer->gpu->destroy_descriptor_set( sphere_mesh_descriptor_set );
     renderer->gpu->destroy_descriptor_set( cone_mesh_descriptor_set );
+#endif
 
     renderer->gpu->destroy_descriptor_set( debug_lines_finalize_set );
     renderer->gpu->destroy_descriptor_set( debug_lines_draw_set );
@@ -1122,7 +1325,7 @@ void DoFPass::add_ui() {
     ImGui::InputFloat( "Aperture", &aperture );
 }
 
-void DoFPass::pre_render( u32 current_frame_index, CommandBuffer* gpu_commands, FrameGraph* frame_graph ) {
+void DoFPass::pre_render( u32 current_frame_index, CommandBuffer* gpu_commands, FrameGraph* frame_graph, RenderScene* render_scene ) {
 
     FrameGraphResource* texture = ( FrameGraphResource* )frame_graph->get_resource( "lighting" );
     RASSERT( texture != nullptr );
@@ -1130,7 +1333,7 @@ void DoFPass::pre_render( u32 current_frame_index, CommandBuffer* gpu_commands, 
     gpu_commands->copy_texture( texture->resource_info.texture.handle, scene_mips->handle, RESOURCE_STATE_PIXEL_SHADER_RESOURCE );
 }
 
-void DoFPass::render( CommandBuffer* gpu_commands, RenderScene* render_scene ) {
+void DoFPass::render( u32 current_frame_index, CommandBuffer* gpu_commands, RenderScene* render_scene ) {
     if ( !enabled )
         return;
 
@@ -1268,7 +1471,7 @@ void DoFPass::free_gpu_resources() {
 
 //
 // MeshPass ////////////////////////////////////////////////////////
-void MeshPass::render( CommandBuffer* gpu_commands, RenderScene* render_scene ) {
+void MeshPass::render( u32 current_frame_index, CommandBuffer* gpu_commands, RenderScene* render_scene ) {
     if ( !enabled )
         return;
 
@@ -1281,8 +1484,7 @@ void MeshPass::render( CommandBuffer* gpu_commands, RenderScene* render_scene ) 
 
     gpu_commands->bind_pipeline( pipeline );
 
-    u32 buffer_frame_index = renderer->gpu->current_frame;
-    gpu_commands->bind_descriptor_set( &render_scene->mesh_shader_early_descriptor_set[ buffer_frame_index ], 1, nullptr, 0);
+    gpu_commands->bind_descriptor_set( &render_scene->mesh_shader_early_descriptor_set[ current_frame_index ], 1, nullptr, 0);
 
     gpu_commands->draw_mesh_task( ( render_scene->meshlets.size + 31 ) / 32, 0 );
 }
@@ -1299,7 +1501,7 @@ void MeshPass::prepare_draws( RenderScene& scene, FrameGraph* frame_graph, Alloc
 }
 
 // CullingEarlyPass /////////////////////////////////////////////////////////
-void CullingEarlyPass::render( CommandBuffer* gpu_commands, RenderScene* render_scene ) {
+void CullingEarlyPass::render( u32 current_frame_index, CommandBuffer* gpu_commands, RenderScene* render_scene ) {
 
     if ( !enabled )
         return;
@@ -1316,10 +1518,13 @@ void CullingEarlyPass::render( CommandBuffer* gpu_commands, RenderScene* render_
     mesh_draw_counts.total_count = render_scene->mesh_instances.size;
     mesh_draw_counts.depth_pyramid_texture_index = depth_pyramid_texture_index;
     mesh_draw_counts.late_flag = 0;
+    mesh_draw_counts.meshlet_index_count = 0;
+    mesh_draw_counts.dispatch_task_x = 0;
+    mesh_draw_counts.dispatch_task_y = 1;
+    mesh_draw_counts.dispatch_task_z = 1;
 
-    u32 buffer_frame_index = renderer->gpu->current_frame;
     // Reset mesh draw counts
-    MapBufferParameters cb_map{ render_scene->mesh_task_indirect_count_early_sb[ buffer_frame_index ], 0, 0};
+    MapBufferParameters cb_map{ render_scene->mesh_task_indirect_count_early_sb[ current_frame_index ], 0, 0};
     GpuMeshDrawCounts* count_data = ( GpuMeshDrawCounts* )renderer->gpu->map_buffer( cb_map );
     if ( count_data ) {
         *count_data = mesh_draw_counts;
@@ -1342,15 +1547,15 @@ void CullingEarlyPass::render( CommandBuffer* gpu_commands, RenderScene* render_
 
     gpu_commands->bind_pipeline( frustum_cull_pipeline );
 
-    const Buffer* visible_commands_sb = renderer->gpu->access_buffer( render_scene->mesh_task_indirect_early_commands_sb[ buffer_frame_index ] );
+    const Buffer* visible_commands_sb = renderer->gpu->access_buffer( render_scene->mesh_task_indirect_early_commands_sb[ current_frame_index ] );
     util_add_buffer_barrier( renderer->gpu, gpu_commands->vk_command_buffer, visible_commands_sb->vk_buffer,
                                  RESOURCE_STATE_INDIRECT_ARGUMENT, RESOURCE_STATE_UNORDERED_ACCESS, visible_commands_sb->size );
 
-    const Buffer* count_sb = renderer->gpu->access_buffer( render_scene->mesh_task_indirect_count_early_sb[ buffer_frame_index ] );
+    const Buffer* count_sb = renderer->gpu->access_buffer( render_scene->mesh_task_indirect_count_early_sb[ current_frame_index ] );
     util_add_buffer_barrier( renderer->gpu, gpu_commands->vk_command_buffer, count_sb->vk_buffer,
                                  RESOURCE_STATE_INDIRECT_ARGUMENT, RESOURCE_STATE_UNORDERED_ACCESS, count_sb->size );
 
-    gpu_commands->bind_descriptor_set( &frustum_cull_descriptor_set[ buffer_frame_index ], 1, nullptr, 0 );
+    gpu_commands->bind_descriptor_set( &frustum_cull_descriptor_set[ current_frame_index ], 1, nullptr, 0 );
 
     u32 group_x = raptor::ceilu32( render_scene->mesh_instances.size / 64.0f );
     gpu_commands->dispatch( group_x, 1, 1 );
@@ -1379,7 +1584,7 @@ void CullingEarlyPass::prepare_draws( RenderScene& scene, FrameGraph* frame_grap
     // Cache frustum cull shader
     GpuTechnique* culling_technique = renderer->resource_cache.techniques.get( hash_calculate( "culling" ) );
     {
-        u32 pipeline_index = culling_technique->get_pass_index( "gpu_culling" );
+        u32 pipeline_index = culling_technique->get_pass_index( "gpu_mesh_culling" );
         frustum_cull_pipeline = culling_technique->passes[ pipeline_index ].pipeline;
         DescriptorSetLayoutHandle layout = gpu.get_descriptor_set_layout( frustum_cull_pipeline, k_material_descriptor_set_index );
 
@@ -1403,7 +1608,7 @@ void CullingEarlyPass::free_gpu_resources() {
 }
 
 // CullingLatePass /////////////////////////////////////////////////////////
-void CullingLatePass::render( CommandBuffer* gpu_commands, RenderScene* render_scene ) {
+void CullingLatePass::render( u32 current_frame_index, CommandBuffer* gpu_commands, RenderScene* render_scene ) {
 
     if ( !enabled )
         return;
@@ -1421,8 +1626,7 @@ void CullingLatePass::render( CommandBuffer* gpu_commands, RenderScene* render_s
     mesh_draw_counts.total_count = render_scene->mesh_instances.size;
     mesh_draw_counts.depth_pyramid_texture_index = depth_pyramid_texture_index;
 
-    u32 buffer_frame_index = renderer->gpu->current_frame;
-    MapBufferParameters cb_map{ render_scene->mesh_task_indirect_count_late_sb[ buffer_frame_index ], 0, 0};
+    MapBufferParameters cb_map{ render_scene->mesh_task_indirect_count_late_sb[ current_frame_index ], 0, 0};
     GpuMeshDrawCounts* count_data = ( GpuMeshDrawCounts* )renderer->gpu->map_buffer( cb_map );
     if ( count_data ) {
         *count_data = mesh_draw_counts;
@@ -1432,15 +1636,15 @@ void CullingLatePass::render( CommandBuffer* gpu_commands, RenderScene* render_s
 
     gpu_commands->bind_pipeline( frustum_cull_pipeline );
 
-    const Buffer* visible_commands_sb = renderer->gpu->access_buffer( render_scene->mesh_task_indirect_late_commands_sb[ buffer_frame_index ] );
+    const Buffer* visible_commands_sb = renderer->gpu->access_buffer( render_scene->mesh_task_indirect_late_commands_sb[ current_frame_index ] );
     util_add_buffer_barrier( renderer->gpu, gpu_commands->vk_command_buffer, visible_commands_sb->vk_buffer,
                                  RESOURCE_STATE_INDIRECT_ARGUMENT, RESOURCE_STATE_UNORDERED_ACCESS, visible_commands_sb->size );
 
-    const Buffer* count_sb = renderer->gpu->access_buffer( render_scene->mesh_task_indirect_count_late_sb[ buffer_frame_index ] );
+    const Buffer* count_sb = renderer->gpu->access_buffer( render_scene->mesh_task_indirect_count_late_sb[ current_frame_index ] );
     util_add_buffer_barrier( renderer->gpu, gpu_commands->vk_command_buffer, count_sb->vk_buffer,
                                  RESOURCE_STATE_INDIRECT_ARGUMENT, RESOURCE_STATE_UNORDERED_ACCESS, count_sb->size );
 
-    gpu_commands->bind_descriptor_set( &frustum_cull_descriptor_set[ buffer_frame_index ], 1, nullptr, 0 );
+    gpu_commands->bind_descriptor_set( &frustum_cull_descriptor_set[ current_frame_index ], 1, nullptr, 0 );
 
     u32 group_x = raptor::ceilu32( render_scene->mesh_instances.size / 64.0f );
     gpu_commands->dispatch( group_x, 1, 1 );
@@ -1824,38 +2028,349 @@ void RenderScene::update_joints() {
     }
 }
 
-void RenderScene::upload_gpu_data() {
+struct SortedLight {
+
+    u32             light_index;
+    f32             projected_z;
+    f32             projected_z_min;
+    f32             projected_z_max;
+}; // struct SortedLight
+
+static int sorting_light_fn( const void* a, const void* b ) {
+    const SortedLight* la = (const SortedLight*)a;
+    const SortedLight* lb = (const SortedLight*)b;
+
+    if ( la->projected_z < lb->projected_z ) return -1;
+    else if ( la->projected_z > lb->projected_z ) return 1;
+    return 0;
+}
+
+void RenderScene::upload_gpu_data( UploadGpuDataContext& context ) {
+
+    GpuDevice& gpu = *renderer->gpu;
 
     // Update per mesh material buffer
     // TODO: update only changed stuff, this is now dynamic so it can't be done.
     MapBufferParameters cb_map = { meshes_sb, 0, 0 };
-    GpuMaterialData* gpu_mesh_data = ( GpuMaterialData* )renderer->gpu->map_buffer( cb_map );
+    GpuMaterialData* gpu_mesh_data = ( GpuMaterialData* )gpu.map_buffer( cb_map );
     if ( gpu_mesh_data ) {
         for ( u32 mesh_index = 0; mesh_index < meshes.size; ++mesh_index ) {
             copy_gpu_material_data( gpu_mesh_data[ mesh_index ], meshes[ mesh_index ] );
         }
-        renderer->gpu->unmap_buffer( cb_map );
+        gpu.unmap_buffer( cb_map );
     }
 
     // Copy mesh bounding spheres
     cb_map.buffer = mesh_bounds_sb;
-    vec4s* gpu_bounds_data = (vec4s*)renderer->gpu->map_buffer( cb_map );
+    vec4s* gpu_bounds_data = (vec4s*)gpu.map_buffer( cb_map );
     if ( gpu_bounds_data ) {
         for ( u32 mesh_index = 0; mesh_index < meshes.size; ++mesh_index ) {
             gpu_bounds_data[ mesh_index ] = meshes[ mesh_index ].bounding_sphere;
         }
-        renderer->gpu->unmap_buffer( cb_map );
+        gpu.unmap_buffer( cb_map );
     }
 
     // Copy mesh instances data
     cb_map.buffer = mesh_instances_sb;
-    GpuMeshInstanceData* gpu_mesh_instance_data = ( GpuMeshInstanceData* )renderer->gpu->map_buffer( cb_map );
+    GpuMeshInstanceData* gpu_mesh_instance_data = ( GpuMeshInstanceData* )gpu.map_buffer( cb_map );
     if ( gpu_mesh_instance_data ) {
         for ( u32 mi = 0; mi < mesh_instances.size; ++mi ) {
             copy_gpu_mesh_transform( gpu_mesh_instance_data[ mi ], mesh_instances[ mi ], global_scale, scene_graph );
         }
-        renderer->gpu->unmap_buffer( cb_map );
+        gpu.unmap_buffer( cb_map );
     }
+
+    sizet current_marker = context.scratch_allocator->get_marker();
+
+    Array<SortedLight> sorted_lights;
+    sorted_lights.init( context.scratch_allocator, k_num_lights, k_num_lights );
+
+    // Sort lights based on Z
+    mat4s& world_to_camera = scene_data.world_to_camera;
+    float z_far = scene_data.z_far;
+    for ( u32 i = 0; i < k_num_lights; ++i ) {
+        Light& light = lights[ i ];
+
+        vec4s p{ light.world_position.x, light.world_position.y, light.world_position.z, 1.0f };
+
+        vec4s projected_p = glms_mat4_mulv( world_to_camera, p );
+        vec4s projected_p_min = glms_vec4_add( projected_p, { 0,0,-light.radius, 0 } );
+        vec4s projected_p_max = glms_vec4_add( projected_p, { 0,0,light.radius, 0 } );
+
+        // NOTE(marco): linearize depth
+        SortedLight& sorted_light = sorted_lights[ i ];
+        sorted_light.light_index = i;
+        // Remove negative numbers as they cause false negatives for bin 0.
+        sorted_light.projected_z = ( ( projected_p.z - scene_data.z_near ) / ( z_far - scene_data.z_near ) );
+        sorted_light.projected_z_min = ( ( projected_p_min.z - scene_data.z_near ) / ( z_far - scene_data.z_near ) );
+        sorted_light.projected_z_max = ( ( projected_p_max.z - scene_data.z_near ) / ( z_far - scene_data.z_near ) );
+
+        //rprint( "Light Z %f, Zmin %f, Zmax %f\n", sorted_light.projected_z, sorted_light.projected_z_min, sorted_light.projected_z_max );
+    }
+
+    qsort( sorted_lights.data, k_num_lights, sizeof( SortedLight ), sorting_light_fn );
+
+    // Upload light list
+    cb_map.buffer = lights_list_sb;
+    GpuLight* gpu_lights_data = ( GpuLight* )gpu.map_buffer( cb_map );
+    if ( gpu_lights_data ) {
+        for ( u32 i = 0; i < k_num_lights; ++i ) {
+            Light& light = lights[ i ];
+            GpuLight& gpu_light = gpu_lights_data[ i ];
+
+            gpu_light.world_position = light.world_position;
+            gpu_light.attenuation = light.radius;
+            gpu_light.color = light.color;
+            gpu_light.intensity = light.intensity;
+        }
+
+        gpu.unmap_buffer( cb_map );
+    }
+
+    // Calculate lights LUT
+    // NOTE(marco): it might be better to use logarithmic slices to have better resolution
+    // closer to the camera. We could also use a different far plane and discard any lights
+    // that are too far
+    f32 bin_size = 1.0f / k_light_z_bins;
+
+    for ( u32 bin = 0; bin < k_light_z_bins; ++bin ) {
+        u32 min_light_id = k_num_lights + 1;
+        u32 max_light_id = 0;
+
+        f32 bin_min = bin_size * bin;
+        f32 bin_max = bin_min + bin_size;
+
+        for ( u32 i = 0; i < k_num_lights; ++i ) {
+            const SortedLight& light = sorted_lights[ i ];
+
+            if ( ( light.projected_z >= bin_min && light.projected_z <= bin_max ) ||
+                 ( light.projected_z_min >= bin_min && light.projected_z_min <= bin_max ) ||
+                 ( light.projected_z_max >= bin_min && light.projected_z_max <= bin_max ) ) {
+                if ( i < min_light_id ) {
+                    min_light_id = i;
+                }
+
+                if ( i > max_light_id ) {
+                    max_light_id = i;
+                }
+            }
+        }
+
+        lights_lut[ bin ] = min_light_id | ( max_light_id << 16 );
+    }
+
+    // Upload light indices
+    cb_map.buffer = lights_indices_sb[ gpu.current_frame ];
+
+    u32* gpu_light_indices = ( u32* )gpu.map_buffer( cb_map );
+    if ( gpu_light_indices ) {
+        // TODO: improve
+        //memcpy( gpu_light_indices, lights_lut.data, lights_lut.size * sizeof( u32 ) );
+        for ( u32 i = 0; i < k_num_lights; ++i ) {
+            gpu_light_indices[ i ] = sorted_lights[ i ].light_index;
+        }
+
+        gpu.unmap_buffer( cb_map );
+    }
+
+    // Upload lights LUT
+    cb_map.buffer = lights_lut_sb[ gpu.current_frame ];
+    u32* gpu_lut_data = ( u32* )gpu.map_buffer( cb_map );
+    if ( gpu_lut_data ) {
+        memcpy( gpu_lut_data, lights_lut.data, lights_lut.size * sizeof( u32 ) );
+
+        gpu.unmap_buffer( cb_map );
+    }
+
+    const u32 tile_x_count = scene_data.resolution_x / k_tile_size;
+    const u32 tile_y_count = scene_data.resolution_y / k_tile_size;
+    const u32 tiles_entry_count = tile_x_count * tile_y_count * k_num_words;
+    const u32 buffer_size = tiles_entry_count * sizeof( u32 );
+
+    // Assign light
+    Array<u32> light_tiles_bits;
+    light_tiles_bits.init( context.scratch_allocator, tiles_entry_count, tiles_entry_count );
+    memset( light_tiles_bits.data, 0, buffer_size );
+
+    float near_z = scene_data.z_near;
+    float tile_size_inv = 1.0f / k_tile_size;
+
+    u32 tile_stride = tile_x_count * k_num_words;
+
+    GameCamera& game_camera = context.game_camera;
+
+    for ( u32 i = 0; i < k_num_lights; ++i ) {
+        const u32 light_index = sorted_lights[ i ].light_index;
+        Light& light = lights[ light_index ];
+
+        vec4s pos{ light.world_position.x, light.world_position.y, light.world_position.z, 1.0f };
+        float radius = light.radius;
+
+        vec4s view_space_pos = glms_mat4_mulv( game_camera.camera.view, pos );
+        bool camera_visible = -view_space_pos.z - radius < game_camera.camera.near_plane;
+
+        if ( !camera_visible && context.skip_invisible_lights ) {
+            continue;
+        }
+
+        //rprint( "Camera vis %u view z %f\n", camera_visible ? 1 : 0, view_space_pos.z );
+
+        // X is positive, then it returns the same values as the longer method.
+        vec2s cx{ view_space_pos.x, view_space_pos.z };
+        const f32 tx_squared = glms_vec2_dot( cx, cx ) - ( radius * radius );
+        const bool tx_camera_inside = tx_squared <= 0;//
+        vec2s vx{ sqrtf( tx_squared ), radius };
+        mat2s xtransf_min{ vx.x, vx.y, -vx.y, vx.x };
+        vec2s minx = glms_mat2_mulv( xtransf_min, cx );
+        mat2s xtransf_max{ vx.x, -vx.y, vx.y, vx.x };
+        vec2s maxx = glms_mat2_mulv( xtransf_max, cx );
+
+        vec2s cy{ -view_space_pos.y, view_space_pos.z };
+        const f32 ty_squared = glms_vec2_dot( cy, cy ) - ( radius * radius );
+        const bool ty_camera_inside = ty_squared <= 0;//
+        vec2s vy{ sqrtf( ty_squared ), radius };
+        mat2s ytransf_min{ vy.x, vy.y, -vy.y, vy.x };
+        vec2s miny = glms_mat2_mulv( ytransf_min, cy );
+        mat2s ytransf_max{ vy.x, -vy.y, vy.y, vy.x };
+        vec2s maxy = glms_mat2_mulv( ytransf_max, cy );
+
+        vec4s aabb{ minx.x / minx.y * game_camera.camera.projection.m00, miny.x / miny.y * game_camera.camera.projection.m11,
+                    maxx.x / maxx.y * game_camera.camera.projection.m00, maxy.x / maxy.y * game_camera.camera.projection.m11 };
+
+
+        //if ( tx_camera_inside ) {
+        //    //aabb = { -1,-1,1,1 };
+        //    aabb.x = -1;
+        //    aabb.z = 1;
+        //}
+
+        //if ( ty_camera_inside ) {
+        //    //aabb = { -1,-1,1,1 };
+        //    aabb.y = -1;
+        //    aabb.w = 1;
+        //}
+        // TODO:
+        if ( context.use_mcguire_method ) {
+            vec3s left, right, top, bottom;
+            get_bounds_for_axis( vec3s{ 1, 0, 0 }, { view_space_pos.x, view_space_pos.y, view_space_pos.z }, radius, game_camera.camera.near_plane, left, right );
+            get_bounds_for_axis( vec3s{ 0, 1, 0 }, { view_space_pos.x, view_space_pos.y, view_space_pos.z }, radius, game_camera.camera.near_plane, top, bottom );
+
+            left = project( game_camera.camera.projection, left );
+            right = project( game_camera.camera.projection, right );
+            top = project( game_camera.camera.projection, top );
+            bottom = project( game_camera.camera.projection, bottom );
+
+            aabb.x = right.x;
+            aabb.z = left.x;
+            aabb.y = -top.y;
+            aabb.w = -bottom.y;
+        }
+
+        if ( context.use_view_aabb ) {
+            // Build view space AABB and project it, then calculate screen AABB
+            vec3s aabb_min{ FLT_MAX, FLT_MAX ,FLT_MAX }, aabb_max{ -FLT_MAX ,-FLT_MAX ,-FLT_MAX };
+
+            for ( u32 c = 0; c < 8; ++c ) {
+                vec3s corner{ ( c % 2 ) ? 1.f : -1.f, ( c & 2 ) ? 1.f : -1.f, ( c & 4 ) ? 1.f : -1.f };
+                corner = glms_vec3_scale( corner, radius );
+                corner = glms_vec3_add( corner, glms_vec3( pos ) );
+
+                // transform in view space
+                vec4s corner_vs = glms_mat4_mulv( game_camera.camera.view, glms_vec4( corner, 1.f ) );
+                // adjust z on the near plane.
+                // visible Z is negative, thus corner vs will be always negative, but near is positive.
+                // get positive Z and invert ad the end.
+                corner_vs.z = glm_max( game_camera.camera.near_plane, corner_vs.z );
+
+                vec4s corner_ndc = glms_mat4_mulv( game_camera.camera.projection, corner_vs );
+                corner_ndc = glms_vec4_divs( corner_ndc, corner_ndc.w );
+
+                // clamp
+                aabb_min.x = glm_min( aabb_min.x, corner_ndc.x );
+                aabb_min.y = glm_min( aabb_min.y, corner_ndc.y );
+
+                aabb_max.x = glm_max( aabb_max.x, corner_ndc.x );
+                aabb_max.y = glm_max( aabb_max.y, corner_ndc.y );
+            }
+
+            aabb.x = aabb_min.x;
+            aabb.z = aabb_max.x;
+            // Inverted Y aabb
+            aabb.w = -1 * aabb_min.y;
+            aabb.y = -1 * aabb_max.y;
+        }
+
+        const f32 position_len = glms_vec3_norm( { view_space_pos.x, view_space_pos.y, view_space_pos.z } );
+        const bool camera_inside = ( position_len - radius ) < game_camera.camera.near_plane;
+
+        if ( camera_inside && context.enable_camera_inside ) {
+            aabb = { -1,-1, 1, 1 };
+        }
+
+        if ( context.force_fullscreen_light_aabb ) {
+            aabb = { -1,-1, 1, 1 };
+        }
+
+        // NOTE(marco): xy = top-left, zw = bottom-right
+        vec4s aabb_screen{ ( aabb.x * 0.5f + 0.5f ) * ( gpu.swapchain_width - 1 ),
+                           ( aabb.y * 0.5f + 0.5f ) * ( gpu.swapchain_height - 1 ),
+                           ( aabb.z * 0.5f + 0.5f ) * ( gpu.swapchain_width - 1 ),
+                           ( aabb.w * 0.5f + 0.5f ) * ( gpu.swapchain_height - 1 ) };
+
+        f32 width = aabb_screen.z - aabb_screen.x;
+        f32 height = aabb_screen.w - aabb_screen.y;
+
+        if ( width < 0.0001f || height < 0.0001f ) {
+            continue;
+        }
+
+        float min_x = aabb_screen.x;
+        float min_y = aabb_screen.y;
+
+        float max_x = min_x + width;
+        float max_y = min_y + height;
+
+        if ( min_x > gpu.swapchain_width || min_y > gpu.swapchain_height ) {
+            continue;
+        }
+
+        if ( max_x < 0.0f || max_y < 0.0f ) {
+            continue;
+        }
+
+        min_x = max( min_x, 0.0f );
+        min_y = max( min_y, 0.0f );
+
+        max_x = min( max_x, ( float )gpu.swapchain_width );
+        max_y = min( max_y, ( float )gpu.swapchain_height );
+
+        u32 first_tile_x = ( u32 )( min_x * tile_size_inv );
+        u32 last_tile_x = min( tile_x_count - 1, ( u32 )( max_x * tile_size_inv ) );
+
+        u32 first_tile_y = ( u32 )( min_y * tile_size_inv );
+        u32 last_tile_y = min( tile_y_count - 1, ( u32 )( max_y * tile_size_inv ) );
+
+        for ( u32 y = first_tile_y; y <= last_tile_y; ++y ) {
+            for ( u32 x = first_tile_x; x <= last_tile_x; ++x ) {
+                u32 array_index = y * tile_stride + x;
+
+                u32 word_index = i / 32;
+                u32 bit_index = i % 32;
+
+                light_tiles_bits[ array_index + word_index ] |= ( 1 << bit_index );
+            }
+        }
+    }
+
+    MapBufferParameters light_tiles_cb_map = { lights_tiles_sb[ gpu.current_frame ], 0, 0 };
+    u32* light_tiles_data = ( u32* )gpu.map_buffer( light_tiles_cb_map );
+    if ( light_tiles_data ) {
+        memcpy( light_tiles_data, light_tiles_bits.data, light_tiles_bits.size * sizeof( u32 ) );
+
+        gpu.unmap_buffer( light_tiles_cb_map );
+    }
+
+    context.scratch_allocator->free_marker( current_marker );
 }
 
 void RenderScene::draw_mesh_instance( CommandBuffer* gpu_commands, MeshInstance& mesh_instance ) {
@@ -1975,11 +2490,11 @@ void FrameRenderer::shutdown() {
     renderer->gpu->destroy_descriptor_set( fullscreen_ds );
 }
 
-void FrameRenderer::upload_gpu_data() {
-    light_pass.upload_gpu_data();
+void FrameRenderer::upload_gpu_data( UploadGpuDataContext& context ) {
+    light_pass.upload_gpu_data( *scene );
     dof_pass.upload_gpu_data();
 
-    scene->upload_gpu_data();
+    scene->upload_gpu_data( context );
 
     // TODO: move this
     mesh_occlusion_early_pass.depth_pyramid_texture_index = depth_pyramid_pass.depth_pyramid.index;
@@ -2014,7 +2529,7 @@ void FrameRenderer::prepare_draws( StackAllocator* scratch_allocator ) {
     fullscreen_ds = renderer->gpu->create_descriptor_set( dsc );
 }
 
-// Transform ////////////////////////////////////////////////////
+// Transform /////////////////////////////////////////////////////////////
 
 void Transform::reset() {
     translation = { 0.f, 0.f, 0.f };
@@ -2030,4 +2545,57 @@ mat4s Transform::calculate_matrix() const {
     return local_matrix;
 }
 
+//////////////////////////////////////////////////////////////////////////
+
+// CGLM converted method from:
+// 2D Polyhedral Bounds of a Clipped, Perspective - Projected 3D Sphere
+// By Michael Mara Morgan McGuire
+void get_bounds_for_axis( const vec3s& a, // Bounding axis (camera space)
+                       const vec3s& C, // Sphere center (camera space)
+                       float r, // Sphere radius
+                       float nearZ, // Near clipping plane (negative)
+                       vec3s& L, // Tangent point (camera space)
+                       vec3s& U ) { // Tangent point (camera space)
+
+    const vec2s c{ glms_vec3_dot( a, C ), C.z }; // C in the a-z frame
+    vec2s bounds[ 2 ]; // In the a-z reference frame
+    const float tSquared = glms_vec2_dot( c, c ) - ( r * r );
+    const bool cameraInsideSphere = ( tSquared <= 0 );
+    // (cos, sin) of angle theta between c and a tangent vector
+    vec2s v = cameraInsideSphere ? vec2s{ 0.0f, 0.0f } : vec2s{ glms_vec2_divs( vec2s{ sqrt( tSquared ), r }, glms_vec2_norm( c ) ) };
+    // Does the near plane intersect the sphere?
+    const bool clipSphere = ( c.y + r >= nearZ );
+    // Square root of the discriminant; NaN (and unused)
+    // if the camera is in the sphere
+    float k = sqrt( ( r * r ) - ( ( nearZ - c.y ) * ( nearZ - c.y ) ) );
+    for ( int i = 0; i < 2; ++i ) {
+        if ( !cameraInsideSphere ) {
+            mat2s transform{ v.x, -v.y,
+                              v.y, v.x };
+
+            bounds[ i ] = glms_mat2_mulv( transform, glms_vec2_scale( c, v.x ) );
+        }
+
+        const bool clipBound = cameraInsideSphere || ( bounds[ i ].y > nearZ );
+
+        if ( clipSphere && clipBound ) {
+            bounds[ i ] = vec2s{ c.x + k, nearZ };
+        }
+
+        // Set up for the lower bound
+        v.y = -v.y; k = -k;
+    }
+    // Transform back to camera space
+    L = glms_vec3_scale( a, bounds[ 1 ].x );
+    L.z = bounds[ 1 ].y;
+    U = glms_vec3_scale( a, bounds[ 0 ].x );
+    U.z = bounds[ 0 ].y;
+}
+
+vec3s project( const mat4s& P, const vec3s& Q ) {
+    vec4s v = glms_mat4_mulv( P, vec4s{ Q.x, Q.y, Q.z, 1.0f } );
+    v = glms_vec4_divs( v, v.w );
+
+    return vec3s{ v.x, v.y, v.z };
+}
 } // namespace raptor

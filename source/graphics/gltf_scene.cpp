@@ -62,8 +62,8 @@ void glTFScene::fill_pbr_material( Renderer& renderer, glTF::Material& material,
             pbr_material.base_color_factor = { 1.0f, 1.0f, 1.0f, 1.0f };
         }
 
-        pbr_material.metallic_roughness_occlusion_factor.x = material.pbr_metallic_roughness->roughness_factor != glTF::INVALID_FLOAT_VALUE ? material.pbr_metallic_roughness->roughness_factor : 1.f;
-        pbr_material.metallic_roughness_occlusion_factor.y = material.pbr_metallic_roughness->metallic_factor != glTF::INVALID_FLOAT_VALUE ? material.pbr_metallic_roughness->metallic_factor : 1.f;
+        pbr_material.roughness = material.pbr_metallic_roughness->roughness_factor != glTF::INVALID_FLOAT_VALUE ? material.pbr_metallic_roughness->roughness_factor : 1.f;
+        pbr_material.metallic = material.pbr_metallic_roughness->metallic_factor != glTF::INVALID_FLOAT_VALUE ? material.pbr_metallic_roughness->metallic_factor : 0.f;
 
         pbr_material.diffuse_texture_index = get_material_texture( gpu, material.pbr_metallic_roughness->base_color_texture );
         pbr_material.roughness_texture_index = get_material_texture( gpu, material.pbr_metallic_roughness->metallic_roughness_texture );
@@ -86,9 +86,9 @@ void glTFScene::fill_pbr_material( Renderer& renderer, glTF::Material& material,
 
     if ( material.occlusion_texture != nullptr ) {
         if ( material.occlusion_texture->strength != glTF::INVALID_FLOAT_VALUE ) {
-            pbr_material.metallic_roughness_occlusion_factor.z = material.occlusion_texture->strength;
+            pbr_material.occlusion = material.occlusion_texture->strength;
         } else {
-            pbr_material.metallic_roughness_occlusion_factor.z = 1.0f;
+            pbr_material.occlusion = 1.0f;
         }
     }
 }
@@ -305,6 +305,11 @@ void glTFScene::init( cstring filename, cstring path, Allocator* resident_alloca
     gltf_mesh_to_mesh_offset.init( resident_allocator_, 16 );
 
     u32 mesh_index = 0;
+    u32 meshlets_index_count = 0;
+
+    mesh_aabb[0] = vec3s{ FLT_MAX, FLT_MAX, FLT_MAX };
+    mesh_aabb[1] = vec3s{ FLT_MIN, FLT_MIN, FLT_MIN };
+
     for ( u32 mi = 0; mi < gltf_scene.meshes_count; ++mi ) {
         glTF::Mesh& mesh = gltf_scene.meshes[ mi ];
 
@@ -417,7 +422,7 @@ void glTFScene::init( cstring filename, cstring path, Allocator* resident_alloca
             meshlet_vertex_indices.init( temp_allocator, max_meshlets * max_vertices, max_meshlets* max_vertices );
 
             Array<u8> meshlet_triangles;
-            meshlet_triangles.init( temp_allocator, max_meshlets * max_triangles * 3, max_meshlets* max_triangles * 3 );
+            meshlet_triangles.init( temp_allocator, max_meshlets * max_triangles * 3, max_meshlets * max_triangles * 3 );
 
             sizet meshlet_count = meshopt_buildMeshlets( local_meshlets.data, meshlet_vertex_indices.data, meshlet_triangles.data, indices,
                                                          indices_accessor.count, vertices, position_buffer_accessor.count, sizeof( vec3s ),
@@ -427,9 +432,39 @@ void glTFScene::init( cstring filename, cstring path, Allocator* resident_alloca
             for ( u32 v = 0; v < position_buffer_accessor.count; ++v ) {
                 GpuMeshletVertexPosition meshlet_vertex_pos{ };
 
-                meshlet_vertex_pos.position[ 0 ] = vertices[ v * 3 + 0 ];
-                meshlet_vertex_pos.position[ 1 ] = vertices[ v * 3 + 1 ];
-                meshlet_vertex_pos.position[ 2 ] = vertices[ v * 3 + 2 ];
+                f32 x = vertices[ v * 3 + 0 ];
+                f32 y = vertices[ v * 3 + 1 ];
+                f32 z = vertices[ v * 3 + 2 ];
+
+                if ( x < mesh_aabb[ 0 ].x )
+                {
+                    mesh_aabb[ 0 ].x = x;
+                }
+                if ( y < mesh_aabb[ 0 ].y )
+                {
+                    mesh_aabb[ 0 ].y = y;
+                }
+                if ( z < mesh_aabb[ 0 ].z )
+                {
+                    mesh_aabb[ 0 ].z = z;
+                }
+
+                if ( x > mesh_aabb[ 1 ].x )
+                {
+                    mesh_aabb[ 1 ].x = x;
+                }
+                if ( y > mesh_aabb[ 1 ].y )
+                {
+                    mesh_aabb[ 1 ].y = y;
+                }
+                if ( z > mesh_aabb[ 1 ].z )
+                {
+                    mesh_aabb[ 1 ].z = z;
+                }
+
+                meshlet_vertex_pos.position[ 0 ] = x;
+                meshlet_vertex_pos.position[ 1 ] = y;
+                meshlet_vertex_pos.position[ 2 ] = z;
 
                 meshlets_vertex_positions.push( meshlet_vertex_pos );
 
@@ -457,8 +492,7 @@ void glTFScene::init( cstring filename, cstring path, Allocator* resident_alloca
             // Cache meshlet offset
             mesh.meshlet_offset = meshlets.size;
             mesh.meshlet_count = meshlet_count;
-
-            meshes.push( mesh );
+            mesh.meshlet_index_count = 0;
 
             // Append meshlet data
             for ( u32 m = 0; m < meshlet_count; ++m ) {
@@ -481,14 +515,14 @@ void glTFScene::init( cstring filename, cstring path, Allocator* resident_alloca
                 meshlet.cone_axis[ 2 ] = meshlet_bounds.cone_axis_s8[ 2 ];
 
                 meshlet.cone_cutoff = meshlet_bounds.cone_cutoff_s8;
-                meshlet.mesh_index = meshes.size - 1;
+                meshlet.mesh_index = meshes.size;
 
                 // Resize data array
                 const u32 index_group_count = ( local_meshlet.triangle_count * 3 + 3 ) / 4;
                 meshlets_data.set_capacity( meshlets_data.size + local_meshlet.vertex_count + index_group_count );
 
                 for ( u32 i = 0; i < meshlet.vertex_count; ++i ) {
-                    u32 vertex_index = meshlet_vertex_offset + meshlet_vertex_indices[ local_meshlet.vertex_offset + i ];
+                    const u32 vertex_index = meshlet_vertex_offset + meshlet_vertex_indices[ local_meshlet.vertex_offset + i ];
                     meshlets_data.push( vertex_index );
                 }
 
@@ -500,8 +534,39 @@ void glTFScene::init( cstring filename, cstring path, Allocator* resident_alloca
                     meshlets_data.push( index_group );
                 }
 
+                // Writing in group of fours can be problematic, if there are non multiple of 3
+                // indices a triangle can be shared between meshlets.
+                // We need to add some padding for that.
+                // This is visible only when emulating meshlets, so probably there are controls
+                // at driver level that avoid this problems when using mesh shaders.
+                // Check for the last 3 indices: if last one are two are zero, then add one or two
+                // groups of empty triangles.
+                u32 last_index_group = index_groups[ index_group_count - 1 ];
+                u32 last_index = ( last_index_group >> 8 ) & 0xff;
+                u32 second_last_index = ( last_index_group >> 16 ) & 0xff;
+                u32 third_last_index = ( last_index_group >> 24 ) & 0xff;
+                if ( last_index != 0 && third_last_index == 0 ) {
+
+                    if ( second_last_index != 0 ) {
+                        // Add a single index group of zeroes
+                        meshlets_data.push( 0 );
+                        meshlet.triangle_count++;
+                    }
+
+                    meshlet.triangle_count++;
+                    // Add another index group of zeroes
+                    meshlets_data.push( 0 );
+                }
+
+                mesh.meshlet_index_count += meshlet.triangle_count * 3;
+
                 meshlets.push( meshlet );
+
+                meshlets_index_count += index_group_count;
             }
+
+            // Add mesh with all data
+            meshes.push( mesh );
 
             while ( meshlets.size % 32 )
                 meshlets.push( GpuMeshlet() );
@@ -510,6 +575,28 @@ void glTFScene::init( cstring filename, cstring path, Allocator* resident_alloca
 
             mesh_index++;
         }
+    }
+
+    // Create meshlets index buffer, that will be used to emulate meshlets if mesh shaders are not present.
+    BufferCreation bc{};
+    bc.set( VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, ResourceUsageType::Stream, meshlets_index_count * sizeof( u32 ) * 8 ).set_name( "meshlets_index_buffer" );
+
+    for ( u32 i = 0; i < k_max_frames; ++i ) {
+        meshlets_index_buffer_sb[ i ] = renderer->gpu->create_buffer( bc );
+    }
+
+    // Create meshlets instances buffer
+    bc.reset().set( VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, ResourceUsageType::Stream, (meshlets.size * 2 /* not sure about max number here */ ) * sizeof(u32) * 2).set_name("meshlets_instances_buffer");
+
+    for ( u32 i = 0; i < k_max_frames; ++i ) {
+        meshlets_instances_sb[ i ] = renderer->gpu->create_buffer( bc );
+    }
+
+    // Create meshlets visible instances buffer
+    bc.reset().set( VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, ResourceUsageType::Stream, ( meshlets.size * 2 /* not sure about max number here */ ) * sizeof( u32 ) * 2 ).set_name( "meshlets_instances_buffer" );
+
+    for ( u32 i = 0; i < k_max_frames; ++i ) {
+        meshlets_visible_instances_sb[ i ] = renderer->gpu->create_buffer( bc );
     }
 
     i64 end_building_meshlets = time_now();
@@ -721,15 +808,26 @@ void glTFScene::shutdown( Renderer* renderer ) {
     gpu.destroy_buffer( debug_line_commands_sb );
 
     for ( u32 i = 0; i < k_max_frames; ++i ) {
+        gpu.destroy_buffer( meshlets_index_buffer_sb[ i ] );
+        gpu.destroy_buffer( meshlets_instances_sb[ i ] );
+        gpu.destroy_buffer( meshlets_visible_instances_sb[ i ] );
+
         gpu.destroy_buffer( mesh_task_indirect_early_commands_sb[ i ] );
         gpu.destroy_buffer( mesh_task_indirect_culled_commands_sb[ i ] );
         gpu.destroy_buffer( mesh_task_indirect_count_early_sb[ i ] );
 
         gpu.destroy_buffer( mesh_task_indirect_late_commands_sb[ i ] );
         gpu.destroy_buffer( mesh_task_indirect_count_late_sb[ i ] );
+        gpu.destroy_buffer( meshlet_instances_indirect_count_sb[ i ] );
+
+        gpu.destroy_buffer( lights_lut_sb[ i ] );
+        gpu.destroy_buffer( lights_tiles_sb[ i ] );
+        gpu.destroy_buffer( lights_indices_sb[ i ] );
 
         gpu.destroy_descriptor_set( mesh_shader_early_descriptor_set[ i ] );
         gpu.destroy_descriptor_set( mesh_shader_late_descriptor_set[ i ] );
+        gpu.destroy_descriptor_set( mesh_shader_transparent_descriptor_set[ i ] );
+        gpu.destroy_descriptor_set( meshlet_emulation_descriptor_set[ i ] );
     }
 
     for ( u32 i = 0; i < images.size; ++i) {
@@ -743,6 +841,11 @@ void glTFScene::shutdown( Renderer* renderer ) {
     for ( u32 i = 0; i < buffers.size; ++i ) {
         renderer->destroy_buffer( &buffers[ i ] );
     }
+
+    gpu.destroy_buffer( lights_list_sb );
+
+    lights.shutdown();
+    lights_lut.shutdown();
 
     meshes.shutdown();
     mesh_instances.shutdown();
@@ -957,7 +1060,8 @@ void glTFScene::prepare_draws( Renderer* renderer, StackAllocator* scratch_alloc
         buffer_creation.reset().set( VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, ResourceUsageType::Dynamic, sizeof( GpuMeshDrawCounts ) ).set_name( "late_mesh_count_sb" );
         mesh_task_indirect_count_late_sb[ i ] = renderer->gpu->create_buffer( buffer_creation );
 
-        // TODO(marco): create buffer to track meshlet visibility
+        buffer_creation.reset().set( VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, ResourceUsageType::Dynamic, sizeof( u32 ) * 4 ).set_name( "meshlet_instances_indirect_sb" );
+        meshlet_instances_indirect_count_sb[ i ] = renderer->gpu->create_buffer( buffer_creation );
     }
 
     // Create per mesh descriptor sets, using the mesh draw ssbo
@@ -1000,31 +1104,90 @@ void glTFScene::prepare_draws( Renderer* renderer, StackAllocator* scratch_alloc
         debug_line_commands_sb = renderer->gpu->create_buffer( buffer_creation );
     }
 
-    if ( renderer->gpu->mesh_shaders_extension_present ) {
+    //if ( renderer->gpu->mesh_shaders_extension_present )
+    {
         const u64 meshlet_hashed_name = hash_calculate( "meshlet" );
         GpuTechnique* meshlet_technique = renderer->resource_cache.techniques.get( meshlet_hashed_name );
 
-        DescriptorSetLayoutHandle layout = renderer->gpu->get_descriptor_set_layout( meshlet_technique->passes[ 0 ].pipeline, k_material_descriptor_set_index );
+        u32 meshlet_index = meshlet_technique->get_pass_index( "gbuffer_culling" );
+        DescriptorSetLayoutHandle layout = meshlet_index != u16_max ? renderer->gpu->get_descriptor_set_layout( meshlet_technique->passes[ meshlet_index ].pipeline, k_material_descriptor_set_index ) : k_invalid_layout;
+
+        u32 meshlet_emulation_index = meshlet_technique->get_pass_index( "emulation_gbuffer_culling" );
+        DescriptorSetLayoutHandle meshlet_emulation_layout = renderer->gpu->get_descriptor_set_layout( meshlet_technique->passes[ meshlet_emulation_index ].pipeline, k_material_descriptor_set_index );
 
         for ( u32 i = 0; i < k_max_frames; ++i ) {
             DescriptorSetCreation ds_creation{};
-            ds_creation.buffer( scene_cb, 0 ).buffer( meshes_sb, 2 ).buffer( mesh_instances_sb, 10 ).buffer( meshlets_sb, 1 )
-                .buffer( meshlets_data_sb, 3 ).buffer( meshlets_vertex_pos_sb, 4 ).buffer( meshlets_vertex_data_sb, 5 )
-                .buffer( mesh_task_indirect_early_commands_sb[ i ], 6 ).buffer( mesh_task_indirect_count_early_sb[ i ], 7 )
-                .buffer( mesh_bounds_sb, 12 ).buffer( debug_line_sb, 20 ).buffer( debug_line_count_sb, 21 ).buffer( debug_line_commands_sb, 22 ).set_layout(layout);
 
-            mesh_shader_early_descriptor_set[ i ] = renderer->gpu->create_descriptor_set( ds_creation );
+            if ( renderer->gpu->mesh_shaders_extension_present ) {
+                ds_creation.buffer( scene_cb, 0 ).buffer( meshes_sb, 2 ).buffer( mesh_instances_sb, 10 ).buffer( meshlets_sb, 1 )
+                    .buffer( meshlets_data_sb, 3 ).buffer( meshlets_vertex_pos_sb, 4 ).buffer( meshlets_vertex_data_sb, 5 )
+                    .buffer( mesh_task_indirect_early_commands_sb[ i ], 6 ).buffer( mesh_task_indirect_count_early_sb[ i ], 7 )
+                    .buffer( mesh_bounds_sb, 12 ).buffer( debug_line_sb, 20 ).buffer( debug_line_count_sb, 21 ).buffer( debug_line_commands_sb, 22 ).set_layout( layout );
+
+                mesh_shader_early_descriptor_set[ i ] = renderer->gpu->create_descriptor_set( ds_creation );
+
+                ds_creation.reset().buffer( scene_cb, 0 ).buffer( meshes_sb, 2 ).buffer( mesh_instances_sb, 10 ).buffer( meshlets_sb, 1 )
+                    .buffer( meshlets_data_sb, 3 ).buffer( meshlets_vertex_pos_sb, 4 ).buffer( meshlets_vertex_data_sb, 5 )
+                    .buffer( mesh_task_indirect_late_commands_sb[ i ], 6 ).buffer( mesh_task_indirect_count_late_sb[ i ], 7 )
+                    .buffer( mesh_bounds_sb, 12 ).buffer( debug_line_sb, 20 ).buffer( debug_line_count_sb, 21 ).buffer( debug_line_commands_sb, 22 ).set_layout( layout );
+
+                mesh_shader_late_descriptor_set[ i ] = renderer->gpu->create_descriptor_set( ds_creation );
+
+            }
 
             ds_creation.reset().buffer( scene_cb, 0 ).buffer( meshes_sb, 2 ).buffer( mesh_instances_sb, 10 ).buffer( meshlets_sb, 1 )
                 .buffer( meshlets_data_sb, 3 ).buffer( meshlets_vertex_pos_sb, 4 ).buffer( meshlets_vertex_data_sb, 5 )
-                .buffer( mesh_task_indirect_late_commands_sb[ i ], 6 ).buffer( mesh_task_indirect_count_late_sb[ i ], 7 )
-                .buffer( mesh_bounds_sb, 12 ).buffer( debug_line_sb, 20 ).buffer( debug_line_count_sb, 21 ).buffer( debug_line_commands_sb, 22 ).set_layout(layout);
+                .buffer( mesh_task_indirect_early_commands_sb[ i ], 6 ).buffer( mesh_task_indirect_count_early_sb[ i ], 7 ).buffer( meshlets_instances_sb[ i ], 9 )
+                .buffer( mesh_bounds_sb, 12 ).buffer( debug_line_sb, 20 ).buffer( debug_line_count_sb, 21 ).buffer( debug_line_commands_sb, 22 ).set_layout( meshlet_emulation_layout );
 
-            mesh_shader_late_descriptor_set[ i ] = renderer->gpu->create_descriptor_set( ds_creation );
+            meshlet_emulation_descriptor_set[ i ] = renderer->gpu->create_descriptor_set( ds_creation );
         }
     }
 
     scratch_allocator->free_marker( cached_scratch_size );
+
+    lights.init( resident_allocator, k_num_lights );
+
+    // TODO: move this to another area of the code
+    const u32 lights_per_side = raptor::ceilu32( sqrtf( k_num_lights * 1.f ) );
+    for ( u32 i = 0; i < k_num_lights; ++i ) {
+
+        const f32 x = ( i % lights_per_side ) - lights_per_side * .5f;
+        const f32 y = 0.05f;
+        const f32 z = ( i / lights_per_side ) - lights_per_side * .5f;
+
+        /*float x = get_random_value( mesh_aabb[ 0 ].x * scale, mesh_aabb[ 1 ].x * scale );
+        float y = get_random_value( mesh_aabb[ 0 ].y * scale, mesh_aabb[ 1 ].y * scale );
+        float z = get_random_value( mesh_aabb[ 0 ].z * scale, mesh_aabb[ 1 ].z * scale );*/
+
+        float r = get_random_value( 0.0f, 1.0f );
+        float g = get_random_value( 0.0f, 1.0f );
+        float b = get_random_value( 0.0f, 1.0f );
+
+        Light new_light{ };
+        new_light.world_position = vec3s{ x, y, z };
+        new_light.radius = 0.888f;
+
+        new_light.color = vec3s{ r, g, b };
+        new_light.intensity = 3.0f;
+
+        lights.push( new_light );
+    }
+
+    {
+        buffer_creation.reset().set( VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, ResourceUsageType::Dynamic, sizeof( GpuLight ) * k_num_lights ).set_name( "light_array" );
+        lights_list_sb = renderer->gpu->create_buffer( buffer_creation );
+    }
+
+    lights_lut.init( resident_allocator, k_light_z_bins, k_light_z_bins );
+
+    for ( u32 i = 0; i < k_max_frames; ++i ) {
+        buffer_creation.reset().set( VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, ResourceUsageType::Dynamic, sizeof( u32 ) * k_light_z_bins ).set_name( "light_z_bins" );
+        lights_lut_sb[ i ] = renderer->gpu->create_buffer( buffer_creation );
+
+        buffer_creation.reset().set( VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, ResourceUsageType::Dynamic, sizeof( u32 )* k_num_lights ).set_name( "light_indices_sb" );
+        lights_indices_sb[ i ] = renderer->gpu->create_buffer( buffer_creation );
+    }
 }
 
 } // namespace raptor

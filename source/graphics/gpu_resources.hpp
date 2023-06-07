@@ -694,15 +694,25 @@ struct MapBufferParameters {
 //
 struct ImageBarrier {
 
-    TextureHandle                   texture;
+    TextureHandle                   texture             = k_invalid_texture;
+    ResourceState                   destination_state   = RESOURCE_STATE_UNDEFINED; // Source state is saved in the texture.
+
+    u16                             array_base_layer    = 0;
+    u16                             array_layer_count   = 1;
+    u16                             mip_base_level      = 0;
+    u16                             mip_level_count     = 1;
 
 }; // struct ImageBarrier
 
 //
 //
-struct MemoryBarrier {
+struct BufferBarrier {
 
-    BufferHandle                    buffer;
+    BufferHandle                    buffer              = k_invalid_buffer;
+    ResourceState                   source_state        = RESOURCE_STATE_UNDEFINED;
+    ResourceState                   destination_state   = RESOURCE_STATE_UNDEFINED;
+    u32                             offset              = 0;
+    u32                             size                = 0;
 
 }; // struct MemoryBarrier
 
@@ -710,24 +720,19 @@ struct MemoryBarrier {
 //
 struct ExecutionBarrier {
 
-    PipelineStage::Enum             source_pipeline_stage;
-    PipelineStage::Enum             destination_pipeline_stage;
+    static constexpr u32            k_max_barriers = 8;
 
-    u32                             new_barrier_experimental  = u32_max;
-    u32                             load_operation = 0;
+    u32                             num_image_barriers      = 0;
+    u32                             num_buffer_barriers     = 0;
 
-    u32                             num_image_barriers;
-    u32                             num_memory_barriers;
-
-    ImageBarrier                    image_barriers[ 8 ];
-    MemoryBarrier                   memory_barriers[ 8 ];
+    ImageBarrier                    image_barriers[ k_max_barriers ];
+    BufferBarrier                   buffer_barriers[ k_max_barriers ];
 
     ExecutionBarrier&               reset();
-    ExecutionBarrier&               set( PipelineStage::Enum source, PipelineStage::Enum destination );
-    ExecutionBarrier&               add_image_barrier( const ImageBarrier& image_barrier );
-    ExecutionBarrier&               add_memory_barrier( const MemoryBarrier& memory_barrier );
+    ExecutionBarrier&               add_image_barrier( const ImageBarrier& barrier );
+    ExecutionBarrier&               add_buffer_barrier( const BufferBarrier& barrier );
 
-}; // struct Barrier
+}; // struct ExecutionBarrier
 
 //
 //

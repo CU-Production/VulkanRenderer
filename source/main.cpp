@@ -90,56 +90,88 @@ f32 linearize_depth( f32 depth, f32 z_far, f32 z_near ) {
     return z_near * z_far / ( z_far + depth * ( z_near - z_far ) );
 }
 
-// CGLM converted method from:
-// 2D Polyhedral Bounds of a Clipped, Perspective - Projected 3D Sphere
-// By Michael Mara Morgan McGuire
-void getBoundsForAxis( const vec3s& a, // Bounding axis (camera space)
-                       const vec3s& C, // Sphere center (camera space)
-                       float r, // Sphere radius
-                       float nearZ, // Near clipping plane (negative)
-                        vec3s& L, // Tangent point (camera space)
-                        vec3s& U ) { // Tangent point (camera space)
+static void test_sphere_aabb( raptor::GameCamera& game_camera ) {
+    vec4s pos{ -14.5f, 1.28f, 0.f, 1.f };
+    f32 radius = 0.5f;
+    vec4s view_space_pos = glms_mat4_mulv( game_camera.camera.view, pos );
+    bool camera_visible = view_space_pos.z < radius + game_camera.camera.near_plane;
 
-    const vec2s c{ glms_vec3_dot( a, C ), C.z }; // C in the a-z frame
-    vec2s bounds[ 2 ]; // In the a-z reference frame
-    const float tSquared = glms_vec2_dot( c, c ) - ( r * r );
-    const bool cameraInsideSphere = ( tSquared <= 0 );
-    // (cos, sin) of angle theta between c and a tangent vector
-    vec2s v = cameraInsideSphere ? vec2s{ 0.0f, 0.0f } : vec2s{ glms_vec2_divs( vec2s{ sqrt( tSquared ), r }, glms_vec2_norm( c ) ) };
-    // Does the near plane intersect the sphere?
-    const bool clipSphere = ( c.y + r >= nearZ );
-    // Square root of the discriminant; NaN (and unused)
-    // if the camera is in the sphere
-    float k = sqrt( ( r * r ) - ( (nearZ - c.y) * (nearZ - c.y) ) );
-    for ( int i = 0; i < 2; ++i ) {
-        if ( !cameraInsideSphere ) {
-            mat2s transform { v.x, -v.y,
-                              v.y, v.x };
+    // X is positive, then it returns the same values as the longer method.
+    vec2s cx{ view_space_pos.x, -view_space_pos.z };
+    vec2s vx{ sqrtf( glms_vec2_dot( cx, cx ) - ( radius * radius ) ), radius };
+    mat2s xtransf_min{ vx.x, vx.y, -vx.y, vx.x };
+    vec2s minx = glms_mat2_mulv( xtransf_min, cx );
+    mat2s xtransf_max{ vx.x, -vx.y, vx.y, vx.x };
+    vec2s maxx = glms_mat2_mulv( xtransf_max, cx );
 
-            bounds[ i ] = glms_mat2_mulv( transform, glms_vec2_scale(c, v.x) );
-        }
+    vec2s cy{ -view_space_pos.y, -view_space_pos.z };
+    vec2s vy{ sqrtf( glms_vec2_dot( cy, cy ) - ( radius * radius ) ), radius };
+    mat2s ytransf_min{ vy.x, vy.y, -vy.y, vy.x };
+    vec2s miny = glms_mat2_mulv( ytransf_min, cy );
+    mat2s ytransf_max{ vy.x, -vy.y, vy.y, vy.x };
+    vec2s maxy = glms_mat2_mulv( ytransf_max, cy );
 
-        const bool clipBound = cameraInsideSphere || ( bounds[ i ].y > nearZ );
+    vec4s aabb{ minx.x / minx.y * game_camera.camera.projection.m00, miny.x / miny.y * game_camera.camera.projection.m11,
+               maxx.x / maxx.y * game_camera.camera.projection.m00, maxy.x / maxy.y * game_camera.camera.projection.m11 };
+    vec4s aabb2{ aabb.x * 0.5f + 0.5f, aabb.w * -0.5f + 0.5f, aabb.z * 0.5f + 0.5f, aabb.y * -0.5f + 0.5f };
 
-        if ( clipSphere && clipBound ) {
-            bounds[ i ] = vec2s{ c.x + k, nearZ };
-        }
+    vec3s left, right, top, bottom;
+    raptor::get_bounds_for_axis( vec3s{ 1,0,0 }, { view_space_pos.x, view_space_pos.y, view_space_pos.z }, radius, game_camera.camera.near_plane, left, right );
+    raptor::get_bounds_for_axis( vec3s{ 0,1,0 }, { view_space_pos.x, view_space_pos.y, view_space_pos.z }, radius, game_camera.camera.near_plane, top, bottom );
 
-        // Set up for the lower bound
-        v.y = -v.y; k = -k;
-    }
-    // Transform back to camera space
-    L = glms_vec3_scale( a, bounds[ 1 ].x );
-    L.z = bounds[ 1 ].y;
-    U = glms_vec3_scale( a, bounds[ 0 ].x );
-    U.z = bounds[ 0 ].y;
+    left = raptor::project( game_camera.camera.projection, left );
+    right = raptor::project( game_camera.camera.projection, right );
+    top = raptor::project( game_camera.camera.projection, top );
+    bottom = raptor::project( game_camera.camera.projection, bottom );
+
+    vec4s clip_space_pos = glms_mat4_mulv( game_camera.camera.projection, view_space_pos );
+
+    // left,right,bottom and top are in clip space (-1,1). Convert to 0..1 for UV, as used from the optimized version to read the depth pyramid.
+    rprint( "Camera visible %u, x %f, %f, widh %f --- %f,%f width %f\n", camera_visible ? 1 : 0, aabb2.x, aabb2.z, aabb2.z - aabb2.x, left.x * 0.5 + 0.5, right.x * 0.5 + 0.5, ( left.x - right.x ) * 0.5 );
+    rprint( "y %f, %f, height %f --- %f,%f height %f\n", aabb2.y, aabb2.w, aabb2.w - aabb2.y, top.y * 0.5 + 0.5, bottom.y * 0.5 + 0.5, ( top.y - bottom.y ) * 0.5 );
 }
 
-vec3s project( const mat4s& P, const vec3s& Q ) {
-    vec4s v = glms_mat4_mulv( P, vec4s{ Q.x, Q.y, Q.z, 1.0f } );
-    v = glms_vec4_divs( v, v.w );
-    //return v.xyz() / v.w;
-    return vec3s{ v.x, v.y, v.z };
+// Light placement function ///////////////////////////////////////////////
+void place_lights( raptor::Array<raptor::Light>& lights, bool grid ) {
+
+    using namespace raptor;
+
+    if ( grid ) {
+        for ( u32 i = 0; i < k_num_lights; ++i ) {
+            Light& light = lights[ i ];
+
+            const f32 x = ( i % 4 );
+            const f32 y = 0.f;
+            const f32 z = ( i / 4 );
+
+            light.world_position = { x, y, z };
+            light.intensity = 10.f;
+            light.radius = 0.25f;
+            light.color = { 1, 1, 1 };
+        }
+    }
+
+    //// TODO(marco): we should take this into account when generating the lights positions
+    //const float scale = 0.008f;
+
+    //for ( u32 i = 0; i < k_num_lights; ++i ) {
+    //    float x = get_random_value( mesh_aabb[ 0 ].x * scale, mesh_aabb[ 1 ].x * scale );
+    //    float y = get_random_value( mesh_aabb[ 0 ].y * scale, mesh_aabb[ 1 ].y * scale );
+    //    float z = get_random_value( mesh_aabb[ 0 ].z * scale, mesh_aabb[ 1 ].z * scale );
+
+    //    float r = get_random_value( 0.0f, 1.0f );
+    //    float g = get_random_value( 0.0f, 1.0f );
+    //    float b = get_random_value( 0.0f, 1.0f );
+
+    //    Light new_light{ };
+    //    new_light.world_position = vec3s{ x, y, z };
+    //    new_light.radius = 1.2f; // TODO(marco): random as well?
+
+    //    new_light.color = vec3s{ r, g, b };
+    //    new_light.intensity = 30.0f;
+
+    //    lights.push( new_light );
+    //}
 }
 
 //
@@ -184,7 +216,7 @@ int main( int argc, char** argv ) {
 
     // graphics
     GpuDeviceCreation dc;
-    dc.set_window( window.width, window.height, window.platform_handle ).set_allocator( allocator )
+    dc.set_window( window.width, window.height, window.platform_handle ).set_allocator( &MemoryService::instance()->system_allocator )
       .set_num_threads( task_scheduler.GetNumTaskThreads() ).set_linear_allocator( &scratch_allocator );
     GpuDevice gpu;
     gpu.init( dc );
@@ -303,6 +335,7 @@ int main( int argc, char** argv ) {
     }
 
     scene->use_meshlets = gpu.mesh_shaders_extension_present;
+    scene->use_meshlets_emulation = !scene->use_meshlets;
     scene->init( file_name, file_base_path, allocator, &scratch_allocator, &async_loader );
 
     // NOTE(marco): restore working directory
@@ -339,6 +372,8 @@ int main( int argc, char** argv ) {
     f32 air_density = 2.0f;
     bool reset_simulation = false;
     vec3s wind_direction{ -2.0f, 0.0f, 0.0f };
+
+    bool light_placement = true;
 
     while ( !window.requested_exit ) {
         ZoneScopedN("RenderLoop");
@@ -381,6 +416,11 @@ int main( int argc, char** argv ) {
         static bool enable_occlusion_cull_meshes = true;
         static bool enable_occlusion_cull_meshlets = true;
         static bool freeze_occlusion_camera = false;
+        static bool enable_camera_inside = false;
+        static bool use_mcguire_method = false;
+        static bool skip_invisible_lights = true;
+        static bool use_view_aabb = true;
+        static bool force_fullscreen_light_aabb = false;
         static mat4s projection_transpose{ };
 
         {
@@ -405,12 +445,18 @@ int main( int argc, char** argv ) {
                 enable_meshlets = scene->use_meshlets && gpu.mesh_shaders_extension_present;
                 ImGui::Checkbox( "Use meshlets", &enable_meshlets );
                 scene->use_meshlets = enable_meshlets;
+                ImGui::Checkbox( "Use meshlets emulation", &scene->use_meshlets_emulation );
                 ImGui::Checkbox( "Use frustum cull for meshes", &enable_frustum_cull_meshes );
                 ImGui::Checkbox( "Use frustum cull for meshlets", &enable_frustum_cull_meshlets );
                 ImGui::Checkbox( "Use occlusion cull for meshes", &enable_occlusion_cull_meshes );
                 ImGui::Checkbox( "Use occlusion cull for meshlets", &enable_occlusion_cull_meshlets );
                 ImGui::Checkbox( "Freeze occlusion camera", &freeze_occlusion_camera );
                 ImGui::Checkbox( "Show Debug GPU Draws", &scene->show_debug_gpu_draws );
+                ImGui::Checkbox( "Enable Camera Inside approximation", &enable_camera_inside );
+                ImGui::Checkbox( "Use McGuire method for AABB sphere", &use_mcguire_method );
+                ImGui::Checkbox( "Skip invisible lights", &skip_invisible_lights );
+                ImGui::Checkbox( "use view aabb", &use_view_aabb );
+                ImGui::Checkbox( "force fullscreen light aabb", &force_fullscreen_light_aabb );
 
                 ImGui::Checkbox( "Dynamically recreate descriptor sets", &recreate_per_thread_descriptors );
                 ImGui::Checkbox( "Use secondary command buffers", &use_secondary_command_buffers );
@@ -502,10 +548,7 @@ int main( int argc, char** argv ) {
             scene_data.view_projection = game_camera.camera.view_projection;
             scene_data.inverse_view_projection = glms_mat4_inv( game_camera.camera.view_projection );
             scene_data.world_to_camera = game_camera.camera.view;
-            scene_data.eye = vec4s{ game_camera.camera.position.x, game_camera.camera.position.y, game_camera.camera.position.z, 1.0f };
-            scene_data.light_position = vec4s{ light_position.x, light_position.y, light_position.z, 1.0f };
-            scene_data.light_range = light_radius;
-            scene_data.light_intensity = light_intensity;
+            scene_data.camera_position = vec4s{ game_camera.camera.position.x, game_camera.camera.position.y, game_camera.camera.position.z, 1.0f };
             scene_data.dither_texture_index = dither_texture ? dither_texture->handle.index : 0;
 
             scene_data.z_near = game_camera.camera.near_plane;
@@ -522,9 +565,13 @@ int main( int argc, char** argv ) {
             scene_data.resolution_y = gpu.swapchain_height * 1.f;
             scene_data.aspect_ratio = gpu.swapchain_width * 1.f / gpu.swapchain_height;
 
+            // TEST packed light data
+            scene_data.light0_data0 = vec4s{ light_position.x, light_position.y, light_position.z, light_radius };
+            scene_data.light0_data1 = vec4s{ 1.f, 1.f, 1.f, light_intensity };
+
             // Frustum computations
             if ( !freeze_occlusion_camera ) {
-                scene_data.eye_debug = scene_data.eye;
+                scene_data.camera_position_debug = scene_data.camera_position;
                 scene_data.world_to_camera_debug = scene_data.world_to_camera;
                 scene_data.view_projection_debug = scene_data.view_projection;
                 projection_transpose = glms_mat4_transpose( game_camera.camera.projection );
@@ -546,50 +593,44 @@ int main( int argc, char** argv ) {
                 gpu.unmap_buffer( scene_cb_map );
             }
 
-            // Test math to check correctness.
-            if( false )
-            {
-                vec4s pos{ -14.5f, 1.28f, 0.f, 1.f };
-                f32 radius = 0.5f;
-                vec4s view_space_pos = glms_mat4_mulv( game_camera.camera.view, pos );
-                bool camera_visible = view_space_pos.z < radius + game_camera.camera.near_plane;
+            // TODO: move light placement here.
+            if ( light_placement ) {
+                light_placement = false;
 
-                // X is positive, then it returns the same values as the longer method.
-                vec2s cx{ view_space_pos.x, -view_space_pos.z };
-                vec2s vx{ sqrtf( glms_vec2_dot( cx, cx ) - ( radius * radius )), radius };
-                mat2s xtransf_min{ vx.x, vx.y, -vx.y, vx.x };
-                vec2s minx = glms_mat2_mulv( xtransf_min, cx );
-                mat2s xtransf_max{ vx.x, -vx.y, vx.y, vx.x };
-                vec2s maxx = glms_mat2_mulv( xtransf_max, cx );
-
-                vec2s cy{ -view_space_pos.y, -view_space_pos.z };
-                vec2s vy{ sqrtf( glms_vec2_dot( cy, cy ) - ( radius * radius ) ), radius };
-                mat2s ytransf_min{ vy.x, vy.y, -vy.y, vy.x };
-                vec2s miny = glms_mat2_mulv( ytransf_min, cy );
-                mat2s ytransf_max{ vy.x, -vy.y, vy.y, vy.x };
-                vec2s maxy = glms_mat2_mulv( ytransf_max, cy );
-
-                vec4s aabb{minx.x / minx.y * game_camera.camera.projection.m00, miny.x / miny.y * game_camera.camera.projection.m11,
-                           maxx.x / maxx.y * game_camera.camera.projection.m00, maxy.x / maxy.y * game_camera.camera.projection.m11};
-                vec4s aabb2{ aabb.x * 0.5f + 0.5f, aabb.w * -0.5f + 0.5f, aabb.z * 0.5f + 0.5f, aabb.y * -0.5f + 0.5f };
-
-                vec3s left, right, top, bottom;
-                getBoundsForAxis( vec3s{ 1,0,0 }, { view_space_pos.x, view_space_pos.y, view_space_pos.z }, radius, game_camera.camera.near_plane, left, right );
-                getBoundsForAxis( vec3s{ 0,1,0 }, { view_space_pos.x, view_space_pos.y, view_space_pos.z }, radius, game_camera.camera.near_plane, top, bottom );
-
-                left = project( game_camera.camera.projection, left );
-                right = project( game_camera.camera.projection, right );
-                top = project( game_camera.camera.projection, top );
-                bottom = project( game_camera.camera.projection, bottom );
-
-                vec4s clip_space_pos = glms_mat4_mulv( game_camera.camera.projection, view_space_pos );
-
-                // left,right,bottom and top are in clip space (-1,1). Convert to 0..1 for UV, as used from the optimized version to read the depth pyramid.
-                rprint( "Camera visible %u, x %f, %f, widh %f --- %f,%f width %f\n", camera_visible ? 1 : 0, aabb2.x, aabb2.z, aabb2.z - aabb2.x, left.x * 0.5 + 0.5, right.x * 0.5 + 0.5, (left.x - right.x) * 0.5 );
-                rprint( "y %f, %f, height %f --- %f,%f height %f\n", aabb2.y, aabb2.w, aabb2.w - aabb2.y, top.y * 0.5 + 0.5, bottom.y * 0.5 + 0.5, ( top.y - bottom.y ) * 0.5 );
+                //place_lights( scene->lights, true );
             }
 
-            frame_renderer.upload_gpu_data();
+            u32 tile_x_count = scene_data.resolution_x / k_tile_size;
+            u32 tile_y_count = scene_data.resolution_y / k_tile_size;
+            u32 tiles_entry_count = tile_x_count * tile_y_count * k_num_words;
+            u32 buffer_size = tiles_entry_count * sizeof( u32 );
+
+            Buffer* lights_tiles_buffer = nullptr;
+            // Check just the first tile, as we destroy/create them together
+            if ( scene->lights_tiles_sb[ 0 ].index != k_invalid_buffer.index ) {
+                lights_tiles_buffer = renderer.gpu->access_buffer( scene->lights_tiles_sb[ gpu.current_frame ] );
+            }
+
+            if ( lights_tiles_buffer == nullptr || lights_tiles_buffer->size != buffer_size ) {
+                for ( u32 i = 0; i < k_max_frames; ++i ) {
+                    renderer.gpu->destroy_buffer( scene->lights_tiles_sb[ i ] );
+                }
+
+                BufferCreation buffer_creation{ };
+                buffer_creation.reset().set( VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, ResourceUsageType::Dynamic, buffer_size ).set_name( "light_tiles" );
+
+                for ( u32 i = 0; i < k_max_frames; ++i ) {
+                    scene->lights_tiles_sb[ i ] = renderer.gpu->create_buffer( buffer_creation );
+                }
+            }
+
+            UploadGpuDataContext upload_context{ game_camera, &scratch_allocator };
+            upload_context.enable_camera_inside = enable_camera_inside;
+            upload_context.force_fullscreen_light_aabb = force_fullscreen_light_aabb;
+            upload_context.skip_invisible_lights = skip_invisible_lights;
+            upload_context.use_mcguire_method = use_mcguire_method;
+            upload_context.use_view_aabb = use_view_aabb;
+            frame_renderer.upload_gpu_data( upload_context );
         }
 
         if ( !window.minimized ) {

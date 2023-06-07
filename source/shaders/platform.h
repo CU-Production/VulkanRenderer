@@ -1,7 +1,7 @@
 // Header file for common defines
 
 // Global glsl version ///////////////////////////////////////////////////
-#version 460
+#version 450
 
 #define GLOBAL_SET 0
 #define MATERIAL_SET 1
@@ -28,6 +28,26 @@ layout( set = GLOBAL_SET, binding = BINDLESS_IMAGES ) writeonly uniform image2D 
 // Common constants //////////////////////////////////////////////////////
 #define PI 3.1415926538
 #define INVALID_TEXTURE_INDEX 65535
+
+// Utility ///////////////////////////////////////////////////////////////
+float saturate( float a ) {
+    return clamp(a, 0.0f, 1.0f);
+}
+
+#if defined (COMPUTE)
+void global_shader_barrier() {
+    memoryBarrierBuffer();
+    memoryBarrierShared();
+    memoryBarrier();
+    barrier();
+}
+
+void group_barrier() {
+    groupMemoryBarrier();
+    memoryBarrierShared();
+    barrier();
+}
+#endif
 
 // Encoding/Decoding SRGB ////////////////////////////////////////////////
 vec3 decode_srgb( vec3 c ) {
@@ -117,7 +137,7 @@ vec2 octahedral_encode(vec3 n) {
 }
 
 //
-// Utility method to get world position from raw depth.
+// Utility method to get world position from raw depth. //////////////////
 vec3 world_position_from_depth( vec2 uv, float raw_depth, mat4 inverse_view_projection ) {
 
     vec4 H = vec4( uv.x * 2 - 1, uv.y * -2 + 1, raw_depth, 1 );

@@ -15,8 +15,7 @@
 
 #define FRAME_GRAPH_DEBUG 0
 
-namespace raptor
-{
+namespace raptor {
 
 static FrameGraphResourceType string_to_resource_type( cstring input_type ) {
     if ( strcmp( input_type, "texture" ) == 0 ) {
@@ -721,9 +720,9 @@ void FrameGraph::render( u32 current_frame_index, CommandBuffer* gpu_commands, R
                 }
             }
 
-            node->graph_render_pass->pre_render( current_frame_index, gpu_commands, this );
-            node->graph_render_pass->render( gpu_commands, render_scene );
-            node->graph_render_pass->post_render( current_frame_index, gpu_commands, this );
+            node->graph_render_pass->pre_render( current_frame_index, gpu_commands, this, render_scene );
+            node->graph_render_pass->render( current_frame_index, gpu_commands, render_scene );
+            node->graph_render_pass->post_render( current_frame_index, gpu_commands, this, render_scene );
 
             gpu_commands->pop_marker();
         }
@@ -795,15 +794,15 @@ void FrameGraph::render( u32 current_frame_index, CommandBuffer* gpu_commands, R
 
             gpu_commands->set_viewport( &viewport );
 
-            node->graph_render_pass->pre_render( current_frame_index, gpu_commands, this );
+            node->graph_render_pass->pre_render( current_frame_index, gpu_commands, this, render_scene );
 
             gpu_commands->bind_pass( node->render_pass, node->framebuffer, false );
 
-            node->graph_render_pass->render( gpu_commands, render_scene );
+            node->graph_render_pass->render( current_frame_index, gpu_commands, render_scene );
 
             gpu_commands->end_current_render_pass();
 
-            node->graph_render_pass->post_render( current_frame_index, gpu_commands, this );
+            node->graph_render_pass->post_render( current_frame_index, gpu_commands, this, render_scene );
 
             gpu_commands->pop_marker();
         }
@@ -873,9 +872,8 @@ void FrameGraphResourceCache::shutdown( )
              && ( resource->resource_info.texture.handle.index > 0 ) ) {
             Texture* texture = device->access_texture( resource->resource_info.texture.handle );
             device->destroy_texture( texture->handle );
-        } 
-        else if ( ( resource->type == FrameGraphResourceType_Buffer )
-                   && ( resource->resource_info.buffer.handle.index > 0 ) ) {
+        } else if ( ( resource->type == FrameGraphResourceType_Buffer )
+                    && ( resource->resource_info.buffer.handle.index > 0 ) ) {
             Buffer* buffer = device->access_buffer( resource->resource_info.buffer.handle );
             device->destroy_buffer( buffer->handle );
         }

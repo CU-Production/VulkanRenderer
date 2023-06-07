@@ -28,11 +28,17 @@ namespace raptor {
     struct RenderScene;
     struct SceneGraph;
     struct StackAllocator;
+    struct GameCamera;
 
     static const u16    k_invalid_scene_texture_index      = u16_max;
     static const u32    k_material_descriptor_set_index    = 1;
     static const u32    k_max_joint_count                  = 12;
     static const u32    k_max_depth_pyramid_levels         = 16;
+
+    static const u32    k_num_lights                       = 256;
+    static const u32    k_light_z_bins                     = 16;
+    static const u32    k_tile_size                        = 8;
+    static const u32    k_num_words                        = ( k_num_lights + 31 ) / 32;
 
     static bool         recreate_per_thread_descriptors = false;
     static bool         use_secondary_command_buffers   = false;
@@ -55,7 +61,7 @@ namespace raptor {
 
     //
     //
-    struct GpuSceneData {
+    struct alignas(16) GpuSceneData {
         mat4s                   view_projection;
         mat4s                   view_projection_debug;
         mat4s                   inverse_view_projection;
@@ -63,12 +69,11 @@ namespace raptor {
         mat4s                   world_to_camera_debug;
         mat4s                   previous_view_projection;
 
-        vec4s                   eye;
-        vec4s                   eye_debug;
-        vec4s                   light_position;
+        vec4s                   camera_position;
+        vec4s                   camera_position_debug;
 
-        f32                     light_range;
-        f32                     light_intensity;
+        f32                     pad1000;
+        f32                     pad1001;
         u32                     dither_texture_index;
         f32                     z_near;
 
@@ -86,6 +91,10 @@ namespace raptor {
         f32                     resolution_y;
         f32                     aspect_ratio;
         f32                     pad0001;
+
+        // TEST packed light data.
+        vec4s                   light0_data0;
+        vec4s                   light0_data1;
 
         vec4s                   frustum_planes[ 6 ];
 
@@ -113,16 +122,13 @@ namespace raptor {
         // PBR
         vec4s                   base_color_factor   = {1.f, 1.f, 1.f, 1.f};
         vec3s                   emissive_factor     = {0.f, 0.f, 0.f};
-        vec4s                   metallic_roughness_occlusion_factor = {1.f, 1.f, 1.f, 1.f};
+
+        f32                     metallic            = 0.f;
+        f32                     roughness           = 1.f;
+        f32                     occlusion           = 0.f;
         f32                     alpha_cutoff        = 1.f;
 
-        // Phong
-        vec4s                   diffuse_colour      = { 1.f, 1.f, 1.f, 1.f };
-        vec3s                   specular_colour     = { 1.f, 1.f, 1.f };
-        f32                     specular_exp        = 1.f;
-        vec3s                   ambient_colour      = { 0.f, 0.f, 0.f};
-
-        u32                     flags               = 0;;
+        u32                     flags               = 0;
     }; // struct PBRMaterial
 
     //
@@ -246,6 +252,7 @@ namespace raptor {
 
         u32                     meshlet_offset;
         u32                     meshlet_count;
+        u32                     meshlet_index_count;
 
         u32                     gpu_mesh_index          = u32_max;
         i32                     skin_index              = i32_max;
@@ -335,17 +342,8 @@ namespace raptor {
 
         u32                     meshlet_offset;
         u32                     meshlet_count;
-        u32                     padding0_;
+        u32                     meshlet_index_count;
         u32                     padding1_;
-
-        // Phong
-        vec4s                   diffuse_colour;
-
-        vec3s                   specular_colour;
-        f32                     specular_exp;
-
-        vec3s                   ambient_colour;
-        f32                     padding2_;
 
     }; // struct GpuMaterialData
 
@@ -365,8 +363,8 @@ namespace raptor {
     //
     struct alignas( 16 ) GpuMeshDrawCommand {
         u32                     drawId;
-        VkDrawIndexedIndirectCommand indirect; // 5 uint32_t
-        VkDrawMeshTasksIndirectCommandNV indirectMS; // 2 uint32_t
+        VkDrawIndexedIndirectCommand indirect;          // 5 u32
+        VkDrawMeshTasksIndirectCommandNV indirectMS;    // 2 u32
     }; // struct GpuMeshDrawCommand
 
     //
@@ -380,7 +378,13 @@ namespace raptor {
         u32                     total_count;
         u32                     depth_pyramid_texture_index;
         u32                     late_flag;
+        u32                     meshlet_index_count;
+
+        u32                     dispatch_task_x;
+        u32                     dispatch_task_y;
+        u32                     dispatch_task_z;
         u32                     pad001;
+
     }; // struct GpuMeshDrawCounts
 
     // Animation structs //////////////////////////////////////////////////
@@ -461,20 +465,44 @@ namespace raptor {
     //
     struct Light {
 
-        Color                   color;
-        f32                     intensity;
-
-        vec3s                   position;
+        vec3s                   world_position;
         f32                     radius;
 
+        vec3s                   color;
+        f32                     intensity;
+
     }; // struct Light
+
+    // Separated from Light struct as it could contain unpacked data.
+    struct alignas( 16 ) GpuLight {
+
+        vec3s                   world_position;
+        f32                     attenuation;
+
+        vec3s                   color;
+        f32                     intensity;
+
+    }; // struct GpuLight
+
+    struct UploadGpuDataContext {
+        GameCamera&             game_camera;
+        StackAllocator*         scratch_allocator;
+
+        u8                      skip_invisible_lights       : 1;
+        u8                      use_mcguire_method          : 1;
+        u8                      use_view_aabb               : 1;
+        u8                      enable_camera_inside        : 1;
+        u8                      force_fullscreen_light_aabb : 1;
+        u8                      pad000                      : 3;
+
+    }; // struct UploadGpuDataContext
 
     // Render Passes //////////////////////////////////////////////////////
 
     //
     //
     struct DepthPrePass : public FrameGraphRenderPass {
-        void                    render( CommandBuffer* gpu_commands, RenderScene* render_scene ) override;
+        void                    render( u32 current_frame_index, CommandBuffer* gpu_commands, RenderScene* render_scene ) override;
 
         void                    prepare_draws( RenderScene& scene, FrameGraph* frame_graph, Allocator* resident_allocator, StackAllocator* scratch_allocator );
         void                    free_gpu_resources();
@@ -487,9 +515,9 @@ namespace raptor {
     //
     //
     struct DepthPyramidPass : public FrameGraphRenderPass {
-        void                    render( CommandBuffer* gpu_commands, RenderScene* render_scene ) override;
+        void                    render( u32 current_frame_index, CommandBuffer* gpu_commands, RenderScene* render_scene ) override;
         void                    on_resize( GpuDevice& gpu, FrameGraph* frame_graph, u32 new_width, u32 new_height ) override;
-        void                    post_render( u32 current_frame_index, CommandBuffer* gpu_commands, FrameGraph* frame_graph ) override;
+        void                    post_render( u32 current_frame_index, CommandBuffer* gpu_commands, FrameGraph* frame_graph, RenderScene* render_scene ) override;
 
         void                    prepare_draws( RenderScene& scene, FrameGraph* frame_graph, Allocator* resident_allocator, StackAllocator* scratch_allocator );
         void                    free_gpu_resources();
@@ -512,20 +540,34 @@ namespace raptor {
     //
     //
     struct GBufferPass : public FrameGraphRenderPass {
-        void                    render( CommandBuffer* gpu_commands, RenderScene* render_scene ) override;
+        void                    pre_render( u32 current_frame_index, CommandBuffer* gpu_commands, FrameGraph* frame_graph, RenderScene* render_scene ) override;
+        void                    render( u32 current_frame_index, CommandBuffer* gpu_commands, RenderScene* render_scene ) override;
 
         void                    prepare_draws( RenderScene& scene, FrameGraph* frame_graph, Allocator* resident_allocator, StackAllocator* scratch_allocator );
         void                    free_gpu_resources();
 
         Array<MeshInstanceDraw> mesh_instance_draws;
         Renderer*               renderer;
-        u32                     meshlet_technique_index;
+
+        PipelineHandle          meshlet_draw_pipeline;
+        PipelineHandle          meshlet_emulation_draw_pipeline;
+
+        BufferHandle            generate_meshlet_dispatch_indirect_buffer[ k_max_frames ];
+        PipelineHandle          generate_meshlet_index_buffer_pipeline;
+        DescriptorSetHandle     generate_meshlet_index_buffer_descriptor_set[ k_max_frames ];
+        PipelineHandle          generate_meshlets_instances_pipeline;
+        DescriptorSetHandle     generate_meshlets_instances_descriptor_set[ k_max_frames ];
+        BufferHandle            meshlet_instance_culling_indirect_buffer[ k_max_frames ];
+        PipelineHandle          meshlet_instance_culling_pipeline;
+        DescriptorSetHandle     meshlet_instance_culling_descriptor_set[ k_max_frames ];
+        PipelineHandle          meshlet_write_counts_pipeline;
+
     }; // struct GBufferPass
 
     //
     //
     struct LateGBufferPass : public FrameGraphRenderPass {
-        void                    render( CommandBuffer* gpu_commands, RenderScene* render_scene ) override;
+        void                    render( u32 current_frame_index, CommandBuffer* gpu_commands, RenderScene* render_scene ) override;
 
         void                    prepare_draws( RenderScene& scene, FrameGraph* frame_graph, Allocator* resident_allocator, StackAllocator* scratch_allocator );
         void                    free_gpu_resources();
@@ -538,15 +580,19 @@ namespace raptor {
     //
     //
     struct LightPass : public FrameGraphRenderPass {
-        void                    render( CommandBuffer* gpu_commands, RenderScene* render_scene ) override;
+        void                    render( u32 current_frame_index, CommandBuffer* gpu_commands, RenderScene* render_scene ) override;
 
         void                    prepare_draws( RenderScene& scene, FrameGraph* frame_graph, Allocator* resident_allocator, StackAllocator* scratch_allocator );
-        void                    upload_gpu_data();
+        void                    upload_gpu_data( RenderScene& scene );
         void                    free_gpu_resources();
 
         Mesh                    mesh;
         Renderer*               renderer;
         bool                    use_compute;
+
+        BufferHandle            last_lights_buffer = k_invalid_buffer;
+
+        DescriptorSetHandle     lighting_descriptor_set[ k_max_frames ];
 
         FrameGraphResource*     color_texture;
         FrameGraphResource*     normal_texture;
@@ -560,7 +606,7 @@ namespace raptor {
     //
     //
     struct TransparentPass : public FrameGraphRenderPass {
-        void                    render( CommandBuffer* gpu_commands, RenderScene* render_scene ) override;
+        void                    render( u32 current_frame_index, CommandBuffer* gpu_commands, RenderScene* render_scene ) override;
 
         void                    prepare_draws( RenderScene& scene, FrameGraph* frame_graph, Allocator* resident_allocator, StackAllocator* scratch_allocator );
         void                    free_gpu_resources();
@@ -573,8 +619,8 @@ namespace raptor {
     //
     //
     struct DebugPass : public FrameGraphRenderPass {
-        void                    render( CommandBuffer* gpu_commands, RenderScene* render_scene ) override;
-        void                    pre_render( u32 current_frame_index, CommandBuffer* gpu_commands, FrameGraph* frame_graph ) override;
+        void                    render( u32 current_frame_index, CommandBuffer* gpu_commands, RenderScene* render_scene ) override;
+        void                    pre_render( u32 current_frame_index, CommandBuffer* gpu_commands, FrameGraph* frame_graph, RenderScene* render_scene ) override;
 
         void                    prepare_draws( RenderScene& scene, FrameGraph* frame_graph, Allocator* resident_allocator, StackAllocator* scratch_allocator );
         void                    free_gpu_resources();
@@ -628,8 +674,8 @@ namespace raptor {
         }; // struct DoFData
 
         void                    add_ui() override;
-        void                    pre_render( u32 current_frame_index, CommandBuffer* gpu_commands, FrameGraph* frame_graph ) override;
-        void                    render( CommandBuffer* gpu_commands, RenderScene* render_scene ) override;
+        void                    pre_render( u32 current_frame_index, CommandBuffer* gpu_commands, FrameGraph* frame_graph, RenderScene* render_scene ) override;
+        void                    render( u32 current_frame_index, CommandBuffer* gpu_commands, RenderScene* render_scene ) override;
         void                    on_resize( GpuDevice& gpu, FrameGraph* frame_graph, u32 new_width, u32 new_height ) override;
 
         void                    prepare_draws( RenderScene& scene, FrameGraph* frame_graph, Allocator* resident_allocator, StackAllocator* scratch_allocator );
@@ -650,7 +696,7 @@ namespace raptor {
     }; // struct DoFPass
 
     struct MeshPass : public FrameGraphRenderPass {
-        void                    render( CommandBuffer* gpu_commands, RenderScene* render_scene ) override;
+        void                    render( u32 current_frame_index, CommandBuffer* gpu_commands, RenderScene* render_scene ) override;
 
         void                    prepare_draws( RenderScene& scene, FrameGraph* frame_graph, Allocator* resident_allocator, StackAllocator* scratch_allocator );
     }; // struct MeshPass
@@ -658,7 +704,7 @@ namespace raptor {
     //
     //
     struct CullingEarlyPass : public FrameGraphRenderPass {
-        void                    render( CommandBuffer* gpu_commands, RenderScene* render_scene ) override;
+        void                    render( u32 current_frame_index, CommandBuffer* gpu_commands, RenderScene* render_scene ) override;
 
         void                    prepare_draws( RenderScene& scene, FrameGraph* frame_graph, Allocator* resident_allocator, StackAllocator* scratch_allocator );
         void                    free_gpu_resources();
@@ -673,7 +719,7 @@ namespace raptor {
     }; // struct CullingPrePass
 
     struct CullingLatePass : public FrameGraphRenderPass {
-        void                    render( CommandBuffer* gpu_commands, RenderScene* render_scene ) override;
+        void                    render( u32 current_frame_index, CommandBuffer* gpu_commands, RenderScene* render_scene ) override;
 
         void                    prepare_draws( RenderScene& scene, FrameGraph* frame_graph, Allocator* resident_allocator, StackAllocator* scratch_allocator );
         void                    free_gpu_resources();
@@ -686,6 +732,10 @@ namespace raptor {
         u32                     depth_pyramid_texture_index;
 
     }; // struct CullingLatePass
+
+    //
+    void                        get_bounds_for_axis( const vec3s& a, const vec3s& C, float r, float nearZ, vec3s& L, vec3s& U );
+    vec3s                       project( const mat4s& P, const vec3s& Q );
 
     //
     //
@@ -701,7 +751,7 @@ namespace raptor {
         void                    update_animations( f32 delta_time );
         void                    update_joints();
 
-        void                    upload_gpu_data();
+        void                    upload_gpu_data( UploadGpuDataContext& context );
         void                    draw_mesh_instance( CommandBuffer* gpu_commands, MeshInstance& mesh_instance );
 
         // Mesh and MeshInstances
@@ -719,6 +769,11 @@ namespace raptor {
         Array<Animation>        animations;
         Array<Skin>             skins;
 
+        // Lights
+        Array<Light>            lights;
+        Array<u32>              lights_lut;
+        vec3s                   mesh_aabb[2]; // 0 min, 1 max
+
         StringBuffer            names_buffer;   // Buffer containing all names of nodes, resources, etc.
 
         SceneGraph*             scene_graph;
@@ -735,13 +790,22 @@ namespace raptor {
         BufferHandle            meshlets_vertex_pos_sb = k_invalid_buffer;
         BufferHandle            meshlets_vertex_data_sb = k_invalid_buffer;
         BufferHandle            meshlets_data_sb = k_invalid_buffer;
+        BufferHandle            meshlets_instances_sb[ k_max_frames ];
+        BufferHandle            meshlets_index_buffer_sb[ k_max_frames ];
+        BufferHandle            meshlets_visible_instances_sb[ k_max_frames ];
+
+        // Light buffers
+        BufferHandle            lights_list_sb  = k_invalid_buffer;
+        BufferHandle            lights_lut_sb[ k_max_frames ];
+        BufferHandle            lights_tiles_sb[ k_max_frames ];
+        BufferHandle            lights_indices_sb[ k_max_frames ];
 
         // Gpu debug draw
-        BufferHandle            debug_line_sb    = k_invalid_buffer;
-        BufferHandle            debug_line_count_sb = k_invalid_buffer;
-        BufferHandle            debug_line_commands_sb = k_invalid_buffer;
-        DescriptorSetHandle     debug_line_finalize_set;
-        DescriptorSetHandle     debug_line_draw_set;
+        BufferHandle            debug_line_sb           = k_invalid_buffer;
+        BufferHandle            debug_line_count_sb     = k_invalid_buffer;
+        BufferHandle            debug_line_commands_sb  = k_invalid_buffer;
+        DescriptorSetHandle     debug_line_finalize_set = k_invalid_set;
+        DescriptorSetHandle     debug_line_draw_set     = k_invalid_set;
 
         // Indirect data
         BufferHandle            mesh_task_indirect_count_early_sb[ k_max_frames ];
@@ -751,15 +815,21 @@ namespace raptor {
         BufferHandle            mesh_task_indirect_count_late_sb[ k_max_frames ];
         BufferHandle            mesh_task_indirect_late_commands_sb[ k_max_frames ];
 
+        BufferHandle            meshlet_instances_indirect_count_sb[ k_max_frames ];
+
         GpuMeshDrawCounts       mesh_draw_counts;
 
+        DescriptorSetHandle     meshlet_emulation_descriptor_set[ k_max_frames ];
+        DescriptorSetHandle     meshlet_visibility_descriptor_set[ k_max_frames ];
         DescriptorSetHandle     mesh_shader_early_descriptor_set[ k_max_frames ];
         DescriptorSetHandle     mesh_shader_late_descriptor_set[ k_max_frames ];
+        DescriptorSetHandle     mesh_shader_transparent_descriptor_set[ k_max_frames ];
 
         Allocator*              resident_allocator;
         Renderer*               renderer;
 
-        bool                    use_meshlets = false;
+        bool                    use_meshlets = true;
+        bool                    use_meshlets_emulation = false;
         bool                    show_debug_gpu_draws = false;
 
         f32                     global_scale = 1.f;
@@ -774,7 +844,7 @@ namespace raptor {
                                       RenderScene* scene );
         void                    shutdown();
 
-        void                    upload_gpu_data();
+        void                    upload_gpu_data( UploadGpuDataContext& context );
         void                    render( CommandBuffer* gpu_commands, RenderScene* render_scene );
 
         void                    prepare_draws( StackAllocator* scratch_allocator );

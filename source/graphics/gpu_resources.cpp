@@ -481,27 +481,18 @@ FramebufferCreation& FramebufferCreation::set_name( const char* name_ )
 
 // ExecutionBarrier ///////////////////////////////////////////////////////
 ExecutionBarrier& ExecutionBarrier::reset() {
-    num_image_barriers = num_memory_barriers = 0;
-    source_pipeline_stage = PipelineStage::DrawIndirect;
-    destination_pipeline_stage = PipelineStage::DrawIndirect;
+    num_image_barriers = num_buffer_barriers = 0;
     return *this;
 }
 
-ExecutionBarrier& ExecutionBarrier::set( PipelineStage::Enum source, PipelineStage::Enum destination ) {
-    source_pipeline_stage = source;
-    destination_pipeline_stage = destination;
-
-    return *this;
-}
-
-ExecutionBarrier& ExecutionBarrier::add_image_barrier( const ImageBarrier& image_barrier ) {
-    image_barriers[num_image_barriers++] = image_barrier;
+ExecutionBarrier& ExecutionBarrier::add_image_barrier( const ImageBarrier& barrier ) {
+    image_barriers[num_image_barriers++] = barrier;
 
     return *this;
 }
 
-ExecutionBarrier& ExecutionBarrier::add_memory_barrier( const MemoryBarrier& memory_barrier ) {
-    memory_barriers[ num_memory_barriers++ ] = memory_barrier;
+ExecutionBarrier& ExecutionBarrier::add_buffer_barrier( const BufferBarrier& barrier ) {
+    buffer_barriers[ num_buffer_barriers++ ] = barrier;
 
     return *this;
 }
@@ -733,13 +724,6 @@ VkPipelineStageFlags util_determine_pipeline_stage_flags( VkAccessFlags access_f
             if ( ( access_flags & ( VK_ACCESS_UNIFORM_READ_BIT | VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT ) ) != 0 ) {
                 flags |= VK_PIPELINE_STAGE_VERTEX_SHADER_BIT;
                 flags |= VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-                /*if ( pRenderer->pActiveGpuSettings->mGeometryShaderSupported ) {
-                    flags |= VK_PIPELINE_STAGE_GEOMETRY_SHADER_BIT;
-                }
-                if ( pRenderer->pActiveGpuSettings->mTessellationSupported ) {
-                    flags |= VK_PIPELINE_STAGE_TESSELLATION_CONTROL_SHADER_BIT;
-                    flags |= VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT;
-                }*/
                 flags |= VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
 #ifdef ENABLE_RAYTRACING
                 if ( pRenderer->mVulkan.mRaytracingExtension ) {
@@ -805,13 +789,6 @@ VkPipelineStageFlags2KHR util_determine_pipeline_stage_flags2( VkAccessFlags2KHR
             if ( ( access_flags & ( VK_ACCESS_UNIFORM_READ_BIT | VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT ) ) != 0 ) {
                 flags |= VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT_KHR;
                 flags |= VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT_KHR;
-                /*if ( pRenderer->pActiveGpuSettings->mGeometryShaderSupported ) {
-                    flags |= VK_PIPELINE_STAGE_GEOMETRY_SHADER_BIT;
-                }
-                if ( pRenderer->pActiveGpuSettings->mTessellationSupported ) {
-                    flags |= VK_PIPELINE_STAGE_TESSELLATION_CONTROL_SHADER_BIT;
-                    flags |= VK_PIPELINE_STAGE_TESSELLATION_EVALUATION_SHADER_BIT;
-                }*/
                 flags |= VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT_KHR;
 #ifdef ENABLE_RAYTRACING
                 if ( pRenderer->mVulkan.mRaytracingExtension ) {

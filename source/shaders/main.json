@@ -230,7 +230,7 @@
 				{
 					"stage" : "vertex",
 					"shader" : "depth.glsl",
-					"includes" : ["platform.h", "mesh.h", "scene.h"]
+					"includes" : ["platform.h", "scene.h", "mesh.h"]
 				}
 			]
 		},
@@ -247,12 +247,12 @@
 				{
 					"stage" : "vertex",
 					"shader" : "depth_skinned.vert",
-					"includes" : ["platform.h", "mesh.h", "scene.h"]
+					"includes" : ["platform.h", "scene.h", "mesh.h"]
 				},
 				{
 					"stage" : "fragment",
 					"shader" : "depth.glsl",
-					"includes" : ["platform.h", "mesh.h", "scene.h"]
+					"includes" : ["platform.h", "scene.h", "mesh.h" ]
 				}
 			]
 		},
@@ -268,12 +268,12 @@
 				{
 					"stage" : "vertex",
 					"shader" : "gbuffer.glsl",
-					"includes" : ["platform.h", "mesh.h", "scene.h"]
+					"includes" : ["platform.h", "scene.h", "mesh.h"]
 				},
 				{
 					"stage" : "fragment",
 					"shader" : "gbuffer.glsl",
-					"includes" : ["platform.h", "mesh.h", "scene.h"]
+					"includes" : ["platform.h", "scene.h", "mesh.h" ]
 				}
 			]
 		},
@@ -295,12 +295,12 @@
 				{
 					"stage" : "vertex",
 					"shader" : "skinning.glsl",
-					"includes" : ["platform.h", "mesh.h", "scene.h"]
+					"includes" : ["platform.h", "scene.h", "mesh.h"]
 				},
 				{
 					"stage" : "fragment",
 					"shader" : "gbuffer.glsl",
-					"includes" : ["platform.h", "mesh.h", "scene.h"]
+					"includes" : ["platform.h", "scene.h", "mesh.h" ]
 				}
 			]
 		},
@@ -323,13 +323,13 @@
 			"shaders" : [
 				{
 					"stage" : "vertex",
-					"shader" : "main.glsl",
-					"includes" : ["platform.h", "mesh.h", "scene.h"]
+					"shader" : "transparent.glsl",
+					"includes" : ["platform.h", "scene.h", "mesh.h"]
 				},
 				{
 					"stage" : "fragment",
-					"shader" : "main.glsl",
-					"includes" : ["platform.h", "mesh.h", "scene.h", "lighting.h"]
+					"shader" : "transparent.glsl",
+					"includes" : ["platform.h", "scene.h", "mesh.h", "lighting.h" ]
 				}
 			]
 		},
@@ -358,12 +358,12 @@
 				{
 					"stage" : "vertex",
 					"shader" : "skinning.glsl",
-					"includes" : ["platform.h", "mesh.h", "scene.h"]
+					"includes" : ["platform.h", "scene.h", "mesh.h"]
 				},
 				{
 					"stage" : "fragment",
-					"shader" : "main.glsl",
-					"includes" : ["platform.h", "mesh.h", "scene.h", "lighting.h"]
+					"shader" : "transparent.glsl",
+					"includes" : ["platform.h", "scene.h", "mesh.h", "lighting.h" ]
 				}
 			]
 		}

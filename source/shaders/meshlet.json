@@ -12,12 +12,12 @@
 				{
 					"stage" : "mesh",
 					"shader" : "meshlet.glsl",
-					"includes" : ["platform.h", "scene.h", "mesh.h"]
+					"includes" : ["platform.h", "scene.h", "mesh.h", "meshlet.h"]
 				},
 				{
 					"stage" : "task",
 					"shader" : "meshlet.glsl",
-					"includes" : ["platform.h", "scene.h", "mesh.h", "debug_rendering.h"]
+					"includes" : ["platform.h", "scene.h", "mesh.h", "debug_rendering.h", "meshlet.h", "culling.h"]
 				}
 			]
 		},
@@ -28,16 +28,17 @@
 				"write" : true,
 				"test" : "less_or_equal"
 			},
+			"cull" : "back",
 			"shaders" : [
 				{
 					"stage" : "mesh",
 					"shader" : "meshlet.glsl",
-					"includes" : ["platform.h", "scene.h", "mesh.h"]
+					"includes" : ["platform.h", "scene.h", "mesh.h", "meshlet.h"]
 				},
 				{
 					"stage" : "task",
 					"shader" : "meshlet.glsl",
-					"includes" : ["platform.h", "scene.h", "mesh.h", "debug_rendering.h"]
+					"includes" : ["platform.h", "scene.h", "mesh.h", "debug_rendering.h", "meshlet.h", "culling.h"]
 				},
 				{
 					"stage" : "fragment",
@@ -65,12 +66,12 @@
 				{
 					"stage" : "mesh",
 					"shader" : "meshlet.glsl",
-					"includes" : ["platform.h", "scene.h", "mesh.h"]
+					"includes" : ["platform.h", "scene.h", "mesh.h", "meshlet.h"]
 				},
 				{
 					"stage" : "task",
 					"shader" : "meshlet.glsl",
-					"includes" : ["platform.h", "scene.h", "mesh.h", "debug_rendering.h"]
+					"includes" : ["platform.h", "scene.h", "mesh.h", "debug_rendering.h", "meshlet.h", "culling.h"]
 				},
 				{
 					"stage" : "fragment",
@@ -90,12 +91,77 @@
 				{
 					"stage" : "mesh",
 					"shader" : "meshlet.glsl",
-					"includes" : ["platform.h", "scene.h", "mesh.h"]
+					"includes" : ["platform.h", "scene.h", "mesh.h", "meshlet.h"]
 				},
 				{
 					"stage" : "fragment",
 					"shader" : "meshlet.glsl",
 					"includes" : ["platform.h", "scene.h", "mesh.h"]
+				}
+			]
+		},
+		{
+			"name" : "generate_meshlet_index_buffer",
+			"render_pass" : "culling_pass",
+			"shaders" : [
+				{
+					"stage" : "compute",
+					"shader" : "meshlet.glsl",
+					"includes" : [ "platform.h", "scene.h", "mesh.h", "meshlet.h" ]
+				}
+			]
+		},
+		{
+			"name" : "emulation_gbuffer_culling",
+			"render_pass" : "gbuffer_pass_early",
+			"depth" : {
+				"write" : true,
+				"test" : "less_or_equal"
+			},
+			"cull" : "back",
+			"shaders" : [
+				{
+					"stage" : "vertex",
+					"shader" : "meshlet.glsl",
+					"includes" : ["platform.h", "scene.h", "mesh.h", "meshlet.h"]
+				},
+				{
+					"stage" : "fragment",
+					"shader" : "meshlet.glsl",
+					"includes" : ["platform.h", "scene.h", "mesh.h", "debug_rendering.h"]
+				}
+			]
+		},
+		{
+			"name" : "generate_meshlet_instances",
+			"render_pass" : "gbuffer_pass_early",
+			"shaders" : [
+				{
+					"stage" : "compute",
+					"shader" : "meshlet.glsl",
+					"includes" : ["platform.h", "scene.h", "mesh.h", "meshlet.h"]
+				}
+			]
+		},
+		{
+			"name" : "meshlet_instance_culling",
+			"render_pass" : "gbuffer_pass_early",
+			"shaders" : [
+				{
+					"stage" : "compute",
+					"shader" : "meshlet.glsl",
+					"includes" : ["platform.h", "scene.h", "mesh.h", "meshlet.h", "culling.h"]
+				}
+			]
+		},
+		{
+			"name" : "meshlet_write_counts",
+			"render_pass" : "gbuffer_pass_early",
+			"shaders" : [
+				{
+					"stage" : "compute",
+					"shader" : "meshlet.glsl",
+					"includes" : ["platform.h", "scene.h", "mesh.h", "meshlet.h", "culling.h"]
 				}
 			]
 		}

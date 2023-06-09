@@ -49,7 +49,7 @@ void AsynchronousLoader::init( Renderer* renderer_, enki::TaskScheduler* task_sc
         vkAllocateCommandBuffers( renderer->gpu->vulkan_device, &cmd, &command_buffers[i].vk_command_buffer );
 
         command_buffers[ i ].is_recording = false;
-        command_buffers[ i ].device = ( renderer->gpu );
+        command_buffers[ i ].gpu_device = ( renderer->gpu );
     }
 
     VkSemaphoreCreateInfo semaphore_info{ VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };

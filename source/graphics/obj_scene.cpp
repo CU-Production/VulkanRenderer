@@ -626,7 +626,7 @@ void ObjScene::shutdown( Renderer* renderer ) {
         Mesh& mesh = meshes[ mesh_index ];
 
         gpu.destroy_buffer( mesh.pbr_material.material_buffer );
-        gpu.destroy_descriptor_set( mesh.pbr_material.descriptor_set );
+        gpu.destroy_descriptor_set( mesh.pbr_material.descriptor_set_transparent );
 
         PhysicsMesh* physics_mesh = mesh.physics_mesh;
 
@@ -737,7 +737,7 @@ void ObjScene::prepare_draws( Renderer* renderer, StackAllocator* scratch_alloca
         DescriptorSetCreation ds_creation{};
         DescriptorSetLayoutHandle main_layout = renderer->gpu->get_descriptor_set_layout( mesh.pbr_material.material->technique->passes[ pass_index ].pipeline, k_material_descriptor_set_index );
         ds_creation.reset().buffer( scene_cb, 0 ).buffer( mesh.pbr_material.material_buffer, 2 ).set_layout( main_layout );
-        mesh.pbr_material.descriptor_set = renderer->gpu->create_descriptor_set( ds_creation );
+        mesh.pbr_material.descriptor_set_transparent = renderer->gpu->create_descriptor_set( ds_creation );
 
         if ( mesh.physics_mesh != nullptr ) {
             DescriptorSetLayoutHandle physics_layout = renderer->gpu->get_descriptor_set_layout( cloth_technique->passes[ 0 ].pipeline, k_material_descriptor_set_index );

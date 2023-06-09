@@ -54,7 +54,45 @@ struct GpuThreadFramePools {
 
 //
 //
+struct GpuDescriptorPoolCreation {
+
+    u16                             samplers        = 256;
+    u16                             combined_image_samplers = 256;
+    u16                             sampled_image = 256;
+    u16                             storage_image = 256;
+    u16                             uniform_texel_buffers = 256;
+    u16                             storage_texel_buffers = 256;
+    u16                             uniform_buffer = 256;
+    u16                             storage_buffer = 256;
+    u16                             uniform_buffer_dynamic = 256;
+    u16                             storage_buffer_dynamic = 256;
+    u16                             input_attachments = 256;
+
+}; // struct GpuDescriptorPoolCreation
+
+//
+//
+struct GpuResourcePoolCreation {
+
+    u16                             buffers         = 256;
+    u16                             textures        = 256;
+    u16                             pipelines       = 256;
+    u16                             samplers        = 256;
+    u16                             descriptor_set_layouts = 256;
+    u16                             descriptor_sets = 256;
+    u16                             render_passes   = 256;
+    u16                             framebuffers    = 256;
+    u16                             command_buffers = 256;
+    u16                             shaders         = 256;
+    u16                             page_pools      = 64;
+};
+
+//
+//
 struct GpuDeviceCreation {
+
+    GpuDescriptorPoolCreation       descriptor_pool_creation;
+    GpuResourcePoolCreation         resource_pool_creation;
 
     Allocator*                      allocator       = nullptr;
     StackAllocator*                 temporary_allocator = nullptr;
@@ -80,12 +118,10 @@ struct GpuDeviceCreation {
 //
 struct GpuDevice : public Service {
 
-    static GpuDevice*               instance();
-
     // Helper methods
     static void                     fill_write_descriptor_sets( GpuDevice& gpu, const DescriptorSetLayout* descriptor_set_layout, VkDescriptorSet vk_descriptor_set,
                                                                 VkWriteDescriptorSet* descriptor_write, VkDescriptorBufferInfo* buffer_info, VkDescriptorImageInfo* image_info,
-                                                                VkSampler vk_default_sampler, u32& num_resources, const ResourceHandle* resources, 
+                                                                VkSampler vk_default_sampler, u32& num_resources, const ResourceHandle* resources,
                                                                 const SamplerHandle* samplers, const u16* bindings );
 
     // Init/Terminate methods
@@ -128,6 +164,12 @@ struct GpuDevice : public Service {
     // Update/Reload resources ///////////////////////////////////////////
     void                            resize_output_textures( FramebufferHandle render_pass, u32 width, u32 height );
     void                            resize_texture( TextureHandle texture, u32 width, u32 height );
+
+    PagePoolHandle                  allocate_texture_pool( TextureHandle texture_handle, u32 pool_size );
+    void                            destroy_page_pool( PagePoolHandle pool_handle );
+
+    void                            reset_pool( PagePoolHandle pool_handle );
+    void                            bind_texture_pages( PagePoolHandle pool_handle, TextureHandle handle, u32 x, u32 y, u32 width, u32 height, u32 layer );
 
     void                            update_descriptor_set( DescriptorSetHandle set );
 
@@ -182,7 +224,7 @@ struct GpuDevice : public Service {
     void                            submit_compute_load( CommandBuffer* command_buffer );
 
     // Names and markers /////////////////////////////////////////////////
-    void                            set_resource_name( VkObjectType object_type, uint64_t handle, const char* name );
+    void                            set_resource_name( VkObjectType object_type, u64 handle, const char* name );
     void                            push_marker( VkCommandBuffer command_buffer, cstring name );
     void                            pop_marker( VkCommandBuffer command_buffer );
 
@@ -202,6 +244,7 @@ struct GpuDevice : public Service {
     void                            destroy_render_pass_instant( ResourceHandle render_pass );
     void                            destroy_framebuffer_instant( ResourceHandle framebuffer );
     void                            destroy_shader_state_instant( ResourceHandle shader );
+    void                            destroy_page_pool_instant( ResourceHandle handle );
 
     void                            update_descriptor_set_instant( const DescriptorSetUpdate& update );
 
@@ -217,8 +260,8 @@ struct GpuDevice : public Service {
     ResourcePool                    descriptor_sets;
 	ResourcePool                    render_passes;
     ResourcePool                    framebuffers;
-    ResourcePool                    command_buffers;
     ResourcePool                    shaders;
+    ResourcePool                    page_pools;
 
     // Primitive resources
     BufferHandle                    fullscreen_vertex_buffer;
@@ -294,6 +337,8 @@ struct GpuDevice : public Service {
     VkSemaphore                     vulkan_graphics_semaphore;
     VkFence                         vulkan_command_buffer_executed_fence[ k_max_frames ];
 
+    VkSemaphore                     vulkan_bind_semaphore;
+
     VkSemaphore                     vulkan_compute_semaphore;
     VkFence                         vulkan_compute_fence;
     u64                             last_compute_semaphore_value = 0;
@@ -330,16 +375,22 @@ struct GpuDevice : public Service {
     // [TAG: BINDLESS]
     Array<ResourceUpdate>           texture_to_update_bindless;
 
+    Array<SparseMemoryBindInfo>     pending_sparse_memory_info;
+    Array<VkSparseImageMemoryBind>  pending_sparse_queue_binds;
+
     u32                             num_threads = 1;
     f32                             gpu_timestamp_frequency;
     bool                            debug_utils_extension_present   = false;
     bool                            dynamic_rendering_extension_present     = false;
     bool                            timeline_semaphore_extension_present    = false;
     bool                            synchronization2_extension_present      = false;
-    bool                            mesh_shaders_extension_present = false;
+    bool                            mesh_shaders_extension_present  = false;
+    bool                            multiview_extension_present     = false;
 
     sizet                           ubo_alignment                   = 256;
     sizet                           ssbo_alignemnt                  = 256;
+    u32                             subgroup_size                   = 32;
+    u32                             max_framebuffer_layers          = 1;
 
     char                            vulkan_binaries_path[ 512 ];
 
@@ -373,6 +424,9 @@ struct GpuDevice : public Service {
 
     Framebuffer*                    access_framebuffer( FramebufferHandle framebuffer );
     const Framebuffer*              access_framebuffer( FramebufferHandle framebuffer ) const;
+
+    PagePool*                       access_page_pool( PagePoolHandle page_pool );
+    const PagePool*                 access_page_pool( PagePoolHandle page_pool ) const;
 
 }; // struct GpuDevice
 

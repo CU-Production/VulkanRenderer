@@ -38,6 +38,8 @@ struct CommandBuffer {
     void                            clear( f32 red, f32 green, f32 blue, f32 alpha, u32 attachment_index );
     void                            clear_depth_stencil( f32 depth, u8 stencil );
 
+    void                            push_constants( PipelineHandle pipeline, u32 offset, u32 size, void* data );
+
     void                            draw( TopologyType::Enum topology, u32 first_vertex, u32 vertex_count, u32 first_instance, u32 instance_count );
     void                            draw_indexed( TopologyType::Enum topology, u32 index_count, u32 instance_count, u32 first_index, i32 vertex_offset, u32 first_instance );
     void                            draw_indirect( BufferHandle handle, u32 draw_count, u32 offset, u32 stride );
@@ -45,7 +47,8 @@ struct CommandBuffer {
     void                            draw_indexed_indirect( BufferHandle handle, u32 draw_count, u32 offset, u32 stride );
 
     void                            draw_mesh_task( u32 task_count, u32 first_task );
-    void                            draw_mesh_task_indirect( BufferHandle argument_buffer, u32 argument_offset, BufferHandle count_buffer, u32 count_offset, u32 max_draws, u32 stride );
+    void                            draw_mesh_task_indirect( BufferHandle argument_buffer, u32 argument_offset, u32 command_count, u32 stride );
+    void                            draw_mesh_task_indirect_count( BufferHandle argument_buffer, u32 argument_offset, BufferHandle count_buffer, u32 count_offset, u32 max_draws, u32 stride );
 
     void                            dispatch( u32 group_x, u32 group_y, u32 group_z );
     void                            dispatch_indirect( BufferHandle handle, u32 offset );
@@ -60,9 +63,14 @@ struct CommandBuffer {
     void                            push_marker( const char* name );
     void                            pop_marker();
 
+    u32                             get_subgroup_sized( u32 group );
+
     // Non-drawing methods
     void                            upload_texture_data( TextureHandle texture, void* texture_data, BufferHandle staging_buffer, sizet staging_buffer_offset );
-    void                            copy_texture( TextureHandle src_, TextureHandle dst_, ResourceState dst_state );
+    void                            copy_texture( TextureHandle src, TextureHandle dst, ResourceState dst_state );
+    void                            copy_texture( TextureHandle src, TextureSubResource src_sub, TextureHandle dst, TextureSubResource dst_sub, ResourceState dst_state );
+
+    void                            copy_buffer( BufferHandle src, sizet src_offset, BufferHandle dst, sizet dst_offset, sizet size );
 
     void                            upload_buffer_data( BufferHandle buffer, void* buffer_data, BufferHandle staging_buffer, sizet staging_buffer_offset );
     void                            upload_buffer_data( BufferHandle src, BufferHandle dst );
@@ -77,7 +85,7 @@ struct CommandBuffer {
     ResourcePool                    descriptor_sets;
 
     GpuThreadFramePools*            thread_frame_pool;
-    GpuDevice*                      device;
+    GpuDevice*                      gpu_device;
 
     VkDescriptorSet                 vk_descriptor_sets[16];
 

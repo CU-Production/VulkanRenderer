@@ -3,6 +3,7 @@
 #include "graphics/gpu_profiler.hpp"
 
 #include "foundation/memory.hpp"
+#include "foundation/numerics.hpp"
 
 #include "external/tracy/tracy/Tracy.hpp"
 
@@ -21,7 +22,7 @@ void CommandBuffer::reset() {
     current_pipeline = nullptr;
     current_command = 0;
 
-    vkResetDescriptorPool( device->vulkan_device, vk_descriptor_pool, 0 );
+    vkResetDescriptorPool( gpu_device->vulkan_device, vk_descriptor_pool, 0 );
 
     u32 resource_count = descriptor_sets.free_indices_head;
     for ( u32 i = 0; i < resource_count; ++i) {
@@ -29,16 +30,17 @@ void CommandBuffer::reset() {
 
         if ( v_descriptor_set ) {
             // Contains the allocation for all the resources, binding and samplers arrays.
-            rfree( v_descriptor_set->resources, device->allocator );
+            rfree( v_descriptor_set->resources, gpu_device->allocator );
         }
         descriptor_sets.release_resource( i );
     }
 }
 
+static const u32 k_descriptor_sets_pool_size = 4096;
 
 void CommandBuffer::init( GpuDevice* gpu ) {
 
-    device = gpu;
+    gpu_device = gpu;
 
     // Create Descriptor Pools
     static const u32 k_global_pool_elements = 128;
@@ -62,10 +64,10 @@ void CommandBuffer::init( GpuDevice* gpu ) {
     pool_info.maxSets = k_descriptor_sets_pool_size;
     pool_info.poolSizeCount = ( u32 )ArraySize( pool_sizes );
     pool_info.pPoolSizes = pool_sizes;
-    VkResult result = vkCreateDescriptorPool( device->vulkan_device, &pool_info, device->vulkan_allocation_callbacks, &vk_descriptor_pool );
+    VkResult result = vkCreateDescriptorPool( gpu_device->vulkan_device, &pool_info, gpu_device->vulkan_allocation_callbacks, &vk_descriptor_pool );
     RASSERT( result == VK_SUCCESS );
 
-    descriptor_sets.init( device->allocator, k_descriptor_sets_pool_size, sizeof( DescriptorSet ) );
+    descriptor_sets.init( gpu_device->allocator, k_descriptor_sets_pool_size, sizeof( DescriptorSet ) );
 
     reset();
 }
@@ -78,13 +80,13 @@ void CommandBuffer::shutdown() {
 
     descriptor_sets.shutdown();
 
-    vkDestroyDescriptorPool( device->vulkan_device, vk_descriptor_pool, device->vulkan_allocation_callbacks );
+    vkDestroyDescriptorPool( gpu_device->vulkan_device, vk_descriptor_pool, gpu_device->vulkan_allocation_callbacks );
 }
 
 DescriptorSetHandle CommandBuffer::create_descriptor_set( const DescriptorSetCreation& creation ) {
     ZoneScoped;
 
-    DescriptorSetHandle handle = device->create_descriptor_set( creation );
+    DescriptorSetHandle handle = gpu_device->create_descriptor_set( creation );
 
     return handle;
 }
@@ -131,8 +133,8 @@ void CommandBuffer::end() {
 
 void CommandBuffer::end_current_render_pass() {
     if ( is_recording && current_render_pass != nullptr ) {
-        if ( device->dynamic_rendering_extension_present ) {
-            device->cmd_end_rendering( vk_command_buffer );
+        if ( gpu_device->dynamic_rendering_extension_present ) {
+            gpu_device->cmd_end_rendering( vk_command_buffer );
         } else {
             vkCmdEndRenderPass( vk_command_buffer );
         }
@@ -147,23 +149,25 @@ void CommandBuffer::bind_pass( RenderPassHandle handle_, FramebufferHandle frame
     {
         is_recording = true;
 
-        RenderPass* render_pass = device->access_render_pass( handle_ );
+        RenderPass* render_pass = gpu_device->access_render_pass( handle_ );
 
         // Begin/End render pass are valid only for graphics render passes.
         if ( current_render_pass && ( render_pass != current_render_pass ) ) {
             end_current_render_pass();
         }
 
-        Framebuffer* framebuffer = device->access_framebuffer( framebuffer_ );
+        Framebuffer* framebuffer = gpu_device->access_framebuffer( framebuffer_ );
 
         if ( render_pass != current_render_pass ) {
-            if ( device->dynamic_rendering_extension_present ) {
-                Array<VkRenderingAttachmentInfo> color_attachments_info;
-                color_attachments_info.init( device->allocator, framebuffer->num_color_attachments, framebuffer->num_color_attachments );
-                memset( color_attachments_info.data, 0, sizeof( VkRenderingAttachmentInfo ) * framebuffer->num_color_attachments );
+            if ( gpu_device->dynamic_rendering_extension_present ) {
+                Array<VkRenderingAttachmentInfoKHR> color_attachments_info;
+
+                u64 marker = gpu_device->temporary_allocator->get_marker();
+                color_attachments_info.init( gpu_device->temporary_allocator, framebuffer->num_color_attachments, framebuffer->num_color_attachments );
+                memset( color_attachments_info.data, 0, sizeof( VkRenderingAttachmentInfoKHR ) * framebuffer->num_color_attachments );
 
                 for ( u32 a = 0; a < framebuffer->num_color_attachments; ++a ) {
-                    Texture* texture = device->access_texture( framebuffer->color_attachments[a] );
+                    Texture* texture = gpu_device->access_texture( framebuffer->color_attachments[a] );
 
                     texture->state = RESOURCE_STATE_RENDER_TARGET;
 
@@ -213,7 +217,7 @@ void CommandBuffer::bind_pass( RenderPassHandle handle_, FramebufferHandle frame
                     texture->state = RESOURCE_STATE_DEPTH_WRITE;
 
                     depth_attachment_info.imageView = texture->vk_image_view;
-                    depth_attachment_info.imageLayout = device->synchronization2_extension_present ? VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+                    depth_attachment_info.imageLayout = gpu_device->synchronization2_extension_present ? VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL_KHR : VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
                     depth_attachment_info.resolveMode = VK_RESOLVE_MODE_NONE;
                     depth_attachment_info.loadOp = depth_op;
                     depth_attachment_info.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -223,16 +227,16 @@ void CommandBuffer::bind_pass( RenderPassHandle handle_, FramebufferHandle frame
                 VkRenderingInfo rendering_info{ VK_STRUCTURE_TYPE_RENDERING_INFO };
                 rendering_info.flags = use_secondary ? VK_RENDERING_CONTENTS_SECONDARY_COMMAND_BUFFERS_BIT : 0;
                 rendering_info.renderArea = { 0, 0, framebuffer->width, framebuffer->height };
-                rendering_info.layerCount = 1;
-                rendering_info.viewMask = 0;
+                rendering_info.layerCount = framebuffer->layers;
+                rendering_info.viewMask = render_pass->multiview_mask;
                 rendering_info.colorAttachmentCount = framebuffer->num_color_attachments;
                 rendering_info.pColorAttachments = framebuffer->num_color_attachments > 0 ? color_attachments_info.data : nullptr;
                 rendering_info.pDepthAttachment =  has_depth_attachment ? &depth_attachment_info : nullptr;
                 rendering_info.pStencilAttachment = nullptr;
 
-                device->cmd_begin_rendering( vk_command_buffer, &rendering_info );
+                gpu_device->cmd_begin_rendering( vk_command_buffer, &rendering_info );
 
-                color_attachments_info.shutdown();
+                gpu_device->temporary_allocator->free_marker( marker );
             } else {
                 VkRenderPassBeginInfo render_pass_begin{ VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO };
                 render_pass_begin.framebuffer = framebuffer->vk_framebuffer;
@@ -262,7 +266,7 @@ void CommandBuffer::bind_pass( RenderPassHandle handle_, FramebufferHandle frame
 
 void CommandBuffer::bind_pipeline( PipelineHandle handle_ ) {
 
-    Pipeline* pipeline = device->access_pipeline( handle_ );
+    Pipeline* pipeline = gpu_device->access_pipeline( handle_ );
     vkCmdBindPipeline( vk_command_buffer, pipeline->vk_bind_point, pipeline->vk_pipeline );
 
     // Cache pipeline
@@ -271,13 +275,13 @@ void CommandBuffer::bind_pipeline( PipelineHandle handle_ ) {
 
 void CommandBuffer::bind_vertex_buffer( BufferHandle handle_, u32 binding, u32 offset ) {
 
-    Buffer* buffer = device->access_buffer( handle_ );
+    Buffer* buffer = gpu_device->access_buffer( handle_ );
     VkDeviceSize offsets[] = { offset };
 
     VkBuffer vk_buffer = buffer->vk_buffer;
     // TODO: add global vertex buffer ?
     if ( buffer->parent_buffer.index != k_invalid_index ) {
-        Buffer* parent_buffer = device->access_buffer( buffer->parent_buffer );
+        Buffer* parent_buffer = gpu_device->access_buffer( buffer->parent_buffer );
         vk_buffer = parent_buffer->vk_buffer;
         offsets[ 0 ] = buffer->global_offset;
     }
@@ -290,12 +294,12 @@ void CommandBuffer::bind_vertex_buffers( BufferHandle* handles, u32 first_bindin
     VkDeviceSize offsets[ 8 ];
 
     for ( u32 i = 0; i < binding_count; ++i ) {
-        Buffer* buffer = device->access_buffer( handles[i] );
+        Buffer* buffer = gpu_device->access_buffer( handles[i] );
 
         VkBuffer vk_buffer = buffer->vk_buffer;
         // TODO: add global vertex buffer ?
         if ( buffer->parent_buffer.index != k_invalid_index ) {
-            Buffer* parent_buffer = device->access_buffer( buffer->parent_buffer );
+            Buffer* parent_buffer = gpu_device->access_buffer( buffer->parent_buffer );
             vk_buffer = parent_buffer->vk_buffer;
             offsets[ i ] = buffer->global_offset;
         }
@@ -311,12 +315,12 @@ void CommandBuffer::bind_vertex_buffers( BufferHandle* handles, u32 first_bindin
 
 void CommandBuffer::bind_index_buffer( BufferHandle handle_, u32 offset_, VkIndexType index_type ) {
 
-    Buffer* buffer = device->access_buffer( handle_ );
+    Buffer* buffer = gpu_device->access_buffer( handle_ );
 
     VkBuffer vk_buffer = buffer->vk_buffer;
     VkDeviceSize offset = offset_;
     if ( buffer->parent_buffer.index != k_invalid_index ) {
-        Buffer* parent_buffer = device->access_buffer( buffer->parent_buffer );
+        Buffer* parent_buffer = gpu_device->access_buffer( buffer->parent_buffer );
         vk_buffer = parent_buffer->vk_buffer;
         offset = buffer->global_offset;
     }
@@ -330,21 +334,21 @@ void CommandBuffer::bind_descriptor_set( DescriptorSetHandle* handles, u32 num_l
     num_offsets = 0;
 
     for ( u32 l = 0; l < num_lists; ++l ) {
-        DescriptorSet* descriptor_set = device->access_descriptor_set( handles[l] );
+        DescriptorSet* descriptor_set = gpu_device->access_descriptor_set( handles[l] );
         vk_descriptor_sets[l] = descriptor_set->vk_descriptor_set;
 
         // Search for dynamic buffers
         const DescriptorSetLayout* descriptor_set_layout = descriptor_set->layout;
         for ( u32 i = 0; i < descriptor_set_layout->num_bindings; ++i ) {
 
-            const u32 binding_point = descriptor_set->bindings[ i ];
+            //const u32 binding_point = descriptor_set->bindings[ i ];
             const DescriptorBinding& rb = descriptor_set_layout->bindings[ i ];
 
             if ( rb.type == VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER ) {
                 // Search for the actual buffer offset
 
                 ResourceHandle buffer_handle = descriptor_set->resources[ i ];
-                Buffer* buffer = device->access_buffer( { buffer_handle } );
+                Buffer* buffer = gpu_device->access_buffer( { buffer_handle } );
 
                 offsets_cache[ num_offsets++ ] = buffer->global_offset;
             }
@@ -355,9 +359,9 @@ void CommandBuffer::bind_descriptor_set( DescriptorSetHandle* handles, u32 num_l
     vkCmdBindDescriptorSets( vk_command_buffer, current_pipeline->vk_bind_point, current_pipeline->vk_pipeline_layout, k_first_set,
                              num_lists, vk_descriptor_sets, num_offsets, offsets_cache );
 
-    if ( device->bindless_supported ) {
+    if ( gpu_device->bindless_supported ) {
         vkCmdBindDescriptorSets( vk_command_buffer, current_pipeline->vk_bind_point, current_pipeline->vk_pipeline_layout, 0,
-                                 1, &device->vulkan_bindless_descriptor_set_cached, 0, nullptr );
+                                 1, &gpu_device->vulkan_bindless_descriptor_set_cached, 0, nullptr );
     }
 }
 
@@ -380,7 +384,7 @@ void CommandBuffer::bind_local_descriptor_set( DescriptorSetHandle* handles, u32
                 // Search for the actual buffer offset
                 const u32 resource_index = descriptor_set->bindings[ i ];
                 ResourceHandle buffer_handle = descriptor_set->resources[ resource_index ];
-                Buffer* buffer = device->access_buffer( { buffer_handle } );
+                Buffer* buffer = gpu_device->access_buffer( { buffer_handle } );
 
                 offsets_cache[ num_offsets++ ] = buffer->global_offset;
             }
@@ -391,9 +395,9 @@ void CommandBuffer::bind_local_descriptor_set( DescriptorSetHandle* handles, u32
     vkCmdBindDescriptorSets( vk_command_buffer, current_pipeline->vk_bind_point, current_pipeline->vk_pipeline_layout, k_first_set,
                              num_lists, vk_descriptor_sets, num_offsets, offsets_cache );
 
-    if ( device->bindless_supported ) {
+    if ( gpu_device->bindless_supported ) {
         vkCmdBindDescriptorSets( vk_command_buffer, current_pipeline->vk_bind_point, current_pipeline->vk_pipeline_layout, 0,
-                                 1, &device->vulkan_bindless_descriptor_set_cached, 0, nullptr );
+                                 1, &gpu_device->vulkan_bindless_descriptor_set_cached, 0, nullptr );
     }
 }
 
@@ -420,10 +424,10 @@ void CommandBuffer::set_viewport( const Viewport* viewport ) {
             vk_viewport.height = -current_framebuffer->height * 1.f;
         }
         else {
-            vk_viewport.width = device->swapchain_width * 1.f;
+            vk_viewport.width = gpu_device->swapchain_width * 1.f;
             // Invert Y with negative height and proper offset - Vulkan has unique Clipping Y.
-            vk_viewport.y = device->swapchain_height * 1.f;
-            vk_viewport.height = -device->swapchain_height * 1.f;
+            vk_viewport.y = gpu_device->swapchain_height * 1.f;
+            vk_viewport.height = -gpu_device->swapchain_height * 1.f;
         }
         vk_viewport.minDepth = 0.0f;
         vk_viewport.maxDepth = 1.0f;
@@ -445,8 +449,8 @@ void CommandBuffer::set_scissor( const Rect2DInt* rect ) {
     else {
         vk_scissor.offset.x = 0;
         vk_scissor.offset.y = 0;
-        vk_scissor.extent.width = device->swapchain_width;
-        vk_scissor.extent.height = device->swapchain_height;
+        vk_scissor.extent.width = gpu_device->swapchain_width;
+        vk_scissor.extent.height = gpu_device->swapchain_height;
     }
 
     vkCmdSetScissor( vk_command_buffer, 0, 1, &vk_scissor );
@@ -459,6 +463,11 @@ void CommandBuffer::clear( f32 red, f32 green, f32 blue, f32 alpha, u32 attachme
 void CommandBuffer::clear_depth_stencil( f32 depth, u8 value ) {
     clear_values[ k_depth_stencil_clear_index ].depthStencil.depth = depth;
     clear_values[ k_depth_stencil_clear_index ].depthStencil.stencil = value;
+}
+
+void CommandBuffer::push_constants( PipelineHandle pipeline, u32 offset, u32 size, void* data ) {
+    Pipeline* pipeline_ = gpu_device->access_pipeline( pipeline );
+    vkCmdPushConstants( vk_command_buffer, pipeline_->vk_pipeline_layout, VK_SHADER_STAGE_ALL, offset, size, data );
 }
 
 void CommandBuffer::draw( TopologyType::Enum topology, u32 first_vertex, u32 vertex_count, u32 first_instance, u32 instance_count ) {
@@ -475,7 +484,7 @@ void CommandBuffer::dispatch( u32 group_x, u32 group_y, u32 group_z ) {
 
 void CommandBuffer::draw_indirect( BufferHandle buffer_handle, u32 draw_count, u32 offset, u32 stride ) {
 
-    Buffer* buffer = device->access_buffer( buffer_handle );
+    Buffer* buffer = gpu_device->access_buffer( buffer_handle );
 
     VkBuffer vk_buffer = buffer->vk_buffer;
     VkDeviceSize vk_offset = offset;
@@ -484,14 +493,14 @@ void CommandBuffer::draw_indirect( BufferHandle buffer_handle, u32 draw_count, u
 }
 
 void CommandBuffer::draw_indirect_count( BufferHandle argument_buffer, u32 argument_offset, BufferHandle count_buffer, u32 count_offset, u32 max_draws, u32 stride ) {
-    Buffer* argument_buffer_ = device->access_buffer( argument_buffer );
-    Buffer* count_buffer_ = device->access_buffer( count_buffer );
+    Buffer* argument_buffer_ = gpu_device->access_buffer( argument_buffer );
+    Buffer* count_buffer_ = gpu_device->access_buffer( count_buffer );
 
     vkCmdDrawIndirectCount( vk_command_buffer, argument_buffer_->vk_buffer, argument_offset, count_buffer_->vk_buffer, count_offset, max_draws, stride );
 }
 
 void CommandBuffer::draw_indexed_indirect( BufferHandle buffer_handle, u32 draw_count, u32 offset, u32 stride ) {
-    Buffer* buffer = device->access_buffer( buffer_handle );
+    Buffer* buffer = gpu_device->access_buffer( buffer_handle );
 
     VkBuffer vk_buffer = buffer->vk_buffer;
     VkDeviceSize vk_offset = offset;
@@ -501,18 +510,24 @@ void CommandBuffer::draw_indexed_indirect( BufferHandle buffer_handle, u32 draw_
 
 void CommandBuffer::draw_mesh_task( u32 task_count, u32 first_task ) {
 
-    device->cmd_draw_mesh_tasks( vk_command_buffer, task_count, first_task );
+    gpu_device->cmd_draw_mesh_tasks( vk_command_buffer, task_count, first_task );
 }
 
-void CommandBuffer::draw_mesh_task_indirect( BufferHandle argument_buffer, u32 argument_offset, BufferHandle count_buffer, u32 count_offset, u32 max_draws, u32 stride ) {
-    Buffer* argument_buffer_ = device->access_buffer( argument_buffer );
-    Buffer* count_buffer_ = device->access_buffer( count_buffer );
+void CommandBuffer::draw_mesh_task_indirect( BufferHandle argument_buffer, u32 argument_offset, u32 command_count, u32 stride ) {
+    Buffer* argument_buffer_ = gpu_device->access_buffer( argument_buffer );
 
-    device->cmd_draw_mesh_tasks_indirect_count( vk_command_buffer, argument_buffer_->vk_buffer, argument_offset, count_buffer_->vk_buffer, count_offset, max_draws, stride );
+    gpu_device->cmd_draw_mesh_tasks_indirect( vk_command_buffer, argument_buffer_->vk_buffer, argument_offset, command_count, stride );
+}
+
+void CommandBuffer::draw_mesh_task_indirect_count( BufferHandle argument_buffer, u32 argument_offset, BufferHandle count_buffer, u32 count_offset, u32 max_draws, u32 stride ) {
+    Buffer* argument_buffer_ = gpu_device->access_buffer( argument_buffer );
+    Buffer* count_buffer_ = gpu_device->access_buffer( count_buffer );
+
+    gpu_device->cmd_draw_mesh_tasks_indirect_count( vk_command_buffer, argument_buffer_->vk_buffer, argument_offset, count_buffer_->vk_buffer, count_offset, max_draws, stride );
 }
 
 void CommandBuffer::dispatch_indirect( BufferHandle buffer_handle, u32 offset ) {
-    Buffer* buffer = device->access_buffer( buffer_handle );
+    Buffer* buffer = gpu_device->access_buffer( buffer_handle );
 
     VkBuffer vk_buffer = buffer->vk_buffer;
     VkDeviceSize vk_offset = offset;
@@ -539,13 +554,13 @@ void CommandBuffer::global_debug_barrier() {
     dependency_info.memoryBarrierCount = 1;
     dependency_info.pMemoryBarriers = &barrier;
 
-    device->cmd_pipeline_barrier2( vk_command_buffer, &dependency_info );
+    gpu_device->cmd_pipeline_barrier2( vk_command_buffer, &dependency_info );
 }
 
 void CommandBuffer::buffer_barrier( BufferHandle buffer_handle, ResourceState old_state, ResourceState new_state, QueueType::Enum source_queue_type, QueueType::Enum destination_queue_type ) {
 
-    Buffer* buffer = device->access_buffer( buffer_handle );
-    util_add_buffer_barrier_ext( device, vk_command_buffer, buffer->vk_buffer, RESOURCE_STATE_UNORDERED_ACCESS, RESOURCE_STATE_UNORDERED_ACCESS, buffer->size,
+    Buffer* buffer = gpu_device->access_buffer( buffer_handle );
+    util_add_buffer_barrier_ext( gpu_device, vk_command_buffer, buffer->vk_buffer, RESOURCE_STATE_UNORDERED_ACCESS, RESOURCE_STATE_UNORDERED_ACCESS, buffer->size,
                                  VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, source_queue_type, destination_queue_type );
 }
 
@@ -558,13 +573,13 @@ void CommandBuffer::barrier( const ExecutionBarrier& barrier ) {
         current_framebuffer = nullptr;
     }
 
-    if ( device->synchronization2_extension_present ) {
+    if ( gpu_device->synchronization2_extension_present ) {
 
         VkImageMemoryBarrier2 image_barriers[ 8 ];
 
         for ( u32 i = 0; i < barrier.num_image_barriers; ++i ) {
             const ImageBarrier& source_barrier = barrier.image_barriers[ i ];
-            Texture* texture = device->access_texture( source_barrier.texture );
+            Texture* texture = gpu_device->access_texture( source_barrier.texture );
 
             VkImageMemoryBarrier2& barrier = image_barriers[ i ];
             barrier = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2 };
@@ -607,7 +622,7 @@ void CommandBuffer::barrier( const ExecutionBarrier& barrier ) {
         dependency_info.pBufferMemoryBarriers = buffer_barriers;
         dependency_info.bufferMemoryBarrierCount = barrier.num_buffer_barriers;
 
-        device->cmd_pipeline_barrier2( vk_command_buffer, &dependency_info );
+        gpu_device->cmd_pipeline_barrier2( vk_command_buffer, &dependency_info );
     }
     else {
         // TODO: implement
@@ -616,7 +631,7 @@ void CommandBuffer::barrier( const ExecutionBarrier& barrier ) {
 }
 
 void CommandBuffer::fill_buffer( BufferHandle buffer, u32 offset, u32 size, u32 data ) {
-    Buffer* vk_buffer = device->access_buffer( buffer );
+    Buffer* vk_buffer = gpu_device->access_buffer( buffer );
 
     vkCmdFillBuffer( vk_command_buffer, vk_buffer->vk_buffer, VkDeviceSize( offset ), size ? VkDeviceSize( size ) : VkDeviceSize( vk_buffer->size ), data);
 }
@@ -626,10 +641,10 @@ void CommandBuffer::push_marker( const char* name ) {
     GPUTimeQuery* time_query = thread_frame_pool->time_queries->push( name );
     vkCmdWriteTimestamp( vk_command_buffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, thread_frame_pool->vulkan_timestamp_query_pool, time_query->start_query_index );
 
-    if ( !device->debug_utils_extension_present )
+    if ( !gpu_device->debug_utils_extension_present )
         return;
 
-    device->push_marker( vk_command_buffer, name );
+    gpu_device->push_marker( vk_command_buffer, name );
 }
 
 void CommandBuffer::pop_marker() {
@@ -638,16 +653,21 @@ void CommandBuffer::pop_marker() {
     GPUTimeQuery* time_query = thread_frame_pool->time_queries->pop();
     vkCmdWriteTimestamp( vk_command_buffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, thread_frame_pool->vulkan_timestamp_query_pool, time_query->end_query_index );
 
-    if ( !device->debug_utils_extension_present )
+    if ( !gpu_device->debug_utils_extension_present )
         return;
 
-    device->pop_marker( vk_command_buffer );
+    gpu_device->pop_marker( vk_command_buffer );
+}
+
+u32 CommandBuffer::get_subgroup_sized( u32 group ) {
+
+    return raptor::ceilu32( group * 1.f / gpu_device->subgroup_size );
 }
 
 void CommandBuffer::upload_texture_data( TextureHandle texture_handle, void* texture_data, BufferHandle staging_buffer_handle, sizet staging_buffer_offset ) {
 
-    Texture* texture = device->access_texture( texture_handle );
-    Buffer* staging_buffer = device->access_buffer( staging_buffer_handle );
+    Texture* texture = gpu_device->access_texture( texture_handle );
+    Buffer* staging_buffer = gpu_device->access_buffer( staging_buffer_handle );
     u32 image_size = texture->width * texture->height * 4;
 
     // Copy buffer_data to staging buffer
@@ -667,19 +687,19 @@ void CommandBuffer::upload_texture_data( TextureHandle texture_handle, void* tex
     region.imageExtent = { texture->width, texture->height, texture->depth };
 
     // Pre copy memory barrier to perform layout transition
-    util_add_image_barrier( device, vk_command_buffer, texture, RESOURCE_STATE_COPY_DEST, 0, 1, false );
+    util_add_image_barrier( gpu_device, vk_command_buffer, texture, RESOURCE_STATE_COPY_DEST, 0, 1, false );
     // Copy from the staging buffer to the image
     vkCmdCopyBufferToImage( vk_command_buffer, staging_buffer->vk_buffer, texture->vk_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region );
 
     // Post copy memory barrier
-    util_add_image_barrier_ext( device,vk_command_buffer, texture, RESOURCE_STATE_COPY_SOURCE,
-                                0, 1, false, device->vulkan_transfer_queue_family, device->vulkan_main_queue_family,
+    util_add_image_barrier_ext( gpu_device,vk_command_buffer, texture, RESOURCE_STATE_COPY_SOURCE,
+                                0, 1, 0, 1, false, gpu_device->vulkan_transfer_queue_family, gpu_device->vulkan_main_queue_family,
                                 QueueType::CopyTransfer, QueueType::Graphics );
 }
 
 void CommandBuffer::copy_texture( TextureHandle src_, TextureHandle dst_, ResourceState dst_state ) {
-    Texture* src = device->access_texture( src_ );
-    Texture* dst = device->access_texture( dst_ );
+    Texture* src = gpu_device->access_texture( src_ );
+    Texture* dst = gpu_device->access_texture( dst_ );
 
     VkImageCopy region = {};
     region.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
@@ -696,23 +716,23 @@ void CommandBuffer::copy_texture( TextureHandle src_, TextureHandle dst_, Resour
     region.extent = { src->width, src->height, src->depth };
 
     // Copy from the staging buffer to the image
-    util_add_image_barrier( device, vk_command_buffer, src, RESOURCE_STATE_COPY_SOURCE, 0, 1, false );
+    util_add_image_barrier( gpu_device, vk_command_buffer, src, RESOURCE_STATE_COPY_SOURCE, 0, 1, false );
     // TODO(marco): maybe we need a state per mip?
     ResourceState old_state = dst->state;
-    util_add_image_barrier( device, vk_command_buffer, dst, RESOURCE_STATE_COPY_DEST, 0, 1, false );
+    util_add_image_barrier( gpu_device, vk_command_buffer, dst, RESOURCE_STATE_COPY_DEST, 0, 1, false );
 
     vkCmdCopyImage( vk_command_buffer, src->vk_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst->vk_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region );
 
     // Prepare first mip to create lower mipmaps
     if ( dst->mip_level_count > 1 ) {
-        util_add_image_barrier( device, vk_command_buffer, dst, RESOURCE_STATE_COPY_SOURCE, 0, 1, false );
+        util_add_image_barrier( gpu_device, vk_command_buffer, dst, RESOURCE_STATE_COPY_SOURCE, 0, 1, false );
     }
 
     i32 w = dst->width;
     i32 h = dst->height;
 
     for ( int mip_index = 1; mip_index < dst->mip_level_count; ++mip_index ) {
-        util_add_image_barrier( device, vk_command_buffer, dst->vk_image, old_state, RESOURCE_STATE_COPY_DEST, mip_index, 1, false );
+        util_add_image_barrier( gpu_device, vk_command_buffer, dst->vk_image, old_state, RESOURCE_STATE_COPY_DEST, mip_index, 1, false );
 
         VkImageBlit blit_region{ };
         blit_region.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
@@ -737,17 +757,99 @@ void CommandBuffer::copy_texture( TextureHandle src_, TextureHandle dst_, Resour
         vkCmdBlitImage( vk_command_buffer, dst->vk_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst->vk_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit_region, VK_FILTER_LINEAR );
 
         // Prepare current mip for next level
-        util_add_image_barrier( device, vk_command_buffer, dst->vk_image, RESOURCE_STATE_COPY_DEST, RESOURCE_STATE_COPY_SOURCE, mip_index, 1, false );
+        util_add_image_barrier( gpu_device, vk_command_buffer, dst->vk_image, RESOURCE_STATE_COPY_DEST, RESOURCE_STATE_COPY_SOURCE, mip_index, 1, false );
     }
 
     // Transition
-    util_add_image_barrier( device, vk_command_buffer, dst, dst_state, 0, dst->mip_level_count, false );
+    util_add_image_barrier( gpu_device, vk_command_buffer, dst, dst_state, 0, dst->mip_level_count, false );
+}
+
+void CommandBuffer::copy_texture( TextureHandle src_, TextureSubResource src_sub, TextureHandle dst_, TextureSubResource dst_sub, ResourceState dst_state ) {
+    Texture* src = gpu_device->access_texture( src_ );
+    Texture* dst = gpu_device->access_texture( dst_ );
+
+    const bool src_is_depth = TextureFormat::is_depth_only( src->vk_format );
+    const bool dst_is_depth = TextureFormat::is_depth_only( dst->vk_format );
+
+    VkImageCopy region = {};
+    region.srcSubresource.aspectMask = src_is_depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+    region.srcSubresource.mipLevel = src_sub.mip_base_level;
+    region.srcSubresource.baseArrayLayer = src_sub.array_base_layer;
+    region.srcSubresource.layerCount = src_sub.array_layer_count;
+
+    region.dstSubresource.aspectMask = dst_is_depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;;
+    region.dstSubresource.mipLevel = dst_sub.mip_base_level;
+    region.dstSubresource.baseArrayLayer = dst_sub.array_base_layer;
+    region.dstSubresource.layerCount = dst_sub.array_layer_count;
+
+    region.dstOffset = { 0, 0, 0 };
+    region.extent = { src->width, src->height, src->depth };
+
+    // Copy from the staging buffer to the image
+    util_add_image_barrier( gpu_device, vk_command_buffer, src, RESOURCE_STATE_COPY_SOURCE, 0, 1, src_is_depth );
+    // TODO(marco): maybe we need a state per mip?
+    ResourceState old_state = dst->state;
+    util_add_image_barrier( gpu_device, vk_command_buffer, dst, RESOURCE_STATE_COPY_DEST, 0, 1, dst_is_depth );
+
+    vkCmdCopyImage( vk_command_buffer, src->vk_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst->vk_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region );
+
+    // Prepare first mip to create lower mipmaps
+    if ( dst->mip_level_count > 1 ) {
+        util_add_image_barrier( gpu_device, vk_command_buffer, dst, RESOURCE_STATE_COPY_SOURCE, 0, 1, src_is_depth );
+    }
+
+    i32 w = dst->width;
+    i32 h = dst->height;
+
+    for ( int mip_index = 1; mip_index < dst->mip_level_count; ++mip_index ) {
+        util_add_image_barrier( gpu_device, vk_command_buffer, dst->vk_image, old_state, RESOURCE_STATE_COPY_DEST, mip_index, 1, dst_is_depth );
+
+        VkImageBlit blit_region{ };
+        blit_region.srcSubresource.aspectMask = src_is_depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+        blit_region.srcSubresource.mipLevel = mip_index - 1;
+        blit_region.srcSubresource.baseArrayLayer = 0;
+        blit_region.srcSubresource.layerCount = 1;
+
+        blit_region.srcOffsets[ 0 ] = { 0, 0, 0 };
+        blit_region.srcOffsets[ 1 ] = { w, h, 1 };
+
+        w /= 2;
+        h /= 2;
+
+        blit_region.dstSubresource.aspectMask = dst_is_depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;;
+        blit_region.dstSubresource.mipLevel = mip_index;
+        blit_region.dstSubresource.baseArrayLayer = 0;
+        blit_region.dstSubresource.layerCount = 1;
+
+        blit_region.dstOffsets[ 0 ] = { 0, 0, 0 };
+        blit_region.dstOffsets[ 1 ] = { w, h, 1 };
+
+        vkCmdBlitImage( vk_command_buffer, dst->vk_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst->vk_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit_region, VK_FILTER_LINEAR );
+
+        // Prepare current mip for next level
+        util_add_image_barrier( gpu_device, vk_command_buffer, dst->vk_image, RESOURCE_STATE_COPY_DEST, RESOURCE_STATE_COPY_SOURCE, mip_index, 1, false );
+    }
+
+    // Transition
+    util_add_image_barrier( gpu_device, vk_command_buffer, dst, dst_state, 0, dst->mip_level_count, dst_is_depth );
+}
+
+void CommandBuffer::copy_buffer( BufferHandle src, sizet src_offset, BufferHandle dst, sizet dst_offset, sizet size ) {
+    Buffer* src_buffer = gpu_device->access_buffer( src );
+    Buffer* dst_buffer = gpu_device->access_buffer( dst );
+
+    VkBufferCopy copy_region{ };
+    copy_region.srcOffset = src_offset;
+    copy_region.dstOffset = dst_offset;
+    copy_region.size = size;
+
+    vkCmdCopyBuffer( vk_command_buffer, src_buffer->vk_buffer, dst_buffer->vk_buffer, 1, &copy_region );
 }
 
 void CommandBuffer::upload_buffer_data( BufferHandle buffer_handle, void* buffer_data, BufferHandle staging_buffer_handle, sizet staging_buffer_offset ) {
 
-    Buffer* buffer = device->access_buffer( buffer_handle );
-    Buffer* staging_buffer = device->access_buffer( staging_buffer_handle );
+    Buffer* buffer = gpu_device->access_buffer( buffer_handle );
+    Buffer* staging_buffer = gpu_device->access_buffer( staging_buffer_handle );
     u32 copy_size = buffer->size;
 
     // Copy buffer_data to staging buffer
@@ -760,14 +862,14 @@ void CommandBuffer::upload_buffer_data( BufferHandle buffer_handle, void* buffer
 
     vkCmdCopyBuffer( vk_command_buffer, staging_buffer->vk_buffer, buffer->vk_buffer, 1, &region );
 
-    util_add_buffer_barrier_ext( device, vk_command_buffer, buffer->vk_buffer, RESOURCE_STATE_COPY_DEST, RESOURCE_STATE_UNDEFINED,
-                                 copy_size, device->vulkan_transfer_queue_family, device->vulkan_main_queue_family,
+    util_add_buffer_barrier_ext( gpu_device, vk_command_buffer, buffer->vk_buffer, RESOURCE_STATE_COPY_DEST, RESOURCE_STATE_UNDEFINED,
+                                 copy_size, gpu_device->vulkan_transfer_queue_family, gpu_device->vulkan_main_queue_family,
                                  QueueType::CopyTransfer, QueueType::Graphics );
 }
 
 void CommandBuffer::upload_buffer_data( BufferHandle src_, BufferHandle dst_ ) {
-    Buffer* src = device->access_buffer( src_ );
-    Buffer* dst = device->access_buffer( dst_ );
+    Buffer* src = gpu_device->access_buffer( src_ );
+    Buffer* dst = gpu_device->access_buffer( dst_ );
 
     RASSERT( src->size == dst->size );
 

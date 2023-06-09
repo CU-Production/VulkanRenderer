@@ -15,7 +15,8 @@
 
 #define FRAME_GRAPH_DEBUG 0
 
-namespace raptor {
+namespace raptor
+{
 
 static FrameGraphResourceType string_to_resource_type( cstring input_type ) {
     if ( strcmp( input_type, "texture" ) == 0 ) {
@@ -374,8 +375,7 @@ static void create_framebuffer( FrameGraph* frame_graph, FrameGraphNode* node ) 
         }
     }
 
-    framebuffer_creation.width = width;
-    framebuffer_creation.height = height;
+    framebuffer_creation.set_width_height( width, height );
     framebuffer_creation.set_scaling( scale_width, scale_height, 1 );
     node->framebuffer = frame_graph->builder->device->create_framebuffer( framebuffer_creation );
 
@@ -695,12 +695,12 @@ void FrameGraph::render( u32 current_frame_index, CommandBuffer* gpu_commands, R
                 }
 
                 if ( input_resource->type == FrameGraphResourceType_Texture ) {
-                    Texture* texture = gpu_commands->device->access_texture( resource->resource_info.texture.handle );
+                    Texture* texture = gpu_commands->gpu_device->access_texture( resource->resource_info.texture.handle );
 
-                    util_add_image_barrier( gpu_commands->device, gpu_commands->vk_command_buffer, texture, RESOURCE_STATE_SHADER_RESOURCE, 0, 1, TextureFormat::has_depth(texture->vk_format) );
+                    util_add_image_barrier( gpu_commands->gpu_device, gpu_commands->vk_command_buffer, texture, RESOURCE_STATE_SHADER_RESOURCE, 0, 1, TextureFormat::has_depth(texture->vk_format) );
                 } else if ( input_resource->type == FrameGraphResourceType_Attachment ) {
                     // TODO: what to do with attachments ?
-                    Texture* texture = gpu_commands->device->access_texture( resource->resource_info.texture.handle );
+                    Texture* texture = gpu_commands->gpu_device->access_texture( resource->resource_info.texture.handle );
                     texture = texture;
                 }
             }
@@ -709,13 +709,13 @@ void FrameGraph::render( u32 current_frame_index, CommandBuffer* gpu_commands, R
                 FrameGraphResource* resource = builder->access_resource( node->outputs[ o ] );
 
                 if ( resource->type == FrameGraphResourceType_Attachment ) {
-                    Texture* texture = gpu_commands->device->access_texture( resource->resource_info.texture.handle );
+                    Texture* texture = gpu_commands->gpu_device->access_texture( resource->resource_info.texture.handle );
 
                     if ( TextureFormat::has_depth( texture->vk_format ) ) {
                         // Is this supported even ?
                         RASSERT( false );
                     } else {
-                        util_add_image_barrier( gpu_commands->device, gpu_commands->vk_command_buffer, texture, RESOURCE_STATE_UNORDERED_ACCESS, 0, 1, false );
+                        util_add_image_barrier( gpu_commands->gpu_device, gpu_commands->vk_command_buffer, texture, RESOURCE_STATE_UNORDERED_ACCESS, 0, 1, false );
                     }
                 }
             }
@@ -741,21 +741,21 @@ void FrameGraph::render( u32 current_frame_index, CommandBuffer* gpu_commands, R
                 }
 
                 if ( input_resource->type == FrameGraphResourceType_Texture ) {
-                    Texture* texture = gpu_commands->device->access_texture( resource->resource_info.texture.handle );
+                    Texture* texture = gpu_commands->gpu_device->access_texture( resource->resource_info.texture.handle );
 
-                    util_add_image_barrier( gpu_commands->device, gpu_commands->vk_command_buffer, texture, RESOURCE_STATE_PIXEL_SHADER_RESOURCE, 0, 1, TextureFormat::has_depth( texture->vk_format ) );
+                    util_add_image_barrier( gpu_commands->gpu_device, gpu_commands->vk_command_buffer, texture, RESOURCE_STATE_PIXEL_SHADER_RESOURCE, 0, 1, TextureFormat::has_depth( texture->vk_format ) );
                 } else if ( input_resource->type == FrameGraphResourceType_Attachment ) {
-                    Texture* texture = gpu_commands->device->access_texture( resource->resource_info.texture.handle );
+                    Texture* texture = gpu_commands->gpu_device->access_texture( resource->resource_info.texture.handle );
 
                     width = texture->width;
                     height = texture->height;
 
                     // For textures that are read-write check if a transition is needed.
                     if ( !TextureFormat::has_depth_or_stencil( texture->vk_format ) ) {
-                        util_add_image_barrier( gpu_commands->device, gpu_commands->vk_command_buffer, texture, RESOURCE_STATE_RENDER_TARGET, 0, 1, false );
+                        util_add_image_barrier( gpu_commands->gpu_device, gpu_commands->vk_command_buffer, texture, RESOURCE_STATE_RENDER_TARGET, 0, 1, false );
                     }
                     else {
-                        util_add_image_barrier( gpu_commands->device, gpu_commands->vk_command_buffer, texture, RESOURCE_STATE_DEPTH_WRITE, 0, 1, true );
+                        util_add_image_barrier( gpu_commands->gpu_device, gpu_commands->vk_command_buffer, texture, RESOURCE_STATE_DEPTH_WRITE, 0, 1, true );
                     }
                 }
             }
@@ -764,19 +764,19 @@ void FrameGraph::render( u32 current_frame_index, CommandBuffer* gpu_commands, R
                 FrameGraphResource* resource = builder->access_resource( node->outputs[ o ] );
 
                 if ( resource->type == FrameGraphResourceType_Attachment ) {
-                    Texture* texture = gpu_commands->device->access_texture( resource->resource_info.texture.handle );
+                    Texture* texture = gpu_commands->gpu_device->access_texture( resource->resource_info.texture.handle );
 
                     width = texture->width;
                     height = texture->height;
 
                     if ( TextureFormat::has_depth( texture->vk_format ) ) {
-                        util_add_image_barrier( gpu_commands->device, gpu_commands->vk_command_buffer, texture, RESOURCE_STATE_DEPTH_WRITE, 0, 1, true );
+                        util_add_image_barrier( gpu_commands->gpu_device, gpu_commands->vk_command_buffer, texture, RESOURCE_STATE_DEPTH_WRITE, 0, 1, true );
 
                         f32* clear_color = resource->resource_info.texture.clear_values;
                         gpu_commands->clear_depth_stencil( clear_color[ 0 ], ( u8 )clear_color[ 1 ] );
 
                     } else {
-                        util_add_image_barrier( gpu_commands->device, gpu_commands->vk_command_buffer, texture, RESOURCE_STATE_RENDER_TARGET, 0, 1, false );
+                        util_add_image_barrier( gpu_commands->gpu_device, gpu_commands->vk_command_buffer, texture, RESOURCE_STATE_RENDER_TARGET, 0, 1, false );
 
                         f32* clear_color = resource->resource_info.texture.clear_values;
                         gpu_commands->clear( clear_color[ 0 ], clear_color[ 1 ], clear_color[ 2 ], clear_color[ 3 ], o );

@@ -77,16 +77,17 @@ void Renderer::init( const RendererCreation& creation ) {
 
     gpu = creation.gpu;
     resident_allocator = creation.allocator;
-    temporary_allocator.init( rkilo( 2 ) );
+    temporary_allocator.init( rkilo( 8 ) );
 
     width = gpu->swapchain_width;
     height = gpu->swapchain_height;
 
-    textures.init( creation.allocator, k_textures_pool_size );
-    buffers.init( creation.allocator, k_buffers_pool_size );
-    samplers.init( creation.allocator, k_samplers_pool_size );
-    materials.init( creation.allocator, 128 );
-    techniques.init( creation.allocator, 128 );
+    const RendererResourcePoolCreation& pool_creation = creation.resource_pool_creation;
+    textures.init( creation.allocator, pool_creation.textures );
+    buffers.init( creation.allocator, pool_creation.buffers );
+    samplers.init( creation.allocator, pool_creation.samplers );
+    materials.init( creation.allocator, pool_creation.materials );
+    techniques.init( creation.allocator, pool_creation.techniques );
 
     resource_cache.init( creation.allocator );
 
@@ -123,18 +124,36 @@ void Renderer::set_loaders( raptor::ResourceManager* manager ) {
 
 }
 
+static void pool_imgui_draw( const ResourcePool& resource_pool, cstring resource_name ) {
+    ImGui::Text( "Pool %s, indices used %u, allocated %u", resource_name, resource_pool.used_indices, resource_pool.pool_size );
+}
+
 void Renderer::imgui_draw() {
 
     ImGui::Text( "GPU used: %s", gpu->get_gpu_name() );
     // Print memory stats
     vmaGetHeapBudgets( gpu->vma_allocator, gpu_heap_budgets.data );
 
-    sizet total_memory_used = 0;
+    sizet memory_used = 0;
+    sizet memory_allocated = 0;
     for ( u32 i = 0; i < gpu->get_memory_heap_count(); ++i ) {
-        total_memory_used += gpu_heap_budgets[ i ].usage;
+        memory_used += gpu_heap_budgets[ i ].usage;
+        memory_allocated += gpu_heap_budgets[ i ].budget;
     }
 
-    ImGui::Text( "GPU Memory Total: %lluMB", total_memory_used / ( 1024 * 1024 ) );
+    ImGui::Text( "GPU Memory Used: %lluMB, Total: %lluMB", memory_used / ( 1024 * 1024 ), memory_allocated / ( 1024 * 1024 ) );
+
+    // Resorce pools
+    ImGui::Separator();
+    pool_imgui_draw( gpu->buffers, "Buffers" );
+    pool_imgui_draw( gpu->textures, "Textures" );
+    pool_imgui_draw( gpu->pipelines, "Pipelines" );
+    pool_imgui_draw( gpu->samplers, "Samplers" );
+    pool_imgui_draw( gpu->descriptor_sets, "DescriptorSets" );
+    pool_imgui_draw( gpu->descriptor_set_layouts, "DescriptorSetLayouts" );
+    pool_imgui_draw( gpu->framebuffers, "Framebuffers" );
+    pool_imgui_draw( gpu->render_passes, "RenderPasses" );
+    pool_imgui_draw( gpu->shaders, "Shaders" );
 }
 
 void Renderer::set_presentation_mode( PresentMode::Enum value ) {
@@ -228,7 +247,7 @@ GpuTechnique* Renderer::create_technique( const GpuTechniqueCreation& creation )
         temporary_allocator.clear();
 
         StringBuffer pipeline_cache_path;
-        pipeline_cache_path.init( 1024, &temporary_allocator );
+        pipeline_cache_path.init( 2048, &temporary_allocator );
 
         for ( u32 i = 0; i < creation.num_creations; ++i ) {
             GpuTechniquePass& pass = technique->passes[ i ];
@@ -239,6 +258,26 @@ GpuTechnique* Renderer::create_technique( const GpuTechniqueCreation& creation )
                 pass.pipeline = gpu->create_pipeline( pass_creation, cache_path );
             } else {
                 pass.pipeline = gpu->create_pipeline( pass_creation );
+            }
+
+            pass.name_hash_to_descriptor_index.init( resident_allocator, 16 );
+            pass.name_hash_to_descriptor_index.set_default_value( u16_max );
+
+            // Cache names of each pass descriptor
+            Pipeline* pipeline = gpu->access_pipeline( pass.pipeline );
+
+            for ( u32 i = 0; i < pipeline->num_active_layouts; ++i) {
+                const DescriptorSetLayout* descriptor_set_layout = pipeline->descriptor_set_layout[ i ];
+                // First global layout is null
+                if ( descriptor_set_layout == nullptr ) {
+                    continue;
+                }
+                
+                for ( u32 b = 0; b < descriptor_set_layout->num_bindings; ++b ) {
+                    const DescriptorBinding& binding = descriptor_set_layout->bindings[ b ];
+                    
+                    pass.name_hash_to_descriptor_index.insert( hash_calculate( binding.name ), ( u16 )binding.index );
+                }
             }
 
             RASSERT( pass_creation.name );
@@ -376,6 +415,7 @@ void Renderer::destroy_technique( GpuTechnique* technique ) {
 
     for ( u32 i = 0; i < technique->passes.size; ++i ) {
         gpu->destroy_pipeline( technique->passes[ i ].pipeline );
+        technique->passes[ i ].name_hash_to_descriptor_index.shutdown();
     }
 
     technique->passes.shutdown();
@@ -410,14 +450,14 @@ static void generate_mipmaps( raptor::Texture* texture, raptor::CommandBuffer* c
     using namespace raptor;
 
     if ( texture->mip_level_count > 1 ) {
-        util_add_image_barrier( cb->device, cb->vk_command_buffer, texture->vk_image, from_transfer_queue ? RESOURCE_STATE_COPY_SOURCE : RESOURCE_STATE_COPY_SOURCE, RESOURCE_STATE_COPY_SOURCE, 0, 1, false );
+        util_add_image_barrier( cb->gpu_device, cb->vk_command_buffer, texture->vk_image, from_transfer_queue ? RESOURCE_STATE_COPY_SOURCE : RESOURCE_STATE_COPY_SOURCE, RESOURCE_STATE_COPY_SOURCE, 0, 1, false );
     }
 
     i32 w = texture->width;
     i32 h = texture->height;
 
     for ( int mip_index = 1; mip_index < texture->mip_level_count; ++mip_index ) {
-        util_add_image_barrier( cb->device, cb->vk_command_buffer, texture->vk_image, RESOURCE_STATE_UNDEFINED, RESOURCE_STATE_COPY_DEST, mip_index, 1, false );
+        util_add_image_barrier( cb->gpu_device, cb->vk_command_buffer, texture->vk_image, RESOURCE_STATE_UNDEFINED, RESOURCE_STATE_COPY_DEST, mip_index, 1, false );
 
         VkImageBlit blit_region{ };
         blit_region.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
@@ -442,15 +482,15 @@ static void generate_mipmaps( raptor::Texture* texture, raptor::CommandBuffer* c
         vkCmdBlitImage( cb->vk_command_buffer, texture->vk_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, texture->vk_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit_region, VK_FILTER_LINEAR );
 
         // Prepare current mip for next level
-        util_add_image_barrier( cb->device, cb->vk_command_buffer, texture->vk_image, RESOURCE_STATE_COPY_DEST, RESOURCE_STATE_COPY_SOURCE, mip_index, 1, false );
+        util_add_image_barrier( cb->gpu_device, cb->vk_command_buffer, texture->vk_image, RESOURCE_STATE_COPY_DEST, RESOURCE_STATE_COPY_SOURCE, mip_index, 1, false );
     }
 
     // Transition
     if ( from_transfer_queue ) {
-        util_add_image_barrier( cb->device, cb->vk_command_buffer, texture->vk_image, ( texture->mip_level_count > 1 ) ? RESOURCE_STATE_COPY_SOURCE : RESOURCE_STATE_COPY_DEST, RESOURCE_STATE_SHADER_RESOURCE, 0, texture->mip_level_count, false );
+        util_add_image_barrier( cb->gpu_device, cb->vk_command_buffer, texture->vk_image, ( texture->mip_level_count > 1 ) ? RESOURCE_STATE_COPY_SOURCE : RESOURCE_STATE_COPY_DEST, RESOURCE_STATE_SHADER_RESOURCE, 0, texture->mip_level_count, false );
     }
     else {
-        util_add_image_barrier( cb->device, cb->vk_command_buffer, texture->vk_image, RESOURCE_STATE_UNDEFINED, RESOURCE_STATE_SHADER_RESOURCE, 0, texture->mip_level_count, false );
+        util_add_image_barrier( cb->gpu_device, cb->vk_command_buffer, texture->vk_image, RESOURCE_STATE_UNDEFINED, RESOURCE_STATE_SHADER_RESOURCE, 0, texture->mip_level_count, false );
     }
 }
 
@@ -469,8 +509,8 @@ void Renderer::add_texture_update_commands( u32 thread_id ) {
 
         Texture* texture = gpu->access_texture( textures_to_update[i] );
 
-        util_add_image_barrier_ext( cb->device, cb->vk_command_buffer, texture->vk_image, RESOURCE_STATE_COPY_DEST, RESOURCE_STATE_COPY_SOURCE,
-                                    0, 1, false, gpu->vulkan_transfer_queue_family, gpu->vulkan_main_queue_family, QueueType::CopyTransfer, QueueType::Graphics );
+        util_add_image_barrier_ext( cb->gpu_device, cb->vk_command_buffer, texture->vk_image, RESOURCE_STATE_COPY_DEST, RESOURCE_STATE_COPY_SOURCE,
+                                    0, 1, 0, 1, false, gpu->vulkan_transfer_queue_family, gpu->vulkan_main_queue_family, QueueType::CopyTransfer, QueueType::Graphics );
 
         generate_mipmaps( texture, cb, true );
     }
@@ -551,6 +591,50 @@ void ResourceCache::shutdown( Renderer* renderer ) {
 u32 GpuTechnique::get_pass_index( cstring name ) {
     const u64 name_hash = hash_calculate( name );
     return name_hash_to_index.get( name_hash );
+}
+
+// GpuTechniquePass ///////////////////////////////////////////////////////
+u32 GpuTechniquePass::get_binding_index( cstring name ) {
+    const u64 name_hash = hash_calculate( name );
+    return name_hash_to_descriptor_index.get( name_hash );
+}
+
+GpuTechniqueDescriptorCreation& GpuTechniqueDescriptorCreation::reset() {
+    descriptor_set_creation.reset();
+    pass = nullptr;
+    descriptor_set_index = 0;
+
+    return *this;
+}
+
+GpuTechniqueDescriptorCreation& GpuTechniqueDescriptorCreation::set_pass( GpuTechniquePass* pass_ ) {
+    pass = pass_;
+
+    return *this;
+}
+
+GpuTechniqueDescriptorCreation& GpuTechniqueDescriptorCreation::set_index( u32 index ) {
+    descriptor_set_index = index;
+
+    return *this;
+}
+
+GpuTechniqueDescriptorCreation& GpuTechniqueDescriptorCreation::buffer( BufferHandle buffer, cstring name ) {
+
+    const u16 binding_index = pass->get_binding_index( name );
+    descriptor_set_creation.buffer( buffer, binding_index );
+    return *this;
+}
+
+GpuTechniqueDescriptorCreation& GpuTechniqueDescriptorCreation::texture( TextureHandle texture, cstring name ) {
+    const u16 binding_index = pass->get_binding_index( name );
+    descriptor_set_creation.texture( texture, binding_index );
+
+    return *this;
+}
+
+DescriptorSetCreation& GpuTechniqueDescriptorCreation::finalize() {
+    return descriptor_set_creation;
 }
 
 } // namespace raptor

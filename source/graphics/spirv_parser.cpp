@@ -404,9 +404,49 @@ void parse_binary( const u32* data, size_t data_size, StringBuffer& name_buffer,
                 id.op = op;
 
                 if ( word_count > 2 ) {
-                    for ( u16 member_index = 0; member_index < word_count - 2; ++member_index ) {
+                    const u32 members_count = word_count - 2;
+                    id.count = members_count;
+                    id.width = 0;
+
+                    for ( u16 member_index = 0; member_index < members_count; ++member_index ) {
                         id.members[ member_index ].id_index = data[ word_index + member_index + 2 ];
+
+                        Id& member_id = ids[ id.members[ member_index ].id_index ];
+
+                        switch ( member_id.op ) {
+
+                            case SpvOpTypeInt:
+                            case SpvOpConstant:
+                            case SpvOpTypeFloat:
+                            {
+                                id.width += member_id.width / 8;
+                                break;
+                            }
+
+                            case SpvOpTypeArray:
+                            case SpvOpTypeMatrix:
+                            case SpvOpTypeVector:
+                            {
+                                const Id& type_id = ids[ member_id.type_index ];
+                                id.width += type_id.width / 8 * member_id.count;
+                                break;
+                            }
+
+                            case SpvOpTypeStruct:
+                            {
+                                // TODO:
+                                //const Id& type_id = ids[ member_id.type_index ];
+                                break;
+                            }
+
+                            default:
+                                break;
+                        }
                     }
+
+                    // Round up to multiple of 16
+                    const u32 size_difference = 16 - ( id.width % 16 );
+                    id.width += size_difference;
                 }
 
                 break;
@@ -556,6 +596,14 @@ void parse_binary( const u32* data, size_t data_size, StringBuffer& name_buffer,
                     add_binding_if_unique( setLayout, binding );
 
                     parse_result->set_count = max( parse_result->set_count, ( id.set + 1 ) );
+
+                    break;
+                }
+                case SpvStorageClassPushConstant:
+                {
+                    Id& push_constants_type = ids[ ids[ id.type_index ].type_index ];
+
+                    parse_result->push_constants_stride = push_constants_type.width;
 
                     break;
                 }

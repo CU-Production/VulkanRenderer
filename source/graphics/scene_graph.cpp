@@ -3,10 +3,11 @@
 #include "foundation/numerics.hpp"
 #include "foundation/time.hpp"
 
+#include "external/cglm/struct/affine.h"
+
 #include <string.h>
 
 namespace raptor {
-
 
 void SceneGraph::init( Allocator* resident_allocator, u32 num_nodes ) {
     nodes_hierarchy.init( resident_allocator, num_nodes, num_nodes );

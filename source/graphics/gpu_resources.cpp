@@ -100,6 +100,19 @@ BufferCreation& BufferCreation::set_device_only( bool value ) {
 }
 
 // TextureCreation ////////////////////////////////////////////////////////
+TextureCreation& TextureCreation::reset() {
+    mip_level_count = 1;
+    array_layer_count = 1;
+    initial_data = nullptr;
+    alias = k_invalid_texture;
+
+    width = height = depth = 1;
+    format = VK_FORMAT_UNDEFINED;
+    flags = 0;
+
+    return *this;
+}
+
 TextureCreation& TextureCreation::set_size( u16 width_, u16 height_, u16 depth_ ) {
     width = width_;
     height = height_;
@@ -152,6 +165,15 @@ TextureCreation& TextureCreation::set_alias( TextureHandle alias_ ) {
 }
 
 // TextureViewCreation ////////////////////////////////////////////////////
+TextureViewCreation& TextureViewCreation::reset() {
+    parent_texture = k_invalid_texture;
+    sub_resource = { 0, 1, 0, 1 };
+    name = nullptr;
+    view_type = VK_IMAGE_VIEW_TYPE_MAX_ENUM;
+
+    return *this;
+}
+
 TextureViewCreation& TextureViewCreation::set_parent_texture( TextureHandle parent_texture_ ) {
     parent_texture = parent_texture_;
 
@@ -159,21 +181,27 @@ TextureViewCreation& TextureViewCreation::set_parent_texture( TextureHandle pare
 }
 
 TextureViewCreation& TextureViewCreation::set_mips( u32 base_mip_, u32 mip_level_count_ ) {
-    mip_base_level = base_mip_;
-    mip_level_count = mip_level_count_;
+    sub_resource.mip_base_level = base_mip_;
+    sub_resource.mip_level_count = mip_level_count_;
 
     return *this;
 }
 
 TextureViewCreation& TextureViewCreation::set_array( u32 base_layer_, u32 layer_count_ ) {
-    array_base_layer = base_layer_;
-    array_layer_count = layer_count_;
+    sub_resource.array_base_layer = base_layer_;
+    sub_resource.array_layer_count = layer_count_;
 
     return *this;
 }
 
 TextureViewCreation& TextureViewCreation::set_name( cstring name_ ) {
     name = name_;
+
+    return *this;
+}
+
+TextureViewCreation& TextureViewCreation::set_view_type( VkImageViewType view_type_ ) {
+    view_type = view_type_;
 
     return *this;
 }
@@ -356,6 +384,8 @@ VertexInputCreation& VertexInputCreation::add_vertex_attribute( const VertexAttr
 // RenderPassOutput ///////////////////////////////////////////////////////
 RenderPassOutput& RenderPassOutput::reset() {
     num_color_formats = 0;
+    multiview_mask = 0;
+
     for ( u32 i = 0; i < k_max_image_outputs; ++i) {
         color_formats[ i ] = VK_FORMAT_UNDEFINED;
         color_final_layouts[ i ] = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -382,6 +412,12 @@ RenderPassOutput& RenderPassOutput::depth( VkFormat format, VkImageLayout layout
 RenderPassOutput& RenderPassOutput::set_depth_stencil_operations( RenderPassOperation::Enum depth_, RenderPassOperation::Enum stencil_ ) {
     depth_operation = depth_;
     stencil_operation = stencil_;
+
+    return *this;
+}
+
+RenderPassOutput& RenderPassOutput::set_multiview_mask( u32 mask ) {
+    multiview_mask = mask;
 
     return *this;
 }
@@ -436,9 +472,14 @@ RenderPassCreation& RenderPassCreation::set_depth_stencil_operations( RenderPass
     return *this;
 }
 
+RenderPassCreation& RenderPassCreation::set_multiview_mask( u32 mask ) {
+    multiview_mask = mask;
+    
+    return *this;
+}
+
 // FramebufferCreation ////////////////////////////////////////////////////
-FramebufferCreation& FramebufferCreation::reset()
-{
+FramebufferCreation& FramebufferCreation::reset() {
     num_render_targets = 0;
     name = nullptr;
     depth_stencil_texture.index = k_invalid_index;
@@ -447,18 +488,20 @@ FramebufferCreation& FramebufferCreation::reset()
     scale_x = 1.f;
     scale_y = 1.f;
 
+    width = 1;
+    height = 1;
+    layers = 1;
+
     return *this;
 }
 
-FramebufferCreation& FramebufferCreation::add_render_texture( TextureHandle texture )
-{
+FramebufferCreation& FramebufferCreation::add_render_texture( TextureHandle texture ) {
     output_textures[ num_render_targets++ ] = texture;
 
     return *this;
 }
 
-FramebufferCreation& FramebufferCreation::set_depth_stencil_texture( TextureHandle texture )
-{
+FramebufferCreation& FramebufferCreation::set_depth_stencil_texture( TextureHandle texture ) {
     depth_stencil_texture = texture;
 
     return *this;
@@ -472,8 +515,21 @@ FramebufferCreation& FramebufferCreation::set_scaling( f32 scale_x_, f32 scale_y
     return *this;
 }
 
-FramebufferCreation& FramebufferCreation::set_name( const char* name_ )
-{
+FramebufferCreation& FramebufferCreation::set_width_height( u32 width_, u32 height_ ) {
+    width = width_;
+    height = height_;
+
+    return *this;
+}
+
+FramebufferCreation& FramebufferCreation::set_layers( u32 layers_ ) {
+    
+    layers = ( u16 )layers_;
+
+    return *this;
+}
+
+FramebufferCreation& FramebufferCreation::set_name( const char* name_ ) {
     name = name_;
 
     return *this;
@@ -535,16 +591,16 @@ cstring to_stage_defines( VkShaderStageFlagBits value ) {
 }
 
 //
-//
+// Texture1D, Texture2D, Texture3D, TextureCube, Texture_1D_Array, Texture_2D_Array, Texture_Cube_Array, Count
 VkImageType to_vk_image_type( TextureType::Enum type ) {
-    static VkImageType s_vk_target[ TextureType::Count ] = { VK_IMAGE_TYPE_1D, VK_IMAGE_TYPE_2D, VK_IMAGE_TYPE_3D, VK_IMAGE_TYPE_1D, VK_IMAGE_TYPE_2D, VK_IMAGE_TYPE_3D };
+    static VkImageType s_vk_target[ TextureType::Count ] = { VK_IMAGE_TYPE_1D, VK_IMAGE_TYPE_2D, VK_IMAGE_TYPE_3D, VK_IMAGE_TYPE_2D, VK_IMAGE_TYPE_1D, VK_IMAGE_TYPE_2D, VK_IMAGE_TYPE_2D };
     return s_vk_target[ type ];
 }
 
 //
 //
 VkImageViewType to_vk_image_view_type( TextureType::Enum type ) {
-    static VkImageViewType s_vk_data[] = { VK_IMAGE_VIEW_TYPE_1D, VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_VIEW_TYPE_3D, VK_IMAGE_VIEW_TYPE_1D_ARRAY, VK_IMAGE_VIEW_TYPE_2D_ARRAY, VK_IMAGE_VIEW_TYPE_CUBE_ARRAY };
+    static VkImageViewType s_vk_data[] = { VK_IMAGE_VIEW_TYPE_1D, VK_IMAGE_VIEW_TYPE_2D, VK_IMAGE_VIEW_TYPE_3D, VK_IMAGE_VIEW_TYPE_CUBE, VK_IMAGE_VIEW_TYPE_1D_ARRAY, VK_IMAGE_VIEW_TYPE_2D_ARRAY, VK_IMAGE_VIEW_TYPE_CUBE_ARRAY };
     return s_vk_data[ type ];
 }
 
@@ -896,7 +952,7 @@ void util_add_image_barrier( GpuDevice* gpu, VkCommandBuffer command_buffer, Tex
 }
 
 void util_add_image_barrier_ext( GpuDevice* gpu, VkCommandBuffer command_buffer, VkImage image, ResourceState old_state, ResourceState new_state,
-                                 u32 base_mip_level, u32 mip_count, bool is_depth, u32 source_family, u32 destination_family,
+                                 u32 base_mip_level, u32 mip_count, u32 base_array_layer, u32 array_layer_count, bool is_depth, u32 source_family, u32 destination_family,
                                  QueueType::Enum source_queue_type, QueueType::Enum destination_queue_type ) {
     if ( gpu->synchronization2_extension_present ) {
         VkImageMemoryBarrier2KHR barrier{ VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2_KHR };
@@ -910,8 +966,8 @@ void util_add_image_barrier_ext( GpuDevice* gpu, VkCommandBuffer command_buffer,
         barrier.dstQueueFamilyIndex = destination_family;
         barrier.image = image;
         barrier.subresourceRange.aspectMask = is_depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
-        barrier.subresourceRange.baseArrayLayer = 0;
-        barrier.subresourceRange.layerCount = 1;
+        barrier.subresourceRange.baseArrayLayer = base_array_layer;
+        barrier.subresourceRange.layerCount = array_layer_count;
         barrier.subresourceRange.baseMipLevel = base_mip_level;
         barrier.subresourceRange.levelCount = mip_count;
 
@@ -926,8 +982,8 @@ void util_add_image_barrier_ext( GpuDevice* gpu, VkCommandBuffer command_buffer,
         barrier.srcQueueFamilyIndex = source_family;
         barrier.dstQueueFamilyIndex = destination_family;
         barrier.subresourceRange.aspectMask = is_depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
-        barrier.subresourceRange.baseArrayLayer = 0;
-        barrier.subresourceRange.layerCount = 1;
+        barrier.subresourceRange.baseArrayLayer = base_array_layer;
+        barrier.subresourceRange.layerCount = array_layer_count;
         barrier.subresourceRange.levelCount = mip_count;
 
         barrier.subresourceRange.baseMipLevel = base_mip_level;
@@ -945,11 +1001,11 @@ void util_add_image_barrier_ext( GpuDevice* gpu, VkCommandBuffer command_buffer,
 }
 
 void util_add_image_barrier_ext( GpuDevice* gpu, VkCommandBuffer command_buffer, Texture* texture, ResourceState new_state,
-                                 u32 base_mip_level, u32 mip_count, bool is_depth, u32 source_family, u32 destination_family,
+                                 u32 base_mip_level, u32 mip_count, u32 base_array_layer, u32 array_layer_count, bool is_depth, u32 source_family, u32 destination_family,
                                  QueueType::Enum source_queue_type, QueueType::Enum destination_queue_type ) {
 
-    util_add_image_barrier_ext( gpu, command_buffer, texture->vk_image, texture->state, new_state, base_mip_level, mip_count, is_depth,
-                                source_family, destination_family, source_queue_type, destination_queue_type );
+    util_add_image_barrier_ext( gpu, command_buffer, texture->vk_image, texture->state, new_state, base_mip_level, mip_count, base_array_layer, array_layer_count,
+                                is_depth, source_family, destination_family, source_queue_type, destination_queue_type );
     texture->state = new_state;
 }
 

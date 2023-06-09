@@ -287,6 +287,26 @@
                     "clear_stencil" : 0
                 }
             ]
+        },
+        {
+            "inputs":
+            [
+                {
+                    "type": "texture",
+                    "name": "dummy_resource"
+                }
+            ],
+            "name": "point_shadows_pass",
+            "enabled": true,
+            "type": "compute",
+            "outputs":
+            [
+                {
+                    "type": "texture",
+                    "external": true,
+                    "name": "point_shadows_depth"
+                }
+            ]
         }
     ]
 }

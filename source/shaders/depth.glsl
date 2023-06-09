@@ -11,6 +11,25 @@ void main() {
 
 #endif // VERTEX
 
+#if defined (VERTEX_DEPTH_CUBEMAP)
+
+#extension GL_EXT_multiview : require
+
+layout ( std140, set = 2, binding = 0 ) readonly uniform Views {
+
+    mat4    view_projections[6];
+    vec4    camera_sphere;
+};
+
+layout(location=0) in vec3 position;
+
+void main() {
+    MeshInstanceDraw mesh_draw = mesh_instance_draws[gl_InstanceIndex];
+    gl_Position = view_projections[gl_ViewIndex] * mesh_draw.model * vec4(position, 1.0);
+}
+
+#endif // VERTEX_DEPTH_CUBEMAP
+
 
 #if defined (FRAGMENT_DEPTH_PRE_SKINNING)
 

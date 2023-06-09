@@ -132,6 +132,7 @@ void glTFScene::init( cstring filename, cstring path, Allocator* resident_alloca
 
     resident_allocator = resident_allocator_;
     renderer = async_loader->renderer;
+
     enki::TaskScheduler* task_scheduler = async_loader->task_scheduler;
     sizet temp_allocator_initial_marker = temp_allocator->get_marker();
 
@@ -791,7 +792,8 @@ void glTFScene::shutdown( Renderer* renderer ) {
         Mesh& mesh = meshes[ mesh_index ];
 
         gpu.destroy_buffer( mesh.pbr_material.material_buffer );
-        gpu.destroy_descriptor_set( mesh.pbr_material.descriptor_set );
+        gpu.destroy_descriptor_set( mesh.pbr_material.descriptor_set_transparent );
+        gpu.destroy_descriptor_set( mesh.pbr_material.descriptor_set_main );
     }
 
     gpu.destroy_buffer( scene_cb );
@@ -823,6 +825,7 @@ void glTFScene::shutdown( Renderer* renderer ) {
         gpu.destroy_buffer( lights_lut_sb[ i ] );
         gpu.destroy_buffer( lights_tiles_sb[ i ] );
         gpu.destroy_buffer( lights_indices_sb[ i ] );
+        gpu.destroy_buffer( lighting_constants_cb[ i ] );
 
         gpu.destroy_descriptor_set( mesh_shader_early_descriptor_set[ i ] );
         gpu.destroy_descriptor_set( mesh_shader_late_descriptor_set[ i ] );
@@ -860,6 +863,8 @@ void glTFScene::shutdown( Renderer* renderer ) {
     // NOTE(marco): we can't destroy this sooner as textures and buffers
     // hold a pointer to the names stored here
     gltf_free( gltf_scene );
+
+    debug_renderer.shutdown();
 }
 
 void glTFScene::prepare_draws( Renderer* renderer, StackAllocator* scratch_allocator, SceneGraph* scene_graph_ ) {
@@ -930,6 +935,8 @@ void glTFScene::prepare_draws( Renderer* renderer, StackAllocator* scratch_alloc
         const i32 node = root_gltf_scene.nodes[ node_index ];
         nodes_to_visit.push( node );
     }
+
+    u32 total_meshlets = 0;
 
     while ( nodes_to_visit.size ) {
         i32 node_index = nodes_to_visit.front();
@@ -1021,9 +1028,13 @@ void glTFScene::prepare_draws( Renderer* renderer, StackAllocator* scratch_alloc
                 mesh_instance.mesh->skin_index = node.skin;
             }
 
+            total_meshlets += mesh_instance.mesh->meshlet_count;
+
             mesh_instances.push( mesh_instance );
         }
     }
+
+    rprint( "Total meshlet instances %u\n", total_meshlets );
 
     // Meshlets buffers
     buffer_creation.reset().set( VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, ResourceUsageType::Immutable, sizeof( GpuMeshlet ) * meshlets.size ).set_name( "meshlet_sb" ).set_data( meshlets.data );
@@ -1064,32 +1075,6 @@ void glTFScene::prepare_draws( Renderer* renderer, StackAllocator* scratch_alloc
         meshlet_instances_indirect_count_sb[ i ] = renderer->gpu->create_buffer( buffer_creation );
     }
 
-    // Create per mesh descriptor sets, using the mesh draw ssbo
-    for ( u32 m = 0; m < meshes.size; ++m ) {
-        Mesh& mesh = meshes[ m ];
-
-        // Create material buffer
-        BufferCreation buffer_creation;
-        buffer_creation.reset().set( VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, ResourceUsageType::Dynamic, sizeof( GpuMaterialData ) ).set_name( "mesh_data" );
-        mesh.pbr_material.material_buffer = renderer->gpu->create_buffer( buffer_creation );
-
-        DescriptorSetCreation ds_creation{};
-        u32 pass_index = 0;
-        if ( mesh.has_skinning() ) {
-            pass_index = main_technique->name_hash_to_index.get( hash_calculate( "transparent_skinning_no_cull" ) );
-        } else {
-            pass_index = main_technique->name_hash_to_index.get( hash_calculate( "transparent_no_cull" ) );
-        }
-
-        DescriptorSetLayoutHandle layout = renderer->gpu->get_descriptor_set_layout( main_technique->passes[ pass_index ].pipeline, k_material_descriptor_set_index );
-        ds_creation.buffer( scene_cb, 0 ).buffer( meshes_sb, 2 ).buffer( mesh_instances_sb, 10 ).set_layout( layout );
-
-        if ( mesh.has_skinning() ) {
-            ds_creation.buffer( skins[ mesh.skin_index ].joint_transforms, 3 );
-        }
-        mesh.pbr_material.descriptor_set = renderer->gpu->create_descriptor_set( ds_creation );
-    }
-
     // Create debug draw buffers
     {
         static constexpr u32 k_max_lines = 64000 + 64000;   // 3D + 2D lines in the same buffer
@@ -1104,41 +1089,96 @@ void glTFScene::prepare_draws( Renderer* renderer, StackAllocator* scratch_alloc
         debug_line_commands_sb = renderer->gpu->create_buffer( buffer_creation );
     }
 
-    //if ( renderer->gpu->mesh_shaders_extension_present )
+    // Create per mesh descriptor sets, using the mesh draw ssbo
+    for ( u32 m = 0; m < meshes.size; ++m ) {
+        Mesh& mesh = meshes[ m ];
+
+        // Create material buffer
+        BufferCreation buffer_creation;
+        buffer_creation.reset().set( VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, ResourceUsageType::Dynamic, sizeof( GpuMaterialData ) ).set_name( "mesh_data" );
+        mesh.pbr_material.material_buffer = renderer->gpu->create_buffer( buffer_creation );
+
+        DescriptorSetCreation ds_creation{};
+        u32 pass_index = 0;
+        u32 depth_pass_index = 0;
+        if ( mesh.has_skinning() ) {
+            pass_index = main_technique->name_hash_to_index.get( hash_calculate( "transparent_skinning_no_cull" ) );
+            depth_pass_index = main_technique->name_hash_to_index.get( hash_calculate( "depth_pre_skinning" ) );
+        } else {
+            pass_index = main_technique->name_hash_to_index.get( hash_calculate( "transparent_no_cull" ) );
+            depth_pass_index = main_technique->name_hash_to_index.get( hash_calculate( "depth_pre" ) );
+        }
+
+        DescriptorSetLayoutHandle layout = renderer->gpu->get_descriptor_set_layout( main_technique->passes[ pass_index ].pipeline, k_material_descriptor_set_index );
+        //DescriptorSetLayout* ds = renderer->gpu->access_descriptor_set_layout( layout );
+        ds_creation.buffer( scene_cb, 0 ).buffer( meshes_sb, 2 ).buffer( mesh_instances_sb, 10 ).buffer( mesh_bounds_sb, 12 )
+            .buffer( debug_line_sb, 20 ).buffer( debug_line_count_sb, 21 ).buffer( debug_line_commands_sb, 22).buffer( mesh_bounds_sb, 25 ).set_layout(layout);
+
+        if ( mesh.has_skinning() ) {
+            ds_creation.buffer( skins[ mesh.skin_index ].joint_transforms, 3 );
+        }
+        // Create main descriptor set
+        mesh.pbr_material.descriptor_set_transparent = renderer->gpu->create_descriptor_set( ds_creation );
+
+        // Create depth descriptor set
+        layout = renderer->gpu->get_descriptor_set_layout( main_technique->passes[ depth_pass_index ].pipeline, k_material_descriptor_set_index );
+        //ds = renderer->gpu->access_descriptor_set_layout( layout );
+        ds_creation.reset().buffer( scene_cb, 0 ).buffer( meshes_sb, 2 ).buffer( mesh_instances_sb, 10 ).buffer( mesh_bounds_sb, 12 ).set_layout( layout );
+        mesh.pbr_material.descriptor_set_main = renderer->gpu->create_descriptor_set( ds_creation );
+    }
+
+
+    // Meshlet and meshlet emulation descriptors
     {
         const u64 meshlet_hashed_name = hash_calculate( "meshlet" );
         GpuTechnique* meshlet_technique = renderer->resource_cache.techniques.get( meshlet_hashed_name );
 
-        u32 meshlet_index = meshlet_technique->get_pass_index( "gbuffer_culling" );
-        DescriptorSetLayoutHandle layout = meshlet_index != u16_max ? renderer->gpu->get_descriptor_set_layout( meshlet_technique->passes[ meshlet_index ].pipeline, k_material_descriptor_set_index ) : k_invalid_layout;
+        if ( renderer->gpu->mesh_shaders_extension_present ) {
+
+            u32 meshlet_index = meshlet_technique->get_pass_index( "gbuffer_culling" );
+            GpuTechniquePass& meshlet_pass = meshlet_technique->passes[ meshlet_index ];
+            DescriptorSetLayoutHandle layout = meshlet_index != u16_max ? renderer->gpu->get_descriptor_set_layout( meshlet_pass.pipeline, k_material_descriptor_set_index ) : k_invalid_layout;
+
+            for ( u32 i = 0; i < k_max_frames; ++i ) {
+                DescriptorSetCreation ds_creation{};
+
+                ds_creation.reset();
+                add_scene_descriptors( ds_creation, meshlet_pass );
+                add_mesh_descriptors( ds_creation, meshlet_pass );
+                add_debug_descriptors( ds_creation, meshlet_pass );
+                add_meshlet_descriptors( ds_creation, meshlet_pass );
+
+                ds_creation.buffer( mesh_task_indirect_early_commands_sb[ i ], 6 ).buffer( mesh_task_indirect_count_early_sb[ i ], 7 ).set_layout( layout );
+
+                mesh_shader_early_descriptor_set[ i ] = renderer->gpu->create_descriptor_set( ds_creation );
+
+                ds_creation.reset();
+                add_scene_descriptors( ds_creation, meshlet_pass );
+                add_mesh_descriptors( ds_creation, meshlet_pass );
+                add_debug_descriptors( ds_creation, meshlet_pass );
+                add_meshlet_descriptors( ds_creation, meshlet_pass );
+
+                ds_creation.buffer( mesh_task_indirect_late_commands_sb[ i ], 6 ).buffer( mesh_task_indirect_count_late_sb[ i ], 7 ).set_layout( layout );
+
+                mesh_shader_late_descriptor_set[ i ] = renderer->gpu->create_descriptor_set( ds_creation );
+            }
+        }
 
         u32 meshlet_emulation_index = meshlet_technique->get_pass_index( "emulation_gbuffer_culling" );
-        DescriptorSetLayoutHandle meshlet_emulation_layout = renderer->gpu->get_descriptor_set_layout( meshlet_technique->passes[ meshlet_emulation_index ].pipeline, k_material_descriptor_set_index );
+        GpuTechniquePass& meshlet_emulation_pass = meshlet_technique->passes[ meshlet_emulation_index ];
+        DescriptorSetLayoutHandle meshlet_emulation_layout = renderer->gpu->get_descriptor_set_layout( meshlet_emulation_pass.pipeline, k_material_descriptor_set_index );
 
         for ( u32 i = 0; i < k_max_frames; ++i ) {
             DescriptorSetCreation ds_creation{};
 
-            if ( renderer->gpu->mesh_shaders_extension_present ) {
-                ds_creation.buffer( scene_cb, 0 ).buffer( meshes_sb, 2 ).buffer( mesh_instances_sb, 10 ).buffer( meshlets_sb, 1 )
-                    .buffer( meshlets_data_sb, 3 ).buffer( meshlets_vertex_pos_sb, 4 ).buffer( meshlets_vertex_data_sb, 5 )
-                    .buffer( mesh_task_indirect_early_commands_sb[ i ], 6 ).buffer( mesh_task_indirect_count_early_sb[ i ], 7 )
-                    .buffer( mesh_bounds_sb, 12 ).buffer( debug_line_sb, 20 ).buffer( debug_line_count_sb, 21 ).buffer( debug_line_commands_sb, 22 ).set_layout( layout );
+            ds_creation.reset();
+            add_scene_descriptors( ds_creation, meshlet_emulation_pass );
+            add_mesh_descriptors( ds_creation, meshlet_emulation_pass );
+            add_debug_descriptors( ds_creation, meshlet_emulation_pass );
+            add_meshlet_descriptors( ds_creation, meshlet_emulation_pass );
 
-                mesh_shader_early_descriptor_set[ i ] = renderer->gpu->create_descriptor_set( ds_creation );
-
-                ds_creation.reset().buffer( scene_cb, 0 ).buffer( meshes_sb, 2 ).buffer( mesh_instances_sb, 10 ).buffer( meshlets_sb, 1 )
-                    .buffer( meshlets_data_sb, 3 ).buffer( meshlets_vertex_pos_sb, 4 ).buffer( meshlets_vertex_data_sb, 5 )
-                    .buffer( mesh_task_indirect_late_commands_sb[ i ], 6 ).buffer( mesh_task_indirect_count_late_sb[ i ], 7 )
-                    .buffer( mesh_bounds_sb, 12 ).buffer( debug_line_sb, 20 ).buffer( debug_line_count_sb, 21 ).buffer( debug_line_commands_sb, 22 ).set_layout( layout );
-
-                mesh_shader_late_descriptor_set[ i ] = renderer->gpu->create_descriptor_set( ds_creation );
-
-            }
-
-            ds_creation.reset().buffer( scene_cb, 0 ).buffer( meshes_sb, 2 ).buffer( mesh_instances_sb, 10 ).buffer( meshlets_sb, 1 )
-                .buffer( meshlets_data_sb, 3 ).buffer( meshlets_vertex_pos_sb, 4 ).buffer( meshlets_vertex_data_sb, 5 )
-                .buffer( mesh_task_indirect_early_commands_sb[ i ], 6 ).buffer( mesh_task_indirect_count_early_sb[ i ], 7 ).buffer( meshlets_instances_sb[ i ], 9 )
-                .buffer( mesh_bounds_sb, 12 ).buffer( debug_line_sb, 20 ).buffer( debug_line_count_sb, 21 ).buffer( debug_line_commands_sb, 22 ).set_layout( meshlet_emulation_layout );
+            ds_creation.buffer( mesh_task_indirect_early_commands_sb[ i ], 6 ).buffer( mesh_task_indirect_count_early_sb[ i ], 7 )
+                .buffer( meshlets_instances_sb[ i ], meshlet_emulation_pass.get_binding_index( "MeshletInstances" ) ).set_layout( meshlet_emulation_layout );
 
             meshlet_emulation_descriptor_set[ i ] = renderer->gpu->create_descriptor_set( ds_creation );
         }
@@ -1148,30 +1188,63 @@ void glTFScene::prepare_draws( Renderer* renderer, StackAllocator* scratch_alloc
 
     lights.init( resident_allocator, k_num_lights );
 
-    // TODO: move this to another area of the code
-    const u32 lights_per_side = raptor::ceilu32( sqrtf( k_num_lights * 1.f ) );
-    for ( u32 i = 0; i < k_num_lights; ++i ) {
+    // Add a first light in a fixed position and then random lights.
+    const u32 lights_per_side = raptor::ceilu32( sqrtf( active_lights * 1.f ) );
+    {
+        const f32 x = 0;
+        const f32 y = .5f;
+        const f32 z = -1.2f;
 
-        const f32 x = ( i % lights_per_side ) - lights_per_side * .5f;
-        const f32 y = 0.05f;
-        const f32 z = ( i / lights_per_side ) - lights_per_side * .5f;
+        float r = 1;
+        float g = 1;
+        float b = 1;
 
-        /*float x = get_random_value( mesh_aabb[ 0 ].x * scale, mesh_aabb[ 1 ].x * scale );
-        float y = get_random_value( mesh_aabb[ 0 ].y * scale, mesh_aabb[ 1 ].y * scale );
-        float z = get_random_value( mesh_aabb[ 0 ].z * scale, mesh_aabb[ 1 ].z * scale );*/
+        {
+            Light new_light{ };
+            new_light.world_position = vec3s{ x, y, z };
+            new_light.radius = 3.888f;
 
-        float r = get_random_value( 0.0f, 1.0f );
-        float g = get_random_value( 0.0f, 1.0f );
-        float b = get_random_value( 0.0f, 1.0f );
+            new_light.color = vec3s{ r, g, b };
+            new_light.intensity = 3.0f;
 
-        Light new_light{ };
-        new_light.world_position = vec3s{ x, y, z };
-        new_light.radius = 0.888f;
+            vec3s aabb_min = glms_vec3_adds( new_light.world_position, -new_light.radius );
+            vec3s aabb_max = glms_vec3_adds( new_light.world_position, new_light.radius );
 
-        new_light.color = vec3s{ r, g, b };
-        new_light.intensity = 3.0f;
+            new_light.aabb_min = vec4s{ aabb_min.x, aabb_min.y, aabb_min.z, 1.0f };
+            new_light.aabb_max = vec4s{ aabb_max.x, aabb_max.y, aabb_max.z, 1.0f };
 
-        lights.push( new_light );
+            lights.push( new_light );
+        }
+
+        for ( u32 i = 1; i < k_num_lights; ++i ) {
+
+            const f32 x = ( i % lights_per_side ) - lights_per_side * .7f;
+            const f32 y = 0.05f;
+            const f32 z = ( i / lights_per_side ) - lights_per_side * .7f;
+
+            /*float x = get_random_value( mesh_aabb[ 0 ].x * scale, mesh_aabb[ 1 ].x * scale );
+            float y = get_random_value( mesh_aabb[ 0 ].y * scale, mesh_aabb[ 1 ].y * scale );
+            float z = get_random_value( mesh_aabb[ 0 ].z * scale, mesh_aabb[ 1 ].z * scale );*/
+
+            f32 r = get_random_value( 0.1f, 1.0f );
+            f32 g = get_random_value( 0.1f, 1.0f );
+            f32 b = get_random_value( 0.1f, 1.0f );
+
+            Light new_light{ };
+            new_light.world_position = vec3s{ x, y, z };
+            new_light.radius = 0.6f;
+
+            vec3s aabb_min = glms_vec3_adds( new_light.world_position, -new_light.radius );
+            vec3s aabb_max = glms_vec3_adds( new_light.world_position,  new_light.radius );
+
+            new_light.aabb_min = vec4s{ aabb_min.x, aabb_min.y, aabb_min.z, 1.0f };
+            new_light.aabb_max = vec4s{ aabb_max.x, aabb_max.y, aabb_max.z, 1.0f };
+
+            new_light.color = vec3s{ r, g, b };
+            new_light.intensity = 3.0f;
+
+            lights.push( new_light );
+        }
     }
 
     {
@@ -1187,7 +1260,13 @@ void glTFScene::prepare_draws( Renderer* renderer, StackAllocator* scratch_alloc
 
         buffer_creation.reset().set( VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, ResourceUsageType::Dynamic, sizeof( u32 )* k_num_lights ).set_name( "light_indices_sb" );
         lights_indices_sb[ i ] = renderer->gpu->create_buffer( buffer_creation );
+
+        buffer_creation.reset().set( VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, ResourceUsageType::Dynamic, sizeof( GpuLightingData ) ).set_name( "lighting_constants_cb" );
+        lighting_constants_cb[ i ] = renderer->gpu->create_buffer( buffer_creation );
     }
+
+    debug_renderer.init( *this, resident_allocator, scratch_allocator );
+
 }
 
 } // namespace raptor

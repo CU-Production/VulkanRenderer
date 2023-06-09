@@ -9,6 +9,26 @@
 #define BINDLESS_BINDING 10
 #define BINDLESS_IMAGES 11
 
+// Lighting defines //////////////////////////////////////////////////////
+
+// NOTE(marco): needs to be kept in sync with k_light_z_bins
+// TODO(marco): use push constant
+#define NUM_BINS 16.0
+#define BIN_WIDTH ( 1.0 / NUM_BINS )
+#define TILE_SIZE 8
+#define NUM_LIGHTS 256
+#define NUM_WORDS ( ( NUM_LIGHTS + 31 ) / 32 )
+
+
+// Cubemap defines ///////////////////////////////////////////////////////
+#define CUBE_MAP_POSITIVE_X 0
+#define CUBE_MAP_NEGATIVE_X 1
+#define CUBE_MAP_POSITIVE_Y 2
+#define CUBE_MAP_NEGATIVE_Y 3
+#define CUBE_MAP_POSITIVE_Z 4
+#define CUBE_MAP_NEGATIVE_Z 5
+#define CUBE_MAP_COUNT 6
+
 #extension GL_ARB_shader_draw_parameters : enable
 
 // Bindless support //////////////////////////////////////////////////////
@@ -20,6 +40,10 @@ layout ( set = GLOBAL_SET, binding = BINDLESS_BINDING ) uniform sampler2D global
 // Alias textures to use the same binding point, as bindless texture is shared
 // between all kind of textures: 1d, 2d, 3d.
 layout ( set = GLOBAL_SET, binding = BINDLESS_BINDING ) uniform sampler3D global_textures_3d[];
+
+layout ( set = GLOBAL_SET, binding = BINDLESS_BINDING ) uniform samplerCube global_textures_cubemaps[];
+
+layout ( set = GLOBAL_SET, binding = BINDLESS_BINDING ) uniform samplerCubeArray global_textures_cubemaps_array[];
 
 // Writeonly images do not need format in layout
 layout( set = GLOBAL_SET, binding = BINDLESS_IMAGES ) writeonly uniform image2D global_images_2d[];
@@ -140,8 +164,16 @@ vec2 octahedral_encode(vec3 n) {
 // Utility method to get world position from raw depth. //////////////////
 vec3 world_position_from_depth( vec2 uv, float raw_depth, mat4 inverse_view_projection ) {
 
-    vec4 H = vec4( uv.x * 2 - 1, uv.y * -2 + 1, raw_depth, 1 );
+    vec4 H = vec4( uv.x * 2 - 1, (1 - uv.y) * 2 - 1, raw_depth, 1.0 );
     vec4 D = inverse_view_projection * H;
+
+    return D.xyz / D.w;
+}
+
+vec3 view_position_from_depth( vec2 uv, float raw_depth, mat4 inverse_projection ) {
+
+    vec4 H = vec4( uv.x * 2 - 1, (1 - uv.y) * 2 - 1, raw_depth, 1.0 );
+    vec4 D = inverse_projection * H;
 
     return D.xyz / D.w;
 }

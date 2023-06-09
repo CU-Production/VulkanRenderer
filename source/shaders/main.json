@@ -235,6 +235,23 @@
 			]
 		},
 		{
+			"name" : "depth_cubemap",
+			"vertex_input" : "depth_pre",
+			"render_pass" : "swapchain",
+			"depth" : {
+				"write" : true,
+				"test" : "less_or_equal"
+			},
+			"cull" : "back",
+			"shaders" : [
+				{
+					"stage" : "vertex",
+					"shader" : "depth.glsl",
+					"includes" : ["platform.h", "scene.h", "mesh.h"]
+				}
+			]
+		},
+		{
 			"name" : "depth_pre_skinning",
 			"vertex_input" : "depth_pre_skinning",
 			"render_pass" : "depth_pre_pass",

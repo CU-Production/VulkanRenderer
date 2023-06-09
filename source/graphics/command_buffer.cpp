@@ -187,7 +187,7 @@ void CommandBuffer::bind_pass( RenderPassHandle handle_, FramebufferHandle frame
                     VkRenderingAttachmentInfo& color_attachment_info = color_attachments_info[ a ];
                     color_attachment_info.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
                     color_attachment_info.imageView = texture->vk_image_view;
-                    color_attachment_info.imageLayout = device->synchronization2_extension_present ? VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+                    color_attachment_info.imageLayout = gpu_device->synchronization2_extension_present ? VK_IMAGE_LAYOUT_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
                     color_attachment_info.resolveMode = VK_RESOLVE_MODE_NONE;
                     color_attachment_info.loadOp = color_op;
                     color_attachment_info.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -199,7 +199,7 @@ void CommandBuffer::bind_pass( RenderPassHandle handle_, FramebufferHandle frame
                 bool has_depth_attachment = framebuffer->depth_stencil_attachment.index != k_invalid_index;
 
                 if ( has_depth_attachment ) {
-                    Texture* texture = device->access_texture( framebuffer->depth_stencil_attachment );
+                    Texture* texture = gpu_device->access_texture( framebuffer->depth_stencil_attachment );
 
                     VkAttachmentLoadOp depth_op;
                     switch ( render_pass->output.depth_operation ) {
@@ -603,7 +603,7 @@ void CommandBuffer::barrier( const ExecutionBarrier& barrier ) {
 
         for ( u32 i = 0; i < barrier.num_buffer_barriers; ++i ) {
             const BufferBarrier& source_barrier = barrier.buffer_barriers[ i ];
-            Buffer* buffer = device->access_buffer( source_barrier.buffer );
+            Buffer* buffer = gpu_device->access_buffer( source_barrier.buffer );
 
             VkBufferMemoryBarrier2& barrier = buffer_barriers[ i ];
             barrier = { VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2 };

@@ -73,6 +73,117 @@ void main() {
         color = calculate_lighting( base_colour, orm, normal, emissive, pixel_world_position );
     }
 
+    if ( debug_modes > 0 ) {
+
+        if ( debug_modes == 1 ) {
+            const vec2 screen_uv = uv_from_pixels(pos.xy, output_width, output_height);
+            const vec3 pixel_world_position = world_position_from_depth(screen_uv, raw_depth, inverse_view_projection);
+
+            imageStore(global_images_2d[debug_texture_index], pos.xy, vec4(pixel_world_position, 1));
+        }
+        else if (debug_modes == 2) {
+
+            const vec2 screen_uv = uv_from_pixels(pos.xy, output_width, output_height);
+            const vec3 pixel_world_position = world_position_from_depth(screen_uv, raw_depth, inverse_view_projection);
+
+            Light light = lights[ 0 ];
+            vec3 position_to_light = light.world_position - pixel_world_position;
+            const float current_depth = length(position_to_light) / light.radius;
+            const float closest_depth = texture(global_textures_cubemaps[nonuniformEXT(cubemap_shadows_index)], vec3(position_to_light)).r;
+
+            imageStore(global_images_2d[debug_texture_index], pos.xy, vec4(current_depth, closest_depth, vector_to_depth_value(position_to_light, light.radius, light.rcp_n_minus_f), 1));
+        }
+        else if (debug_modes == 3) {
+
+            const vec2 screen_uv = uv_from_pixels(pos.xy, output_width, output_height);
+            const vec3 pixel_world_position = world_position_from_depth(screen_uv, raw_depth, inverse_view_projection);
+
+            Light light = lights[ 0 ];
+            const vec3 position_to_light = light.world_position - pixel_world_position;
+            
+            imageStore(global_images_2d[debug_texture_index], pos.xy, vec4(normalize(position_to_light), 1));
+        }
+        else if (debug_modes == 4) {
+
+            const vec2 screen_uv = uv_from_pixels(pos.xy, output_width, output_height);
+            const vec3 pixel_world_position = world_position_from_depth(screen_uv, raw_depth, inverse_view_projection);
+
+            Light light = lights[ 0 ];
+            const vec3 position_to_light = pixel_world_position - light.world_position;
+            
+            imageStore(global_images_2d[debug_texture_index], pos.xy, vec4(normalize(position_to_light), 1));
+        }
+        else if (debug_modes == 5) {
+
+            const vec2 screen_uv = uv_from_pixels(pos.xy, output_width, output_height);
+            const vec3 pixel_world_position = world_position_from_depth(screen_uv, raw_depth, inverse_view_projection);
+
+            Light light = lights[ 0 ];
+            vec3 position_to_light = pixel_world_position - light.world_position;
+            const float current_depth = length(position_to_light) / light.radius;
+            float current_depth2 = vector_to_depth_value(position_to_light, light.radius, light.rcp_n_minus_f);
+            const float closest_depth = texture(global_textures_cubemaps[nonuniformEXT(cubemap_shadows_index)], vec3(position_to_light)).r;
+            
+            imageStore(global_images_2d[debug_texture_index], pos.xy, vec4(current_depth, current_depth2, closest_depth, 1));
+
+            color.rgb = current_depth2 > closest_depth ? vec3(1) : vec3(0);
+        }
+        else if (debug_modes == 6) {
+
+            const vec2 screen_uv = uv_from_pixels(pos.xy, output_width, output_height);
+            const vec3 pixel_world_position = world_position_from_depth(screen_uv, raw_depth, inverse_view_projection);
+
+            Light light = lights[ 0 ];
+            vec3 position_to_light = light.world_position - pixel_world_position;
+            const float current_depth = length(position_to_light) / light.radius;
+            float current_depth2 = vector_to_depth_value(position_to_light, light.radius, light.rcp_n_minus_f);
+            const float closest_depth = texture(global_textures_cubemaps[nonuniformEXT(cubemap_shadows_index)], vec3(position_to_light)).r;
+            
+            imageStore(global_images_2d[debug_texture_index], pos.xy, vec4(current_depth, current_depth2, closest_depth, 1));
+
+            //color.rgb = current_depth2 < closest_depth ? vec3(1) : vec3(0);
+        }
+        else if ( debug_modes == 7 ) {
+            const vec2 screen_uv = uv_from_pixels(pos.xy, output_width, output_height);
+            const vec3 pixel_world_position = world_position_from_depth(screen_uv, raw_depth, inverse_view_projection);
+
+            Light light = lights[ 0 ];
+            const vec3 position_to_light = pixel_world_position - light.world_position;
+
+            // float3 shadowPos = surfacePos - lightPos;
+            // float3 shadowDistance = length(shadowPos);
+            // float3 shadowDir = normalize(shadowPos);
+
+            // // Doing the max of the components tells us 2 things: which cubemap face we're going to use,
+            // // and also what the projected distance is onto the major axis for that face.
+            float projectedDistance = max(max(abs(position_to_light.x), abs(position_to_light.y)), abs(position_to_light.z));
+
+            // fn = 1.0f / (nearZ - farZ);
+            // dest[2][2] = (nearZ + farZ) * fn;
+            // dest[3][2] = 2.0f * nearZ * farZ * fn;
+            float fn = 1.0f / (0.01f - light.radius);
+            float a = (0.01f + light.radius) * fn;
+            float b = 2.0f * 0.01f * light.radius * fn;
+
+            float z = projectedDistance * a + b;
+            float dbDistance = z / projectedDistance;
+
+            const float closest_depth = texture(global_textures_cubemaps[nonuniformEXT(cubemap_shadows_index)], vec3(position_to_light)).r;
+
+            //color.rgb = dbDistance < closest_depth ? vec3(1) : vec3(0);
+            imageStore(global_images_2d[debug_texture_index], pos.xy, vec4(dbDistance, closest_depth, 0, 1));
+            // // Compute the project depth value that matches what would be stored in the depth buffer
+            // // for the current cube map face. "ShadowProjection" is the projection matrix used when
+            // // rendering to the shadow map.
+            // float a = ShadowProjection._33;
+            // float b = ShadowProjection._43;
+            // float z = projectedDistance * a + b;
+            // float dbDistance = z / projectedDistance;
+
+            // return ShadowMap.SampleCmpLevelZero(PCFSampler, shadowDir, dbDistance - Bias);
+        }
+    }
+
     imageStore(global_images_2d[output_index], pos.xy, color);
 }
 

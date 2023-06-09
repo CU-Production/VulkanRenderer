@@ -2,7 +2,7 @@
 	"name" : "fullscreen",
 	"pipelines" : [
 		{
-			"name" : "main",
+			"name" : "main_triangle",
 			"render_pass" : "swapchain",
 			"shaders" : [
 				{

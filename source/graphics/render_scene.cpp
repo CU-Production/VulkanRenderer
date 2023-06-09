@@ -18,18 +18,17 @@
 #include "external/cglm/struct/vec3.h"
 #include "external/cglm/struct/quat.h"
 
+#include "external/cglm/struct/vec2.h"
+#include "external/cglm/struct/mat2.h"
+#include "external/cglm/struct/mat3.h"
+#include "external/cglm/struct/cam.h"
+
 #include "external/stb_image.h"
 #include "external/tracy/tracy/Tracy.hpp"
 
 #include <assimp/cimport.h>
 #include <assimp/scene.h>
 #include <assimp/postprocess.h>
-
-#include "external/cglm/struct/vec2.h"
-#include "external/cglm/struct/mat2.h"
-#include "external/cglm/struct/mat3.h"
-#include "external/cglm/struct/mat4.h"
-#include "external/cglm/struct/cam.h"
 
 #define DEBUG_DRAW_MESHLET_SPHERES 0
 #define DEBUG_DRAW_MESHLET_CONES 0
@@ -130,7 +129,7 @@ void DepthPrePass::render( u32 current_frame_index, CommandBuffer* gpu_commands,
 
         gpu_commands->bind_descriptor_set( &render_scene->mesh_shader_early_descriptor_set[ current_frame_index ], 1, nullptr, 0);
 
-        gpu_commands->draw_mesh_task_indirect( render_scene->mesh_task_indirect_early_commands_sb[ current_frame_index ], offsetof( GpuMeshDrawCommand, indirectMS ), render_scene->mesh_task_indirect_early_commands_sb[ current_frame_index ], 0, render_scene->mesh_instances.size, sizeof( GpuMeshDrawCommand ) );
+        gpu_commands->draw_mesh_task_indirect_count( render_scene->mesh_task_indirect_early_commands_sb[ current_frame_index ], offsetof( GpuMeshDrawCommand, indirectMS ), render_scene->mesh_task_indirect_early_commands_sb[ current_frame_index ], 0, render_scene->mesh_instances.size, sizeof( GpuMeshDrawCommand ) );
     }
     else {
         Material* last_material = nullptr;
@@ -146,7 +145,7 @@ void DepthPrePass::render( u32 current_frame_index, CommandBuffer* gpu_commands,
                 last_material = mesh.pbr_material.material;
             }
 
-            render_scene->draw_mesh_instance( gpu_commands, *mesh_instance_draw.mesh_instance );
+            render_scene->draw_mesh_instance( gpu_commands, *mesh_instance_draw.mesh_instance, false );
         }
     }
 }
@@ -164,9 +163,6 @@ void DepthPrePass::prepare_draws( RenderScene& scene, FrameGraph* frame_graph, A
     enabled = node->enabled;
     if ( !enabled )
         return;
-
-    // Create pipeline state
-    PipelineCreation pipeline_creation;
 
     const u64 hashed_name = hash_calculate( "main" );
     GpuTechnique* main_technique = renderer->resource_cache.techniques.get( hashed_name );
@@ -211,7 +207,7 @@ void DepthPyramidPass::render( u32 current_frame_index, CommandBuffer* gpu_comma
     if ( !enabled )
         return;
 
-    update_depth_pyramid = ( render_scene->scene_data.freeze_occlusion_camera == 0 );
+    update_depth_pyramid = ( render_scene->scene_data.freeze_occlusion_camera() == 0 );
 }
 
 void DepthPyramidPass::post_render( u32 current_frame_index, CommandBuffer* gpu_commands, FrameGraph* frame_graph, RenderScene* render_scene ) {
@@ -338,11 +334,7 @@ void DepthPyramidPass::create_depth_pyramid_resource( Texture* depth_texture ) {
     depth_pyramid = gpu.create_texture( depth_hierarchy_creation );
 
     TextureViewCreation depth_pyramid_view_creation;
-    depth_pyramid_view_creation.parent_texture = depth_pyramid;
-    depth_pyramid_view_creation.array_base_layer = 0;
-    depth_pyramid_view_creation.array_layer_count = 1;
-    depth_pyramid_view_creation.mip_level_count = 1;
-    depth_pyramid_view_creation.name = "depth_pyramid_view";
+    depth_pyramid_view_creation.set_view_type( VK_IMAGE_VIEW_TYPE_2D ).set_parent_texture( depth_pyramid ).set_name( "depth_pyramid_view" );
 
     DescriptorSetCreation descriptor_set_creation{ };
 
@@ -351,7 +343,7 @@ void DepthPyramidPass::create_depth_pyramid_resource( Texture* depth_texture ) {
     DescriptorSetLayoutHandle depth_pyramid_layout = gpu.get_descriptor_set_layout( depth_pyramid_pipeline, k_material_descriptor_set_index );
 
     for ( u32 i = 0; i < depth_pyramid_levels; ++i ) {
-        depth_pyramid_view_creation.mip_base_level = i;
+        depth_pyramid_view_creation.sub_resource.mip_base_level = i;
 
         depth_pyramid_views[ i ] = gpu.create_texture_view( depth_pyramid_view_creation );
 
@@ -435,7 +427,7 @@ void GBufferPass::render( u32 current_frame_index, CommandBuffer* gpu_commands, 
 
         gpu_commands->bind_descriptor_set( &render_scene->mesh_shader_early_descriptor_set[ current_frame_index ], 1, nullptr, 0 );
 
-        gpu_commands->draw_mesh_task_indirect( render_scene->mesh_task_indirect_early_commands_sb[ current_frame_index ], offsetof( GpuMeshDrawCommand, indirectMS ), render_scene->mesh_task_indirect_count_early_sb[ current_frame_index ], 0, render_scene->mesh_instances.size, sizeof( GpuMeshDrawCommand ) );
+        gpu_commands->draw_mesh_task_indirect_count( render_scene->mesh_task_indirect_early_commands_sb[ current_frame_index ], offsetof( GpuMeshDrawCommand, indirectMS ), render_scene->mesh_task_indirect_count_early_sb[ current_frame_index ], 0, render_scene->mesh_instances.size, sizeof( GpuMeshDrawCommand ) );
     }
     else {
         Material* last_material = nullptr;
@@ -451,7 +443,7 @@ void GBufferPass::render( u32 current_frame_index, CommandBuffer* gpu_commands, 
                 last_material = mesh.pbr_material.material;
             }
 
-            render_scene->draw_mesh_instance( gpu_commands, *mesh_instance_draw.mesh_instance );
+            render_scene->draw_mesh_instance( gpu_commands, *mesh_instance_draw.mesh_instance, false );
         }
     }
 }
@@ -503,13 +495,16 @@ void GBufferPass::prepare_draws( RenderScene& scene, FrameGraph* frame_graph, Al
     meshlet_emulation_draw_pipeline = meshlet_technique->passes[ technique_index ].pipeline;
 
     technique_index = meshlet_technique->get_pass_index( "generate_meshlet_index_buffer" );
-    generate_meshlet_index_buffer_pipeline = meshlet_technique->passes[ technique_index ].pipeline;
+    GpuTechniquePass& generate_ib_pass = meshlet_technique->passes[ technique_index ];
+    generate_meshlet_index_buffer_pipeline = generate_ib_pass.pipeline;
 
     technique_index = meshlet_technique->get_pass_index( "generate_meshlet_instances" );
-    generate_meshlets_instances_pipeline = meshlet_technique->passes[ technique_index ].pipeline;
+    GpuTechniquePass& generate_inst_pass = meshlet_technique->passes[ technique_index ];
+    generate_meshlets_instances_pipeline = generate_inst_pass.pipeline;
 
     technique_index = meshlet_technique->get_pass_index( "meshlet_instance_culling" );
-    meshlet_instance_culling_pipeline = meshlet_technique->passes[ technique_index ].pipeline;
+    GpuTechniquePass& inst_cull_pass = meshlet_technique->passes[ technique_index ];
+    meshlet_instance_culling_pipeline = inst_cull_pass.pipeline;
 
     technique_index = meshlet_technique->get_pass_index( "meshlet_write_counts" );
     meshlet_write_counts_pipeline = meshlet_technique->passes[ technique_index ].pipeline;
@@ -520,27 +515,35 @@ void GBufferPass::prepare_draws( RenderScene& scene, FrameGraph* frame_graph, Al
 
     for ( u32 i = 0; i < k_max_frames; ++i ) {
         DescriptorSetCreation ds_creation{};
-        ds_creation.set_layout( layout_generate_ib ).buffer( scene.meshlets_sb, 1 ).buffer( scene.meshlets_data_sb, 3 )
+        ds_creation.set_layout( layout_generate_ib )
             .buffer( scene.mesh_task_indirect_early_commands_sb[ i ], 6 ).buffer( scene.mesh_task_indirect_count_early_sb[ i ], 7 )
-            .buffer( scene.meshlets_index_buffer_sb[ i ], 8 ).buffer( scene.meshlets_instances_sb[ i ], 9 ).buffer( scene.meshes_sb, 2 )
-            .buffer( scene.mesh_instances_sb, 10 ).buffer( scene.meshlets_visible_instances_sb[ i ], 19 );
+            .buffer( scene.meshlets_index_buffer_sb[ i ], 8 ).buffer( scene.meshlets_instances_sb[ i ], 9 ).buffer( scene.meshlets_visible_instances_sb[ i ], 19 );
+        scene.add_scene_descriptors( ds_creation, generate_ib_pass );
+        scene.add_mesh_descriptors( ds_creation, generate_ib_pass );
+        scene.add_meshlet_descriptors( ds_creation, generate_ib_pass );
         generate_meshlet_index_buffer_descriptor_set[ i ] = renderer->gpu->create_descriptor_set( ds_creation );
 
-        ds_creation.reset().set_layout( layout_generate_instances ).buffer( scene.meshlets_sb, 1 ).buffer( scene.meshlets_data_sb, 3 )
+        ds_creation.reset().set_layout( layout_generate_instances )
             .buffer( scene.mesh_task_indirect_early_commands_sb[ i ], 6 ).buffer( scene.mesh_task_indirect_count_early_sb[ i ], 7 )
-            .buffer( scene.meshlets_index_buffer_sb[ i ], 8 ).buffer( scene.meshlets_instances_sb[ i ], 9 ).buffer( scene.meshes_sb, 2 )
-            .buffer( scene.mesh_instances_sb, 10 ).buffer( scene.meshlet_instances_indirect_count_sb[ i ], 17 );
+            .buffer( scene.meshlets_index_buffer_sb[ i ], 8 ).buffer( scene.meshlets_instances_sb[ i ], 9 ).buffer( scene.meshlet_instances_indirect_count_sb[ i ], 17 );
+        scene.add_scene_descriptors( ds_creation, generate_inst_pass );
+        scene.add_mesh_descriptors( ds_creation, generate_inst_pass );
+        scene.add_meshlet_descriptors( ds_creation, generate_inst_pass );
         generate_meshlets_instances_descriptor_set[ i ] = renderer->gpu->create_descriptor_set( ds_creation );
 
         BufferCreation buffer_creation;
         buffer_creation.reset().set( VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, ResourceUsageType::Dynamic, sizeof( u32 ) * 4 ).set_name( "meshlet_instance_culling_indirect_buffer" );
         meshlet_instance_culling_indirect_buffer[ i ] = renderer->gpu->create_buffer( buffer_creation );
 
-        ds_creation.reset().set_layout( layout_instance_culling ).buffer( scene.meshlets_sb, 1 )
-            .buffer( scene.meshlets_instances_sb[ i ], 9 ).buffer( scene.meshes_sb, 2 ).buffer( scene.scene_cb, 0 )
-            .buffer( scene.mesh_instances_sb, 10 ).buffer( scene.meshlets_visible_instances_sb[ i ], 19 )
-            .buffer( scene.mesh_bounds_sb, 12 ).buffer( scene.mesh_task_indirect_count_early_sb[ i ], 7 )
+        ds_creation.reset().set_layout( layout_instance_culling )
+            .buffer( scene.meshlets_instances_sb[ i ], 9 ).buffer( scene.meshlets_visible_instances_sb[ i ], 19 )
+            .buffer( scene.mesh_task_indirect_count_early_sb[ i ], 7 )
             .buffer( scene.mesh_task_indirect_early_commands_sb[ i ], 6 ).buffer( meshlet_instance_culling_indirect_buffer[ i ], 17 );
+
+        scene.add_scene_descriptors( ds_creation, inst_cull_pass );
+        scene.add_mesh_descriptors( ds_creation, inst_cull_pass );
+        scene.add_meshlet_descriptors( ds_creation, inst_cull_pass );
+
         meshlet_instance_culling_descriptor_set[ i ] = renderer->gpu->create_descriptor_set( ds_creation );
 
         // Cache indirect buffer
@@ -557,11 +560,11 @@ void GBufferPass::free_gpu_resources() {
     mesh_instance_draws.shutdown();
 
     for ( u32 i = 0; i < k_max_frames; ++i ) {
-
         gpu.destroy_buffer( meshlet_instance_culling_indirect_buffer[ i ] );
 
         gpu.destroy_descriptor_set( generate_meshlet_index_buffer_descriptor_set[ i ] );
         gpu.destroy_descriptor_set( generate_meshlets_instances_descriptor_set[ i ] );
+
         gpu.destroy_descriptor_set( meshlet_instance_culling_descriptor_set[ i ] );
     }
 }
@@ -634,7 +637,7 @@ void LateGBufferPass::render( u32 current_frame_index, CommandBuffer* gpu_comman
 
         gpu_commands->bind_descriptor_set( &render_scene->mesh_shader_late_descriptor_set[ current_frame_index ], 1, nullptr, 0);
 
-        gpu_commands->draw_mesh_task_indirect( render_scene->mesh_task_indirect_late_commands_sb[ current_frame_index ], offsetof(GpuMeshDrawCommand, indirectMS), render_scene->mesh_task_indirect_count_late_sb[ current_frame_index ], 0, render_scene->mesh_instances.size, sizeof(GpuMeshDrawCommand) );
+        gpu_commands->draw_mesh_task_indirect_count( render_scene->mesh_task_indirect_late_commands_sb[ current_frame_index ], offsetof(GpuMeshDrawCommand, indirectMS), render_scene->mesh_task_indirect_count_late_sb[ current_frame_index ], 0, render_scene->mesh_instances.size, sizeof(GpuMeshDrawCommand) );
     }
 }
 
@@ -716,6 +719,14 @@ void LightPass::prepare_draws( RenderScene& scene, FrameGraph* frame_graph, Allo
     output_texture = frame_graph->access_resource( node->outputs[ 0 ] );
 
     mesh.pbr_material.material = material_pbr;
+
+    // Create debug texture
+    TextureCreation texture_creation;
+    texture_creation.set_size( 1280, 800, 1 ).set_layers( 1 ).set_mips( 1 ).set_format_type( VK_FORMAT_R16G16B16A16_SFLOAT, TextureType::Texture2D )
+        .set_flags( TextureFlags::RenderTarget_mask | TextureFlags::Compute_mask ).set_name( "lighting_debug_texture" );
+
+    lighting_debug_texture = renderer->gpu->create_texture( texture_creation );
+    scene.lighting_debug_texture_index = lighting_debug_texture.index;
 }
 
 void LightPass::upload_gpu_data( RenderScene& scene ) {
@@ -743,18 +754,23 @@ void LightPass::upload_gpu_data( RenderScene& scene ) {
     GpuTechnique* main_technique = renderer->resource_cache.techniques.get( hashed_name );
 
     if ( last_lights_buffer.index != scene.lights_tiles_sb[ 0 ].index ) {
-        scene.renderer->gpu->destroy_descriptor_set( mesh.pbr_material.descriptor_set );
+        scene.renderer->gpu->destroy_descriptor_set( mesh.pbr_material.descriptor_set_transparent );
 
         const u32 pass_index = use_compute ? 1 : 0;
         DescriptorSetCreation ds_creation{};
-        DescriptorSetLayoutHandle layout = renderer->gpu->get_descriptor_set_layout( main_technique->passes[ pass_index ].pipeline, k_material_descriptor_set_index );
+        GpuTechniquePass& pass = main_technique->passes[ pass_index ];
+        DescriptorSetLayoutHandle layout = renderer->gpu->get_descriptor_set_layout( pass.pipeline, k_material_descriptor_set_index );
 
         for ( u32 i = 0; i < k_max_frames; ++i ) {
 
             scene.renderer->gpu->destroy_descriptor_set( lighting_descriptor_set[ i ] );
 
-            ds_creation.reset().buffer( scene.scene_cb, 0 ).buffer( mesh.pbr_material.material_buffer, 1 ).buffer( scene.lights_lut_sb[ i ], 20 ).
-                buffer( scene.lights_list_sb, 21 ).buffer( scene.lights_tiles_sb[ i ], 22 ).buffer( scene.lights_indices_sb[ i ], 25 ).set_layout( layout );
+            // Legacy non-compute descriptor set.
+            ds_creation.reset().set_layout( layout );
+
+            scene.add_lighting_descriptors( ds_creation, pass, i );
+            ds_creation.buffer( mesh.pbr_material.material_buffer, 1 );
+            scene.add_scene_descriptors( ds_creation, pass );
 
             lighting_descriptor_set[ i ] = renderer->gpu->create_descriptor_set( ds_creation );
 
@@ -764,15 +780,17 @@ void LightPass::upload_gpu_data( RenderScene& scene ) {
 
                 GpuTechnique* transparent_technique = renderer->resource_cache.techniques.get( hash_calculate( "meshlet" ) );
                 u32 meshlet_technique_index = transparent_technique->get_pass_index( "transparent_no_cull" );
+                GpuTechniquePass& transparent_pass = transparent_technique->passes[ meshlet_technique_index ];
 
-                DescriptorSetLayoutHandle transparent_layout = renderer->gpu->get_descriptor_set_layout( transparent_technique->passes[ meshlet_technique_index ].pipeline, k_material_descriptor_set_index );
+                DescriptorSetLayoutHandle transparent_layout = renderer->gpu->get_descriptor_set_layout( transparent_pass.pipeline, k_material_descriptor_set_index );
 
-                ds_creation.reset().buffer( scene.scene_cb, 0 ).buffer( scene.meshlets_sb, 1 ).buffer( scene.meshes_sb, 2 )
-                    .buffer( scene.meshlets_data_sb, 3 ).buffer( scene.meshlets_vertex_pos_sb, 4 ).buffer( scene.meshlets_vertex_data_sb, 5 )
-                    .buffer( scene.mesh_task_indirect_early_commands_sb[ i ], 6 ).buffer( scene.mesh_task_indirect_count_early_sb[ i ], 7 )
-                    .buffer( scene.mesh_instances_sb, 10 ).buffer( scene.mesh_bounds_sb, 12 )
-                    .buffer( scene.lights_lut_sb[ i ], 20 ).buffer( scene.lights_list_sb, 21 )
-                    .buffer( scene.lights_tiles_sb[ i ], 22 ).buffer( scene.lights_indices_sb[ i ], 25 ).set_layout( transparent_layout );
+                ds_creation.reset().buffer( scene.mesh_task_indirect_early_commands_sb[ i ], 6 ).buffer( scene.mesh_task_indirect_count_early_sb[ i ], 7 ).set_layout( transparent_layout );
+                ds_creation.buffer( scene.lights_lut_sb[ i ], 20 ).buffer( scene.lights_list_sb, 21 ).buffer( scene.lights_tiles_sb[ i ], 22 ).buffer( scene.lighting_constants_cb[ i ], 23 ).buffer( scene.lights_indices_sb[ i ], 25 );
+
+                scene.add_mesh_descriptors( ds_creation, transparent_pass );
+                scene.add_scene_descriptors( ds_creation, pass );
+                scene.add_meshlet_descriptors( ds_creation, transparent_pass );
+                //scene.add_lighting_descriptors( ds_creation, transparent_pass, i );
 
                 scene.mesh_shader_transparent_descriptor_set[ i ] = renderer->gpu->create_descriptor_set( ds_creation );
             }
@@ -789,7 +807,8 @@ void LightPass::free_gpu_resources() {
     GpuDevice& gpu = *renderer->gpu;
 
     gpu.destroy_buffer( mesh.pbr_material.material_buffer );
-    gpu.destroy_descriptor_set( mesh.pbr_material.descriptor_set );
+    gpu.destroy_descriptor_set( mesh.pbr_material.descriptor_set_transparent );
+    gpu.destroy_texture( lighting_debug_texture );
 
     for ( u32 i = 0; i < k_max_frames; ++i ) {
         gpu.destroy_descriptor_set( lighting_descriptor_set[ i ] );
@@ -823,7 +842,7 @@ void TransparentPass::render( u32 current_frame_index, CommandBuffer* gpu_comman
         // Transparent count is after opaque and total count offset.
         const u32 indirect_count_offset = sizeof( u32 ) * 2;
 
-        gpu_commands->draw_mesh_task_indirect( render_scene->mesh_task_indirect_early_commands_sb[ current_frame_index ], indirect_commands_offset,
+        gpu_commands->draw_mesh_task_indirect_count( render_scene->mesh_task_indirect_early_commands_sb[ current_frame_index ], indirect_commands_offset,
                                                render_scene->mesh_task_indirect_count_early_sb[ current_frame_index ], indirect_count_offset, render_scene->mesh_instances.size, sizeof( GpuMeshDrawCommand ) );
     }
     else {
@@ -840,7 +859,7 @@ void TransparentPass::render( u32 current_frame_index, CommandBuffer* gpu_comman
                 last_material = mesh.pbr_material.material;
             }
 
-            render_scene->draw_mesh_instance( gpu_commands, *mesh_instance_draw.mesh_instance );
+            render_scene->draw_mesh_instance( gpu_commands, *mesh_instance_draw.mesh_instance, true );
         }
     }
 }
@@ -858,9 +877,6 @@ void TransparentPass::prepare_draws( RenderScene& scene, FrameGraph* frame_graph
     enabled = node->enabled;
     if ( !enabled )
         return;
-
-    // Create pipeline state
-    PipelineCreation pipeline_creation;
 
     const u64 hashed_name = hash_calculate( "main" );
     GpuTechnique* main_technique = renderer->resource_cache.techniques.get( hashed_name );
@@ -970,9 +986,8 @@ void DebugPass::render( u32 current_frame_index, CommandBuffer* gpu_commands, Re
 
     PipelineHandle pipeline = renderer->get_pipeline( debug_material, 0 );
 
-    gpu_commands->bind_pipeline( pipeline );
-
 #if ( DEBUG_DRAW_MESHLET_SPHERES || DEBUG_DRAW_POINT_LIGHT_SPHERES )
+    gpu_commands->bind_pipeline( pipeline );
     gpu_commands->bind_vertex_buffer( sphere_mesh_buffer->handle, 0, 0 );
     gpu_commands->bind_index_buffer( sphere_mesh_indices->handle, 0, VK_INDEX_TYPE_UINT32 );
 
@@ -982,6 +997,7 @@ void DebugPass::render( u32 current_frame_index, CommandBuffer* gpu_commands, Re
 #endif
 
 #if DEBUG_DRAW_MESHLET_CONES
+    gpu_commands->bind_pipeline( pipeline );
     gpu_commands->bind_vertex_buffer( cone_mesh_buffer->handle, 0, 0 );
     gpu_commands->bind_index_buffer( cone_mesh_indices->handle, 0, VK_INDEX_TYPE_UINT32 );
 
@@ -1006,6 +1022,9 @@ void DebugPass::render( u32 current_frame_index, CommandBuffer* gpu_commands, Re
     //         gpu_commands->draw_indirect( physics_mesh->draw_indirect_buffer, physics_mesh->vertices.size, 0, sizeof( VkDrawIndirectCommand  ) );
     //     }
     // }
+
+    // Draw cpu debug rendering
+    render_scene->debug_renderer.render( current_frame_index, gpu_commands, render_scene );
 
     // Draw gpu written debug lines
     if ( render_scene->show_debug_gpu_draws ) {
@@ -1054,9 +1073,6 @@ void DebugPass::prepare_draws( RenderScene& scene, FrameGraph* frame_graph, Allo
     enabled = node->enabled;
     if ( !enabled )
        return;
-
-    // Create pipeline state
-    PipelineCreation pipeline_creation;
 
     const u64 hashed_name = hash_calculate( "debug" );
     GpuTechnique* main_technique = renderer->resource_cache.techniques.get( hashed_name );
@@ -1211,7 +1227,7 @@ void DebugPass::prepare_draws( RenderScene& scene, FrameGraph* frame_graph, Allo
 #endif
 
 #if DEBUG_DRAW_POINT_LIGHT_SPHERES
-    for ( u32 i = 0; i < k_num_lights; ++i ) {
+    for ( u32 i = 0; i < scene.active_lights; ++i ) {
         Light& light = scene.lights[ i ];
 
         // Meshlet bounding spheres
@@ -1265,24 +1281,30 @@ void DebugPass::prepare_draws( RenderScene& scene, FrameGraph* frame_graph, Allo
 
         // Finalize pass
         u32 pass_index = main_technique->get_pass_index( "commands_finalize" );
-
-        debug_lines_finalize_pipeline = main_technique->passes[ pass_index ].pipeline;
-        DescriptorSetLayoutHandle layout = renderer->gpu->get_descriptor_set_layout( main_technique->passes[ pass_index ].pipeline, k_material_descriptor_set_index );
+        GpuTechniquePass& pass = main_technique->passes[ pass_index ];
+        debug_lines_finalize_pipeline = pass.pipeline;
+        DescriptorSetLayoutHandle layout = renderer->gpu->get_descriptor_set_layout( pass.pipeline, k_material_descriptor_set_index );
 
         DescriptorSetCreation set_creation{ };
-        set_creation.set_layout( layout ).buffer( scene.scene_cb, 0 ).buffer( scene.debug_line_sb, 20 ).buffer( scene.debug_line_count_sb, 21 ).buffer( scene.debug_line_commands_sb, 22 );
+        set_creation.set_layout( layout );
+        scene.add_scene_descriptors( set_creation, pass );
+        scene.add_debug_descriptors( set_creation, pass );
         debug_lines_finalize_set = renderer->gpu->create_descriptor_set( set_creation );
 
         // Draw pass
         pass_index = main_technique->get_pass_index( "debug_line_gpu" );
+        GpuTechniquePass& line_gpu_pass = main_technique->passes[ pass_index ];
         debug_lines_draw_pipeline = main_technique->passes[ pass_index ].pipeline;
-        layout = renderer->gpu->get_descriptor_set_layout( main_technique->passes[ pass_index ].pipeline, k_material_descriptor_set_index );
+        layout = renderer->gpu->get_descriptor_set_layout( line_gpu_pass.pipeline, k_material_descriptor_set_index );
 
-        set_creation.reset().set_layout( layout ).buffer( scene.scene_cb, 0 ).buffer( scene.debug_line_sb, 20 ).buffer( scene.debug_line_count_sb, 21 ).buffer( scene.debug_line_commands_sb, 22 );
+        set_creation.reset().set_layout( layout );
+        scene.add_scene_descriptors( set_creation, line_gpu_pass );
+        scene.add_debug_descriptors( set_creation, line_gpu_pass );
         debug_lines_draw_set = renderer->gpu->create_descriptor_set( set_creation );
 
         pass_index = main_technique->get_pass_index( "debug_line_2d_gpu" );
-        debug_lines_2d_draw_pipeline = main_technique->passes[ pass_index ].pipeline;
+        GpuTechniquePass& line_2d_gpu_pass = main_technique->passes[ pass_index ];
+        debug_lines_2d_draw_pipeline = line_2d_gpu_pass.pipeline;
 
         debug_line_commands_sb_cache = scene.debug_line_commands_sb;
     }
@@ -1341,7 +1363,7 @@ void DoFPass::render( u32 current_frame_index, CommandBuffer* gpu_commands, Rend
 
     gpu_commands->bind_pipeline( pipeline );
     gpu_commands->bind_vertex_buffer( mesh.position_buffer, 0, 0 );
-    gpu_commands->bind_descriptor_set( &mesh.pbr_material.descriptor_set, 1, nullptr, 0 );
+    gpu_commands->bind_descriptor_set( &mesh.pbr_material.descriptor_set_transparent, 1, nullptr, 0 );
 
     gpu_commands->draw( TopologyType::Triangle, 0, 3, 0, 1 );
 }
@@ -1401,7 +1423,7 @@ void DoFPass::prepare_draws( RenderScene& scene, FrameGraph* frame_graph, Alloca
     DescriptorSetCreation ds_creation{};
     DescriptorSetLayoutHandle layout = renderer->gpu->get_descriptor_set_layout( main_technique->passes[ 0 ].pipeline, k_material_descriptor_set_index );
     ds_creation.buffer( mesh.pbr_material.material_buffer, 0 ).set_layout( layout );
-    mesh.pbr_material.descriptor_set = renderer->gpu->create_descriptor_set( ds_creation );
+    mesh.pbr_material.descriptor_set_transparent = renderer->gpu->create_descriptor_set( ds_creation );
 
     BufferHandle fs_vb = renderer->gpu->get_fullscreen_vertex_buffer();
     mesh.position_buffer = fs_vb;
@@ -1466,38 +1488,7 @@ void DoFPass::free_gpu_resources() {
 
     renderer->destroy_texture( scene_mips );
 
-    gpu.destroy_descriptor_set( mesh.pbr_material.descriptor_set );
-}
-
-//
-// MeshPass ////////////////////////////////////////////////////////
-void MeshPass::render( u32 current_frame_index, CommandBuffer* gpu_commands, RenderScene* render_scene ) {
-    if ( !enabled )
-        return;
-
-    Renderer* renderer = render_scene->renderer;
-
-    const u64 meshlet_hashed_name = hash_calculate( "meshlet" );
-    GpuTechnique* meshlet_technique = renderer->resource_cache.techniques.get( meshlet_hashed_name );
-
-    PipelineHandle pipeline = meshlet_technique->passes[ 0 ].pipeline;
-
-    gpu_commands->bind_pipeline( pipeline );
-
-    gpu_commands->bind_descriptor_set( &render_scene->mesh_shader_early_descriptor_set[ current_frame_index ], 1, nullptr, 0);
-
-    gpu_commands->draw_mesh_task( ( render_scene->meshlets.size + 31 ) / 32, 0 );
-}
-
-void MeshPass::prepare_draws( RenderScene& scene, FrameGraph* frame_graph, Allocator* resident_allocator, StackAllocator* scratch_allocator ) {
-    FrameGraphNode* node = frame_graph->get_node( "mesh_pass" );
-    if ( node == nullptr ) {
-        enabled = false;
-
-        return;
-    }
-
-    enabled = node->enabled;
+    gpu.destroy_descriptor_set( mesh.pbr_material.descriptor_set_transparent );
 }
 
 // CullingEarlyPass /////////////////////////////////////////////////////////
@@ -1585,14 +1576,19 @@ void CullingEarlyPass::prepare_draws( RenderScene& scene, FrameGraph* frame_grap
     GpuTechnique* culling_technique = renderer->resource_cache.techniques.get( hash_calculate( "culling" ) );
     {
         u32 pipeline_index = culling_technique->get_pass_index( "gpu_mesh_culling" );
-        frustum_cull_pipeline = culling_technique->passes[ pipeline_index ].pipeline;
+        GpuTechniquePass& pass = culling_technique->passes[ pipeline_index ];
+        frustum_cull_pipeline = pass.pipeline;
         DescriptorSetLayoutHandle layout = gpu.get_descriptor_set_layout( frustum_cull_pipeline, k_material_descriptor_set_index );
 
         for ( u32 i = 0; i < k_max_frames; ++i ) {
             DescriptorSetCreation ds_creation{};
-            ds_creation.buffer( scene.meshes_sb, 2 ).buffer( scene.mesh_instances_sb, 10 ).buffer( scene.scene_cb, 0 )
-                .buffer( scene.mesh_task_indirect_count_early_sb[ i ], 11 ).buffer( scene.mesh_task_indirect_count_early_sb[ i ], 13 ).buffer(scene.mesh_task_indirect_early_commands_sb[ i ], 1 ).buffer(scene.mesh_task_indirect_culled_commands_sb[ i ], 3 )
-                .buffer( scene.mesh_bounds_sb, 12 ).buffer( scene.debug_line_sb, 20 ).buffer( scene.debug_line_count_sb, 21 ).buffer( scene.debug_line_commands_sb, 22 ).set_layout(layout);
+            ds_creation.buffer( scene.mesh_task_indirect_count_early_sb[ i ], 11 ).buffer( scene.mesh_task_indirect_count_early_sb[ i ], 13 )
+                .buffer(scene.mesh_task_indirect_early_commands_sb[ i ], 1 ).buffer(scene.mesh_task_indirect_culled_commands_sb[ i ], 3 )
+                .set_layout(layout);
+
+            scene.add_scene_descriptors( ds_creation, pass );
+            scene.add_debug_descriptors( ds_creation, pass );
+            scene.add_mesh_descriptors( ds_creation, pass );
 
             frustum_cull_descriptor_set[ i ] = gpu.create_descriptor_set(ds_creation);
         }
@@ -1695,6 +1691,820 @@ void CullingLatePass::free_gpu_resources() {
     }
 }
 
+// PointlightShadowPass ///////////////////////////////////////////////////
+
+void PointlightShadowPass::pre_render( u32 current_frame_index, CommandBuffer* gpu_commands, FrameGraph* frame_graph, RenderScene* render_scene ) {
+
+    if ( !render_scene->pointlight_rendering ) {
+        return;
+    }
+
+    // Perform meshlet against light culling
+    gpu_commands->bind_pipeline( meshlet_culling_pipeline );
+    gpu_commands->bind_descriptor_set( &meshlet_culling_descriptor_set[ current_frame_index ], 1, nullptr, 0 );
+
+    u32 group_x = raptor::ceilu32( render_scene->mesh_instances.size * render_scene->active_lights / 32.0f );
+    gpu_commands->dispatch( group_x, 1, 1 );
+
+    gpu_commands->global_debug_barrier();
+
+    // Write commands
+    gpu_commands->bind_pipeline( meshlet_write_commands_pipeline );
+    gpu_commands->bind_descriptor_set( &meshlet_write_commands_descriptor_set[ current_frame_index ], 1, nullptr, 0 );
+
+    group_x = raptor::ceilu32( render_scene->active_lights / 32.0f );
+    gpu_commands->dispatch( group_x, 1, 1 );
+
+    gpu_commands->global_debug_barrier();
+
+    // Calculate shadow resolution
+    // Upload lights aabbs
+    GpuDevice* gpu = renderer->gpu;
+    vec4s* gpu_light_aabbs = ( vec4s* )gpu->map_buffer( {light_aabbs, 0, 0} );
+    if ( gpu_light_aabbs ) {
+
+        for ( u32 l = 0; l < render_scene->active_lights; ++l ) {
+            const Light& light = render_scene->lights[ l ];
+
+            gpu_light_aabbs[ l * 2 ] = light.aabb_min;
+            gpu_light_aabbs[ l * 2 + 1 ] = light.aabb_max;
+        }
+
+        gpu->unmap_buffer( { light_aabbs, 0, 0 } );
+    }
+
+    gpu_commands->bind_pipeline( shadow_resolution_pipeline );
+    gpu_commands->bind_descriptor_set( &shadow_resolution_descriptor_set[ current_frame_index ], 1, nullptr, 0 );
+
+    gpu_commands->push_constants( shadow_resolution_pipeline, 0, 16, &render_scene->mesh_draw_counts.depth_pyramid_texture_index );
+
+    // 8 is the group size on both x and y for this shader.
+
+    /*const u32 z_count = 32;
+    const f32 tile_size = 8.0f;
+    const f32 tile_pixels = tile_size * tile_size;
+    const u32 tile_x_count = ( render_scene->scene_data.resolution_x / f32( tile_size ) + 7 ) / 8;
+    const u32 tile_y_count = ( render_scene->scene_data.resolution_y / f32( tile_size ) + 7 ) / 8;*/
+
+    gpu_commands->buffer_barrier( shadow_resolutions[ current_frame_index ], ResourceState::RESOURCE_STATE_COPY_SOURCE, ResourceState::RESOURCE_STATE_UNORDERED_ACCESS, QueueType::Graphics, QueueType::Graphics );
+
+    gpu_commands->fill_buffer( shadow_resolutions[ current_frame_index ], 0, sizeof( u32 ) * render_scene->active_lights, 0 );
+
+    const f32 tile_size = 64.0f * 8.0f;
+    const u32 tile_x_count = raptor::ceilu32( render_scene->scene_data.resolution_x / tile_size  );
+    const u32 tile_y_count = raptor::ceilu32(render_scene->scene_data.resolution_y / tile_size );
+    gpu_commands->dispatch( tile_x_count, tile_y_count, 1 );
+
+    gpu_commands->buffer_barrier( shadow_resolutions[ current_frame_index ], ResourceState::RESOURCE_STATE_UNORDERED_ACCESS, ResourceState::RESOURCE_STATE_COPY_SOURCE, QueueType::Graphics, QueueType::Graphics );
+
+    gpu_commands->copy_buffer( shadow_resolutions[ current_frame_index ], 0, shadow_resolutions_readback[ current_frame_index ], 0, sizeof( u32 ) * k_num_lights );
+}
+
+static void calculate_cubemap_view_projection( vec3s light_world_position, f32 light_radius, u32 face_index, mat4s& out_view_projection ) {
+
+    const mat4s translation = glms_translate_make( glms_vec3_scale( light_world_position, -1.f ) );
+    const mat4s projection = glms_perspective( glm_rad( 90.f ), 1.f, 0.01f, light_radius );
+
+    switch ( face_index ) {
+        case 0:
+        {
+            // Positive X
+            mat4s rotation_matrix = glms_rotate( glms_mat4_identity(), glm_rad( 90.f ), { 0.f, 1.f, 0.f } );
+            rotation_matrix = glms_rotate( rotation_matrix, glm_rad( 180.f ), { 1.f, 0.f, 0.f } );
+            mat4s view = glms_mat4_mul( rotation_matrix, translation );
+
+            out_view_projection = glms_mat4_mul( projection, view );
+
+            break;
+        }
+        case 1:
+        {
+            // Negative X
+            mat4s rotation_matrix = glms_rotate( glms_mat4_identity(), glm_rad( -90.f ), { 0.f, 1.f, 0.f } );
+            rotation_matrix = glms_rotate( rotation_matrix, glm_rad( 180.f ), { 1.f, 0.f, 0.f } );
+            mat4s view = glms_mat4_mul( rotation_matrix, translation );
+
+            out_view_projection = glms_mat4_mul( projection, view );
+
+            break;
+        }
+        case 2:
+        {
+            // Positive Y
+            mat4s rotation_matrix = glms_rotate( glms_mat4_identity(), glm_rad( -90.f ), { 1.f, 0.f, 0.f } );
+            mat4s view = glms_mat4_mul( rotation_matrix, translation );
+
+            out_view_projection = glms_mat4_mul( projection, view );
+
+            break;
+        }
+        case 3:
+        {
+            mat4s rotation_matrix = glms_rotate( glms_mat4_identity(), glm_rad( 90.f ), { 1.f, 0.f, 0.f } );
+            mat4s view = glms_mat4_mul( rotation_matrix, translation );
+
+            out_view_projection = glms_mat4_mul( projection, view );
+
+            break;
+        }
+        case 4:
+        {
+            mat4s rotation_matrix = glms_rotate( glms_mat4_identity(), glm_rad( 180.f ), { 1.f, 0.f, 0.f } );
+            mat4s view = glms_mat4_mul( rotation_matrix, translation );
+
+            out_view_projection = glms_mat4_mul( projection, view );
+
+            break;
+        }
+        case 5:
+        {
+            mat4s rotation_matrix = glms_rotate( glms_mat4_identity(), glm_rad( 180.f ), { 0.f, 0.f, 1.f } );
+            mat4s view = glms_mat4_mul( rotation_matrix, translation );
+
+            out_view_projection = glms_mat4_mul( projection, view );
+
+            break;
+        }
+        default:
+        {
+            RASSERTM( false, "Error face index %u is invalid\n", face_index );
+            break;
+        }
+    }
+}
+
+void PointlightShadowPass::render( u32 current_frame_index, CommandBuffer* gpu_commands, RenderScene* render_scene ) {
+
+    if ( !render_scene->pointlight_rendering ) {
+        return;
+    }
+
+    GpuDevice* gpu = renderer->gpu;
+
+    // Tetrahedron mesh test
+    if ( render_scene->use_tetrahedron_shadows ) {
+
+        // TODO: recreate dependent resources
+
+        // Clear
+        Texture* depth_texture_array = gpu->access_texture( tetrahedron_shadow_texture );
+        const u32 layer_count = 1;
+
+        u32 width = depth_texture_array->width;
+        u32 height = depth_texture_array->height;
+        // Perform manual clear of active lights shadowmaps.
+        {
+            util_add_image_barrier_ext( gpu, gpu_commands->vk_command_buffer, depth_texture_array, RESOURCE_STATE_COPY_DEST, 0, 1, 0, layer_count, true );
+
+            // TODO: Clearing 256 cubemaps is incredibly slow, for the future try with point sprites at far with depth test always.
+            VkClearRect clear_rect;
+            clear_rect.baseArrayLayer = 0;
+            clear_rect.layerCount = layer_count;
+            clear_rect.rect.extent.width = width;
+            clear_rect.rect.extent.height = height;
+            clear_rect.rect.offset.x = 0;
+            clear_rect.rect.offset.y = 0;
+
+            VkClearDepthStencilValue clear_depth_stencil_value;
+            clear_depth_stencil_value.depth = 1.f;
+
+            VkImageSubresourceRange clear_range;
+            clear_range.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+            clear_range.baseArrayLayer = 0;
+            clear_range.baseMipLevel = 0;
+            clear_range.levelCount = 1;
+            clear_range.layerCount = layer_count;
+            vkCmdClearDepthStencilImage( gpu_commands->vk_command_buffer, depth_texture_array->vk_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear_depth_stencil_value, 1, &clear_range );
+
+            util_add_image_barrier_ext( gpu, gpu_commands->vk_command_buffer, depth_texture_array, RESOURCE_STATE_DEPTH_WRITE, 0, 1, 0, layer_count, true );
+        }
+
+        depth_texture_array->state = RESOURCE_STATE_DEPTH_WRITE;
+
+        // Setup scissor and viewport
+        Rect2DInt scissor{ 0, 0,( u16 )width, ( u16 )height };
+        gpu_commands->set_scissor( &scissor );
+
+        Viewport viewport{ };
+        viewport.rect = { 0, 0, ( u16 )width, ( u16 )height };
+        viewport.min_depth = 0.0f;
+        viewport.max_depth = 1.0f;
+
+        gpu_commands->set_viewport( &viewport );
+
+        gpu_commands->bind_pass( cubemap_render_pass, tetrahedron_framebuffer, false );
+
+        if ( render_scene->shadow_constants_cpu_update ) {
+            // TODO:
+
+            // From the paper, we add extra room to support soft shadows.
+            const f32 fov0 = 143.98570868f + 1.99273682f;
+            const f32 fov1 = 125.26438968f + 2.78596497f;
+
+            MapBufferParameters view_projections_cb_map = { pointlight_view_projections_cb[ current_frame_index ], 0, 0 };
+            MapBufferParameters light_spheres_cb_map = { pointlight_spheres_cb[ current_frame_index ], 0, 0 };
+
+            mat4s* gpu_view_projections = ( mat4s* )gpu->map_buffer( view_projections_cb_map );
+            vec4s* gpu_light_spheres = ( vec4s* )gpu->map_buffer( light_spheres_cb_map );
+
+            if ( gpu_view_projections && gpu_light_spheres ) {
+
+                mat4s face_rotation_matrices[ 4 ];
+                /*Matrix4 xRotMatrix, yRotMatrix, zRotMatrix;
+                xRotMatrix.SetRotationY( 180.0f );
+                yRotMatrix.SetRotationX( 27.36780516f );
+                tiledShadowRotMatrices[ 0 ] = yRotMatrix * xRotMatrix;*/
+                mat4s rotation_matrix_x = glms_rotate_x( glms_mat4_identity(), glm_rad( 27.36780516f ) );
+                mat4s rotation_matrix_y = glms_rotate_y( glms_mat4_identity(), glm_rad( 180.f ) );
+                face_rotation_matrices[ 0 ] = glms_mat4_mul( rotation_matrix_y, rotation_matrix_x );
+
+                /*xRotMatrix.SetRotationY( 0.0f );
+                yRotMatrix.SetRotationX( 27.36780516f );
+                zRotMatrix.SetRotationZ( 90.0f );
+                tiledShadowRotMatrices[ 1 ] = zRotMatrix * yRotMatrix * xRotMatrix;*/
+                rotation_matrix_x = glms_rotate_x( glms_mat4_identity(), glm_rad( 27.36780516f ) );
+                rotation_matrix_y = glms_rotate_y( glms_mat4_identity(), glm_rad( 0.f ) );
+                mat4s rotation_matrix_z = glms_rotate_y( glms_mat4_identity(), glm_rad( 90.f ) );
+                face_rotation_matrices[ 1 ] = glms_mat4_mul( rotation_matrix_z, glms_mat4_mul( rotation_matrix_y, rotation_matrix_x ) );
+
+                /*xRotMatrix.SetRotationY( 270.0f );
+                yRotMatrix.SetRotationX( -27.36780516f );
+                tiledShadowRotMatrices[ 2 ] = yRotMatrix * xRotMatrix;*/
+                rotation_matrix_x = glms_rotate_x( glms_mat4_identity(), glm_rad( -27.36780516f ) );
+                rotation_matrix_y = glms_rotate_y( glms_mat4_identity(), glm_rad( 270.f ) );
+                face_rotation_matrices[ 2 ] = glms_mat4_mul( rotation_matrix_y, rotation_matrix_x );
+
+                /*xRotMatrix.SetRotationY( 90.0f );
+                yRotMatrix.SetRotationX( -27.36780516f );
+                zRotMatrix.SetRotationZ( 90.0f );
+                tiledShadowRotMatrices[ 3 ] = zRotMatrix * yRotMatrix * xRotMatrix;*/
+                rotation_matrix_x = glms_rotate_x( glms_mat4_identity(), glm_rad( -27.36780516f ) );
+                rotation_matrix_y = glms_rotate_y( glms_mat4_identity(), glm_rad( 90.f ) );
+                rotation_matrix_z = glms_rotate_y( glms_mat4_identity(), glm_rad( 90.f ) );
+                face_rotation_matrices[ 3 ] = glms_mat4_mul( rotation_matrix_z, glms_mat4_mul( rotation_matrix_y, rotation_matrix_x ) );
+
+                /*Matrix4 shadowTexMatrices[ 4 ];
+                shadowTexMatrices[ 0 ].Set( tile.size, 0.0f, 0.0f, 0.0f,  0.0f, tile.size * 0.5f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f,
+                                            tile.position.x, tile.position.y - ( tile.size * 0.5f ), 0.0f, 1.0f );
+                shadowTexMatrices[ 1 ].Set( tile.size * 0.5f, 0.0f, 0.0f, 0.0f, 0.0f, tile.size, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f,
+                                            tile.position.x + ( tile.size * 0.5f ), tile.position.y, 0.0f, 1.0f );
+                shadowTexMatrices[ 2 ].Set( tile.size, 0.0f, 0.0f, 0.0f, 0.0f, tile.size * 0.5f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f,
+                                            tile.position.x, tile.position.y + ( tile.size * 0.5f ), 0.0f, 1.0f );
+                shadowTexMatrices[ 3 ].Set( tile.size * 0.5f, 0.0f, 0.0f, 0.0f, 0.0f, tile.size, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f,
+                                            tile.position.x - ( tile.size * 0.5f ), tile.position.y, 0.0f, 1.0f );*/
+                mat4s shadow_texture_matrices[ 4 ];
+                f32 tile_size = 1.f;
+                f32 tile_position_x = 0.f;
+                f32 tile_position_y = 0.f;
+                shadow_texture_matrices[ 0 ].col[ 0 ] = { tile_size, 0.f ,0.f, 0.f };
+                shadow_texture_matrices[ 0 ].col[ 1 ] = { 0.f, tile_size * .5f, 0.f, 0.f };
+                shadow_texture_matrices[ 0 ].col[ 2 ] = { 0.f, 0.f, 1.f, 0.f };
+                shadow_texture_matrices[ 0 ].col[ 3 ] = { tile_position_x, tile_position_y - (tile_size * .5f), 0.f, 1.f };
+                shadow_texture_matrices[ 1 ].col[ 0 ] = { tile_size * .5f, 0.f ,0.f, 0.f };
+                shadow_texture_matrices[ 1 ].col[ 1 ] = { 0.f, tile_size, 0.f, 0.f };
+                shadow_texture_matrices[ 1 ].col[ 2 ] = { 0.f, 0.f, 1.f, 0.f };
+                shadow_texture_matrices[ 1 ].col[ 3 ] = { tile_position_x + (tile_size * .5f), tile_position_y, 0.f, 1.f };
+                shadow_texture_matrices[ 2 ].col[ 0 ] = { tile_size, 0.f ,0.f, 0.f };
+                shadow_texture_matrices[ 2 ].col[ 1 ] = { 0.f, tile_size * .5f, 0.f, 0.f };
+                shadow_texture_matrices[ 2 ].col[ 2 ] = { 0.f, 0.f, 1.f, 0.f };
+                shadow_texture_matrices[ 2 ].col[ 3 ] = { tile_position_x, tile_position_y + (tile_size * .5f), 0.f, 1.f };
+                shadow_texture_matrices[ 3 ].col[ 0 ] = { tile_size * .5f, 0.f, 0.f, 0.f };
+                shadow_texture_matrices[ 3 ].col[ 1 ] = { 0.f, tile_size, 0.f, 0.f };
+                shadow_texture_matrices[ 3 ].col[ 2 ] = { 0.f, 0.f, 0.f, 1.f };
+                shadow_texture_matrices[ 3 ].col[ 3 ] = { tile_position_x - (tile_size * .5f), tile_position_y, 0.f, 1.f };
+
+                for ( u32 l = 0; l < render_scene->active_lights; ++l ) {
+                    const Light& light = render_scene->lights[ l ];
+
+                    // Update camera spheres
+                    gpu_light_spheres[ l ] = glms_vec4( light.world_position, light.radius );
+
+                    mat4s shadow_projections[ 2 ];
+                    /*tiledShadowProjMatrices[ 0 ].SetPerspective( Vector2( fov0, fov1 ), 0.2f, radius );
+                    tiledShadowProjMatrices[ 1 ].SetPerspective( Vector2( fov1, fov0 ), 0.2f, radius );*/
+                    shadow_projections[ 0 ] = glms_perspective( glm_rad( fov1 ), fov0 / fov1, 0.01f, light.radius );
+                    shadow_projections[ 1 ] = glms_perspective( glm_rad( fov0 ), fov1 / fov0, 0.01f, light.radius );
+
+                    /*Matrix4 shadowTransMatrix, shadowViewMatrix;
+                    shadowTransMatrix.SetTranslation( -lightBD.position );
+                    for ( unsigned int i = 0; i < 4; i++ ) {
+                        shadowViewMatrix = tiledShadowRotMatrices[ i ] * shadowTransMatrix;
+                        unsigned int index = i & 1;
+                        tiledShadowBD.shadowViewProjTexMatrices[ i ] = shadowTexMatrices[ i ] * tiledShadowProjMatrices[ index ] * shadowViewMatrix;
+                    }*/
+
+                    mat4s translation = glms_translate_make( glms_vec3_scale( light.world_position, -1.f ) );
+
+                    // 0
+                    mat4s view = glms_mat4_mul( face_rotation_matrices[ 0 ], translation );
+                    mat4s view_projection = glms_mat4_mul( shadow_texture_matrices[ 0 ], glms_mat4_mul( shadow_projections[ 0 ], view ) );
+                    gpu_view_projections[ l * 6 + 0 ] = view_projection;
+
+                    // 1
+                    view = glms_mat4_mul( face_rotation_matrices[ 1 ], translation );
+                    view_projection = glms_mat4_mul( shadow_texture_matrices[ 1 ], glms_mat4_mul( shadow_projections[ 1 ], view ) );
+                    gpu_view_projections[ l * 6 + 1 ] = view_projection;
+
+                    // 2
+                    view = glms_mat4_mul( face_rotation_matrices[ 2 ], translation );
+                    view_projection = glms_mat4_mul( shadow_texture_matrices[ 2 ], glms_mat4_mul( shadow_projections[ 0 ], view ) );
+                    gpu_view_projections[ l * 6 + 2 ] = view_projection;
+
+                    // 3
+                    view = glms_mat4_mul( face_rotation_matrices[ 3 ], translation );
+                    view_projection = glms_mat4_mul( shadow_texture_matrices[ 3 ], glms_mat4_mul( shadow_projections[ 1 ], view ) );
+                    gpu_view_projections[ l * 6 + 3 ] = view_projection;
+                }
+
+                gpu->unmap_buffer( view_projections_cb_map );
+                gpu->unmap_buffer( light_spheres_cb_map );
+            }
+        }
+
+        if ( render_scene->use_meshlets_emulation ) {
+            // TODO:
+        } else if ( render_scene->pointlight_use_meshlets ) {
+
+            // Render ALL meshlets shadows
+            gpu_commands->bind_pipeline( tetrahedron_meshlet_pipeline );
+
+            DescriptorSetHandle handles[] = { render_scene->mesh_shader_early_descriptor_set[ current_frame_index ], cubemap_meshlet_draw_descriptor_set[ current_frame_index ] };
+            gpu_commands->bind_descriptor_set( handles, 2, nullptr, 0 );
+
+            gpu_commands->draw_mesh_task_indirect_count( meshlet_shadow_indirect_cb[ current_frame_index ], 0, per_light_meshlet_instances[ current_frame_index ], sizeof( u32 ) * k_num_lights, layer_count, sizeof( vec4s ) );
+        } else {
+            // Support for non-meshlet pointlights needed ?
+        }
+
+        gpu_commands->end_current_render_pass();
+    }
+    else {
+
+        // Cubemap shadows
+
+        // Recreate texture and framebuffer
+        recreate_dependent_resources( *render_scene );
+
+        Texture* depth_texture_array = gpu->access_texture( cubemap_shadow_array_texture );
+        const u32 layer_count = 6 * render_scene->active_lights;
+
+        u32 width = depth_texture_array->width;
+        u32 height = depth_texture_array->height;
+        // Perform manual clear of active lights shadowmaps.
+        {
+            util_add_image_barrier_ext( gpu, gpu_commands->vk_command_buffer, depth_texture_array, RESOURCE_STATE_COPY_DEST, 0, 1, 0, layer_count, true );
+
+            // TODO: Clearing 256 cubemaps is incredibly slow, for the future try with point sprites at far with depth test always.
+            VkClearRect clear_rect;
+            clear_rect.baseArrayLayer = 0;
+            clear_rect.layerCount = layer_count;
+            clear_rect.rect.extent.width = width;
+            clear_rect.rect.extent.height = height;
+            clear_rect.rect.offset.x = 0;
+            clear_rect.rect.offset.y = 0;
+
+            VkClearDepthStencilValue clear_depth_stencil_value;
+            clear_depth_stencil_value.depth = 1.f;
+
+            VkImageSubresourceRange clear_range;
+            clear_range.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
+            clear_range.baseArrayLayer = 0;
+            clear_range.baseMipLevel = 0;
+            clear_range.levelCount = 1;
+            clear_range.layerCount = layer_count;
+            vkCmdClearDepthStencilImage( gpu_commands->vk_command_buffer, depth_texture_array->vk_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear_depth_stencil_value, 1, &clear_range );
+
+            util_add_image_barrier_ext( gpu, gpu_commands->vk_command_buffer, depth_texture_array, RESOURCE_STATE_DEPTH_WRITE, 0, 1, 0, layer_count, true );
+        }
+
+        depth_texture_array->state = RESOURCE_STATE_DEPTH_WRITE;
+
+        // Setup scissor and viewport
+        Rect2DInt scissor{ 0, 0,( u16 )width, ( u16 )height };
+        gpu_commands->set_scissor( &scissor );
+
+        Viewport viewport{ };
+        viewport.rect = { 0, 0, ( u16 )width, ( u16 )height };
+        viewport.min_depth = 0.0f;
+        viewport.max_depth = 1.0f;
+
+        gpu_commands->set_viewport( &viewport );
+
+        gpu_commands->bind_pass( cubemap_render_pass, cubemap_framebuffer, false );
+
+        // Update view projection matrices and camera spheres.
+        // NOTE: this operation can be slow on CPU if many lights are casting shadows, thus
+        // a GPU implementation is also given.
+        if ( render_scene->shadow_constants_cpu_update ) {
+
+            MapBufferParameters view_projections_cb_map = { pointlight_view_projections_cb[ current_frame_index ], 0, 0 };
+            MapBufferParameters light_spheres_cb_map = { pointlight_spheres_cb[ current_frame_index ], 0, 0 };
+
+            mat4s* gpu_view_projections = ( mat4s* )gpu->map_buffer( view_projections_cb_map );
+            vec4s* gpu_light_spheres = ( vec4s* )gpu->map_buffer( light_spheres_cb_map );
+
+            const mat4s left_handed_scale_matrix = glms_scale_make( { 1,1,-1 } );
+
+            if ( gpu_view_projections && gpu_light_spheres ) {
+
+                for ( u32 l = 0; l < render_scene->active_lights; ++l ) {
+                    const Light& light = render_scene->lights[ l ];
+
+                    // Update camera spheres
+                    gpu_light_spheres[ l ] = glms_vec4( light.world_position, light.radius );
+
+                    const mat4s projection = glms_perspective( glm_rad( 90.f ), 1.f, 0.01f, light.radius );
+
+                    // Positive X matrices
+                    mat4s view = glms_look( light.world_position, { -1,0,0 }, { 0,1,0 } );
+                    view = glms_mat4_mul( left_handed_scale_matrix, view );
+                    mat4s view_projection = glms_mat4_mul( projection, view );
+
+                    gpu_view_projections[ l * 6 + 0 ] = view_projection;
+
+                    // Negative X
+                    view = glms_look( light.world_position, { 1,0,0 }, { 0,1,0 } );
+                    view = glms_mat4_mul( left_handed_scale_matrix, view );
+                    view_projection = glms_mat4_mul( projection, view );
+
+                    gpu_view_projections[ l * 6 + 1 ] = view_projection;
+
+                    // Positive Y
+                    view = glms_look( light.world_position, { 0,-1,0 }, { 0,0,-1 } );
+                    view = glms_mat4_mul( left_handed_scale_matrix, view );
+                    view_projection = glms_mat4_mul( projection, view );
+
+                    gpu_view_projections[ l * 6 + 2 ] = view_projection;
+
+                    // Negative Y
+                    view = glms_look( light.world_position, { 0,1,0 }, { 0,0,1 } );
+                    view = glms_mat4_mul( left_handed_scale_matrix, view );
+                    view_projection = glms_mat4_mul( projection, view );
+
+                    gpu_view_projections[ l * 6 + 3 ] = view_projection;
+
+                    // Positive Z
+                    view = glms_look( light.world_position, { 0,0,-1 }, { 0,1,0 } );
+                    view = glms_mat4_mul( left_handed_scale_matrix, view );
+                    view_projection = glms_mat4_mul( projection, view );
+
+                    gpu_view_projections[ l * 6 + 4 ] = view_projection;
+
+                    // Negative Z
+                    view = glms_look( light.world_position, { 0,0,1 }, { 0,1,0 } );
+                    view = glms_mat4_mul( left_handed_scale_matrix, view );
+                    view_projection = glms_mat4_mul( projection, view );
+
+                    gpu_view_projections[ l * 6 + 5 ] = view_projection;
+                }
+
+                gpu->unmap_buffer( view_projections_cb_map );
+                gpu->unmap_buffer( light_spheres_cb_map );
+            }
+        }
+
+        MapBufferParameters shadow_resolution_map = { shadow_resolutions_readback[ current_frame_index ], 0, 0 };
+        u32* shadow_resolution_read = ( u32* )gpu->map_buffer( shadow_resolution_map );
+
+        if ( render_scene->use_meshlets_emulation ) {
+            // TODO:
+        } else if ( render_scene->pointlight_use_meshlets ) {
+
+            // Render ALL meshlets shadows
+            gpu_commands->bind_pipeline( cubemap_meshlets_pipeline );
+
+            DescriptorSetHandle handles[] = { render_scene->mesh_shader_early_descriptor_set[ current_frame_index ], cubemap_meshlet_draw_descriptor_set[ current_frame_index ] };
+            gpu_commands->bind_descriptor_set( handles, 2, nullptr, 0 );
+
+            // Draw each light individually
+            for ( u32 l = 0; l < render_scene->active_lights; ++l ) {
+                const Light& light = render_scene->lights[ l ];
+
+                //rprint( "Shadow resolution %u, light %u\n", shadow_resolution_read[ l ], l );
+
+                gpu_commands->set_viewport( &viewport );
+
+                const u32 argument_offset = sizeof( f32 ) * 4 * 6 * l;
+                u32 draw_offset = l * 6;
+                gpu_commands->push_constants( cubemap_meshlets_pipeline, 0, 16, &draw_offset );
+                gpu_commands->draw_mesh_task_indirect( meshlet_shadow_indirect_cb[ current_frame_index ], argument_offset, 6, sizeof( vec4s ) );
+            }
+        } else {
+            // Support for non-meshlet pointlights needed ?
+        }
+
+        gpu->unmap_buffer( shadow_resolution_map );
+
+        gpu_commands->end_current_render_pass();
+
+        // Copy debug texture
+        // TODO: subresource state complains a lot.
+        if ( render_scene->cubemap_face_debug_enabled ) {
+            u16 source_cubemap_face = render_scene->cubemap_debug_array_index * 6 + render_scene->cubemap_debug_face_index;
+            gpu_commands->copy_texture( cubemap_shadow_array_texture, { 0, 1, source_cubemap_face, 1 }, cubemap_debug_face_texture, { 0, 1, 0, 1 }, RESOURCE_STATE_SHADER_RESOURCE );
+        }
+    }
+}
+
+void PointlightShadowPass::prepare_draws( RenderScene& scene, FrameGraph* frame_graph,
+                                          Allocator* resident_allocator, StackAllocator* scratch_allocator ) {
+    renderer = scene.renderer;
+
+    FrameGraphNode* node = frame_graph->get_node( "point_shadows_pass" );
+    if ( node == nullptr ) {
+        enabled = false;
+
+        return;
+    }
+
+    enabled = node->enabled;
+    if ( !enabled )
+        return;
+
+    GpuDevice& gpu = *renderer->gpu;
+
+    recreate_dependent_resources( scene );
+
+    // Create render pass
+    RenderPassCreation render_pass_creation;
+    render_pass_creation.reset().set_name( node->name ).set_depth_stencil_texture( VK_FORMAT_D16_UNORM, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL )
+        .set_depth_stencil_operations( RenderPassOperation::DontCare, RenderPassOperation::DontCare );
+
+    cubemap_render_pass = gpu.create_render_pass( render_pass_creation );
+
+    RASSERTM( 6 * k_num_lights <= gpu.max_framebuffer_layers, "Creating framebuffer with more layers than possible (max :%u, trying to create count %u). Refactor to have more layers", gpu.max_framebuffer_layers, 6 * k_num_lights );
+
+    // Create view constant buffer
+    raptor::BufferCreation buffer_creation;
+
+    for ( u32 i = 0; i < k_max_frames; ++i ) {
+        buffer_creation.set( VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, ResourceUsageType::Dynamic, sizeof( mat4s ) * 6 * k_num_lights ).set_name( "pointlight_pass_view_projections" );
+        pointlight_view_projections_cb[ i ] = gpu.create_buffer( buffer_creation );
+
+        buffer_creation.set( VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, ResourceUsageType::Dynamic, sizeof( vec4s ) * 6 * k_num_lights ).set_name( "pointlight_pass_spheres" );
+        pointlight_spheres_cb[ i ] = gpu.create_buffer( buffer_creation );
+    }
+
+    const u64 hashed_name = hash_calculate( "main" );
+    GpuTechnique* main_technique = renderer->resource_cache.techniques.get( hashed_name );
+
+    MaterialCreation material_creation;
+
+    material_creation.set_name( "material_depth_pre_pass" ).set_technique( main_technique ).set_render_index( 0 );
+    Material* material_depth_pre_pass = renderer->create_material( material_creation );
+    const u32 depth_cubemap_pass_index = main_technique->get_pass_index( "depth_cubemap" );
+
+    mesh_instance_draws.init( resident_allocator, 16 );
+
+    // Copy all mesh draws and change only material.
+    for ( u32 i = 0; i < scene.mesh_instances.size; ++i ) {
+
+        MeshInstance& mesh_instance = scene.mesh_instances[ i ];
+        Mesh* mesh = mesh_instance.mesh;
+        if ( mesh->is_transparent() ) {
+            continue;
+        }
+
+        MeshInstanceDraw mesh_instance_draw{};
+        mesh_instance_draw.mesh_instance = &mesh_instance;
+        mesh_instance_draw.material_pass_index = depth_cubemap_pass_index;
+
+        mesh_instance_draws.push( mesh_instance_draw );
+    }
+
+    DescriptorSetCreation ds_creation;
+
+    GpuTechnique* meshlet_technique = renderer->resource_cache.techniques.get( hash_calculate( "meshlet" ) );
+
+    // Meshlet culling
+    {
+        u32 pass_index = meshlet_technique->get_pass_index( "meshlet_pointshadows_culling" );
+        GpuTechniquePass& pass = meshlet_technique->passes[ pass_index ];
+
+        meshlet_culling_pipeline = pass.pipeline;
+
+        u32 max_per_light_meshlets = 45000;
+        u32 total_light_meshlets = k_num_lights * max_per_light_meshlets * 2;
+
+        for ( u32 i = 0; i < k_max_frames; ++i ) {
+
+            meshlet_visible_instances[ i ] = renderer->gpu->create_buffer( buffer_creation.set( VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, ResourceUsageType::Immutable, sizeof( u32 ) * total_light_meshlets ).set_name( "meshlet_visible_instances" ) );
+            per_light_meshlet_instances[ i ] = renderer->gpu->create_buffer( buffer_creation.set( VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT, ResourceUsageType::Immutable, sizeof( u32 ) * ( k_num_lights + 1 ) * 2 ).set_name( "per_light_meshlet_instances" ) );
+
+            ds_creation.reset();
+
+            scene.add_scene_descriptors( ds_creation, pass );
+            //scene.add_debug_descriptors( ds_creation, pass );
+            scene.add_mesh_descriptors( ds_creation, pass );
+            scene.add_meshlet_descriptors( ds_creation, pass );
+            //scene.add_lighting_descriptors( ds_creation, pass, i );
+            ds_creation.buffer( scene.lights_list_sb, 21 );
+            ds_creation.buffer( meshlet_visible_instances[i], 30).buffer(per_light_meshlet_instances[i], 31).set_layout(renderer->gpu->get_descriptor_set_layout(meshlet_culling_pipeline, k_material_descriptor_set_index));
+
+            meshlet_culling_descriptor_set[ i ] = renderer->gpu->create_descriptor_set( ds_creation );
+        }
+    }
+    // Meshlet command writing
+    {
+        u32 pass_index = meshlet_technique->get_pass_index( "meshlet_pointshadows_commands_generation" );
+        GpuTechniquePass& pass = meshlet_technique->passes[ pass_index ];
+
+        meshlet_write_commands_pipeline = pass.pipeline;
+
+        for ( u32 i = 0; i < k_max_frames; ++i ) {
+
+            meshlet_shadow_indirect_cb[ i ] = renderer->gpu->create_buffer( buffer_creation.set( VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT, ResourceUsageType::Immutable, sizeof( vec4s ) * k_num_lights * 6 ).set_name( "per_light_meshlet_shadow_indirect" ) );
+
+            ds_creation.reset();
+            ds_creation.buffer( meshlet_visible_instances[ i ], 30 ).buffer( per_light_meshlet_instances[ i ], 31 ).buffer( meshlet_shadow_indirect_cb[ i ], 32 )
+                .buffer( pointlight_spheres_cb[ i ], 33 ).buffer( pointlight_view_projections_cb[ i ], 34 ).buffer( scene.lights_list_sb, 35 )
+                .set_layout( renderer->gpu->get_descriptor_set_layout( meshlet_write_commands_pipeline, k_material_descriptor_set_index ) );
+            scene.add_scene_descriptors( ds_creation, pass );
+
+            meshlet_write_commands_descriptor_set[ i ] = renderer->gpu->create_descriptor_set( ds_creation );
+        }
+    }
+    // Meshlet drawing
+    if ( gpu.mesh_shaders_extension_present ) {
+        u32 pass_index = meshlet_technique->get_pass_index( "depth_cubemap" );
+        // Cubemap rendering
+        cubemap_meshlets_pipeline = meshlet_technique->passes[ pass_index ].pipeline;
+
+        DescriptorSetLayoutHandle pass_layout_handle = renderer->gpu->get_descriptor_set_layout( meshlet_technique->passes[ pass_index ].pipeline, 2 );
+        DescriptorSetLayout* pass_layout = renderer->gpu->access_descriptor_set_layout( pass_layout_handle );
+
+        if ( pass_layout ) {
+
+            for ( u32 i = 0; i < k_max_frames; ++i ) {
+                ds_creation.reset().buffer( pointlight_spheres_cb[i], 0).buffer(meshlet_shadow_indirect_cb[i], 1)
+                    .buffer( meshlet_visible_instances[ i ], 2 ).buffer( pointlight_view_projections_cb[ i ], 4 ).set_layout( pass_layout_handle ).set_set_index( 2 );
+                cubemap_meshlet_draw_descriptor_set[ i ] = renderer->gpu->create_descriptor_set( ds_creation );
+            }
+        }
+
+        // Tetrahedron rendering
+        pass_index = meshlet_technique->get_pass_index( "depth_tetrahedron" );
+
+        tetrahedron_meshlet_pipeline = meshlet_technique->passes[ pass_index ].pipeline;
+    }
+    // Shadow resolution computation
+    {
+        u32 pass_index = meshlet_technique->get_pass_index( "pointshadows_resolution_calculation" );
+
+        GpuTechniquePass& pass = meshlet_technique->passes[ pass_index ];
+        shadow_resolution_pipeline = pass.pipeline;
+        // AABB is defined as 2 vec4, min and max vectors.
+        light_aabbs = renderer->gpu->create_buffer( buffer_creation.set( VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, ResourceUsageType::Immutable, sizeof( vec4s ) * k_num_lights * 2 ).set_name( "light_aabbs" ) );
+
+        for ( u32 i = 0; i < k_max_frames; ++i ) {
+
+            shadow_resolutions[ i ] = renderer->gpu->create_buffer( buffer_creation.set( VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, ResourceUsageType::Immutable, sizeof( u32 ) * k_num_lights ).set_name( "shadow_resolutions" ) );
+            shadow_resolutions_readback[ i ] = renderer->gpu->create_buffer( buffer_creation.set( VK_BUFFER_USAGE_TRANSFER_DST_BIT, ResourceUsageType::Readback, sizeof( u32 ) * k_num_lights ).set_name( "shadow_resolutions_readback" ) );
+        }
+    }
+}
+
+void PointlightShadowPass::upload_gpu_data( RenderScene& scene )
+{
+    if ( scene.lights_tiles_sb[ 0 ].index == last_lights_buffer.index )
+    {
+        return;
+    }
+
+    GpuTechnique* meshlet_technique = renderer->resource_cache.techniques.get( hash_calculate( "meshlet" ) );
+    u32 pass_index = meshlet_technique->get_pass_index( "pointshadows_resolution_calculation" );
+    GpuTechniquePass& pass = meshlet_technique->passes[ pass_index ];
+
+    DescriptorSetCreation ds_creation{ };
+
+    for ( u32 i = 0; i < k_max_frames; ++i ) {
+        renderer->gpu->destroy_descriptor_set( shadow_resolution_descriptor_set[ i ] );
+
+        ds_creation.reset();
+
+        scene.add_scene_descriptors( ds_creation, pass );
+        ds_creation.buffer( light_aabbs, 35 );
+        ds_creation.buffer( shadow_resolutions[ i ], 36 );
+        ds_creation.buffer( scene.lights_list_sb, 37 );
+
+        ds_creation.set_layout( renderer->gpu->get_descriptor_set_layout( shadow_resolution_pipeline, k_material_descriptor_set_index ) );
+
+        shadow_resolution_descriptor_set[ i ] = renderer->gpu->create_descriptor_set( ds_creation );
+    }
+
+    last_lights_buffer.index = scene.lights_tiles_sb[ 0 ].index;
+}
+
+void PointlightShadowPass::free_gpu_resources() {
+
+    GpuDevice& gpu = *renderer->gpu;
+
+    mesh_instance_draws.shutdown();
+
+    for ( u32 i = 0; i < k_max_frames; ++i ) {
+        gpu.destroy_buffer( pointlight_view_projections_cb[ i ] );
+        gpu.destroy_buffer( pointlight_spheres_cb[ i ] );
+        gpu.destroy_descriptor_set( cubemap_meshlet_draw_descriptor_set[ i ] );
+        gpu.destroy_descriptor_set(meshlet_culling_descriptor_set[ i ]);
+        gpu.destroy_buffer(meshlet_visible_instances[ i ]);
+        gpu.destroy_buffer(per_light_meshlet_instances[ i ]);
+        gpu.destroy_descriptor_set(shadow_resolution_descriptor_set[ i ]);
+        gpu.destroy_descriptor_set(meshlet_write_commands_descriptor_set[ i ]);
+        gpu.destroy_buffer(meshlet_shadow_indirect_cb[ i ]);
+        gpu.destroy_buffer(shadow_resolutions[ i ]);
+        gpu.destroy_buffer(shadow_resolutions_readback[ i ]);
+    }
+
+    gpu.destroy_render_pass( cubemap_render_pass );
+
+    gpu.destroy_buffer( light_aabbs );
+
+    gpu.destroy_texture( tetrahedron_shadow_texture );
+    gpu.destroy_texture( cubemap_debug_face_texture );
+    gpu.destroy_texture( cubemap_shadow_array_texture );
+
+    gpu.destroy_framebuffer( cubemap_framebuffer );
+    gpu.destroy_framebuffer( tetrahedron_framebuffer );
+
+    gpu.destroy_page_pool( shadow_maps_pool );
+}
+
+void PointlightShadowPass::recreate_dependent_resources( RenderScene& scene ) {
+
+    GpuDevice& gpu = *renderer->gpu;
+
+    const u32 active_lights = scene.active_lights;
+
+    if ( active_lights == last_active_lights ) {
+        return;
+    }
+
+    // Destroy resources if they were created
+    if ( last_active_lights > 0 ) {
+
+        gpu.destroy_texture( cubemap_debug_face_texture );
+        gpu.destroy_texture( cubemap_shadow_array_texture );
+        gpu.destroy_texture( tetrahedron_shadow_texture );
+
+        gpu.destroy_framebuffer( cubemap_framebuffer );
+        gpu.destroy_framebuffer( tetrahedron_framebuffer );
+    }
+
+    last_active_lights = active_lights;
+
+    // Create new resources
+    // Create cube depth array texture
+    raptor::TextureCreation texture_creation;
+    // TODO: layer count should be the maximum
+    u32 layer_width = 512;
+    u32 layer_height = layer_width;
+
+    VkFormat depth_texture_format = VK_FORMAT_D16_UNORM;
+
+    // Create cubemap debug texture
+    // TODO(marco): these textures should only be created once, we only need to change
+    // the pages that are bound
+    texture_creation.reset().set_size( layer_width, layer_height, 1 ).set_format_type( depth_texture_format, TextureType::Texture2D )
+        .set_flags( TextureFlags::RenderTarget_mask ).set_name( "cubemap_array_debug" );
+    cubemap_debug_face_texture = gpu.create_texture( texture_creation );
+
+    u32 max_width = 512;
+    u32 max_height = max_width;
+    u32 max_layers = 256 * 6; // NOTE(marco): we can support at maximum 256 lights
+
+    texture_creation.set_size( max_width, max_height, 1 ).set_layers( max_layers ).set_mips( 1 ).set_format_type( depth_texture_format, TextureType::Texture_Cube_Array )
+        .set_flags( TextureFlags::RenderTarget_mask | TextureFlags::Sparse_mask ).set_name( "depth_cubemap_array" );
+    cubemap_shadow_array_texture = gpu.create_texture( texture_creation );
+
+    if ( shadow_maps_pool.index == k_invalid_index ) {
+        shadow_maps_pool = gpu.allocate_texture_pool( cubemap_shadow_array_texture, rgiga( 1 ) );
+    }
+
+    gpu.reset_pool( shadow_maps_pool );
+
+    for ( u32 light = 0; light < active_lights; ++light ) {
+        // TODO(marco): use light resolution
+        for ( u32 face = 0; face < 6; ++face ) {
+            gpu.bind_texture_pages( shadow_maps_pool, cubemap_shadow_array_texture, 0, 0, layer_width, layer_height, ( light * 6 ) + face );
+        }
+    }
+
+    // Create framebuffer
+    raptor::FramebufferCreation frame_buffer_creation;
+    frame_buffer_creation.reset().set_depth_stencil_texture( cubemap_shadow_array_texture ).set_name( "depth_cubemap_array_fb" ).set_width_height( max_width, max_height ).set_layers( max_layers );
+    cubemap_framebuffer = gpu.create_framebuffer( frame_buffer_creation );
+
+    // Cache shadow depth view index
+    scene.cubemap_shadows_index = cubemap_shadow_array_texture.index;
+
+    // Tetrahedron mapping
+    texture_creation.reset().set_size( layer_width, layer_height, 1 ).set_format_type( depth_texture_format, TextureType::Texture2D )
+        .set_flags( TextureFlags::RenderTarget_mask ).set_name( "tetrahedron_shadow_texture" );
+    tetrahedron_shadow_texture = gpu.create_texture( texture_creation );
+
+    frame_buffer_creation.reset().set_depth_stencil_texture( tetrahedron_shadow_texture ).set_name( "depth_tetrahedron_fb" ).set_width_height( layer_width, layer_height );
+    tetrahedron_framebuffer = gpu.create_framebuffer( frame_buffer_creation );
+}
 
 // RenderScene ////////////////////////////////////////////////////////////
 CommandBuffer* RenderScene::update_physics( f32 delta_time, f32 air_density, f32 spring_stiffness, f32 spring_damping, vec3s wind_direction, bool reset_simulation ) {
@@ -2083,12 +2893,12 @@ void RenderScene::upload_gpu_data( UploadGpuDataContext& context ) {
     sizet current_marker = context.scratch_allocator->get_marker();
 
     Array<SortedLight> sorted_lights;
-    sorted_lights.init( context.scratch_allocator, k_num_lights, k_num_lights );
+    sorted_lights.init( context.scratch_allocator, active_lights, active_lights );
 
     // Sort lights based on Z
     mat4s& world_to_camera = scene_data.world_to_camera;
     float z_far = scene_data.z_far;
-    for ( u32 i = 0; i < k_num_lights; ++i ) {
+    for ( u32 i = 0; i < active_lights; ++i ) {
         Light& light = lights[ i ];
 
         vec4s p{ light.world_position.x, light.world_position.y, light.world_position.z, 1.0f };
@@ -2101,27 +2911,32 @@ void RenderScene::upload_gpu_data( UploadGpuDataContext& context ) {
         SortedLight& sorted_light = sorted_lights[ i ];
         sorted_light.light_index = i;
         // Remove negative numbers as they cause false negatives for bin 0.
-        sorted_light.projected_z = ( ( projected_p.z - scene_data.z_near ) / ( z_far - scene_data.z_near ) );
-        sorted_light.projected_z_min = ( ( projected_p_min.z - scene_data.z_near ) / ( z_far - scene_data.z_near ) );
-        sorted_light.projected_z_max = ( ( projected_p_max.z - scene_data.z_near ) / ( z_far - scene_data.z_near ) );
+        sorted_light.projected_z = (  ( projected_p.z - scene_data.z_near ) / ( z_far - scene_data.z_near ) );
+        sorted_light.projected_z_min = (  ( projected_p_min.z - scene_data.z_near ) / ( z_far - scene_data.z_near ) );
+        sorted_light.projected_z_max = (  ( projected_p_max.z - scene_data.z_near ) / ( z_far - scene_data.z_near ) );
 
         //rprint( "Light Z %f, Zmin %f, Zmax %f\n", sorted_light.projected_z, sorted_light.projected_z_min, sorted_light.projected_z_max );
     }
 
-    qsort( sorted_lights.data, k_num_lights, sizeof( SortedLight ), sorting_light_fn );
+    qsort( sorted_lights.data, active_lights, sizeof( SortedLight ), sorting_light_fn );
 
     // Upload light list
     cb_map.buffer = lights_list_sb;
     GpuLight* gpu_lights_data = ( GpuLight* )gpu.map_buffer( cb_map );
     if ( gpu_lights_data ) {
-        for ( u32 i = 0; i < k_num_lights; ++i ) {
+        for ( u32 i = 0; i < active_lights; ++i ) {
             Light& light = lights[ i ];
             GpuLight& gpu_light = gpu_lights_data[ i ];
 
             gpu_light.world_position = light.world_position;
-            gpu_light.attenuation = light.radius;
+            gpu_light.radius = light.radius;
             gpu_light.color = light.color;
             gpu_light.intensity = light.intensity;
+            gpu_light.shadow_map_resolution = light.shadow_map_resolution;
+            // NOTE: calculation used to retrieve depth for cubemaps.
+            // near = 0.01f as a static value, if you change here change also
+            // method vector_to_depth_value in lighting.h in the shaders!
+            gpu_light.rcp_n_minus_f = 1.0f / ( 0.01f - light.radius );
         }
 
         gpu.unmap_buffer( cb_map );
@@ -2131,7 +2946,27 @@ void RenderScene::upload_gpu_data( UploadGpuDataContext& context ) {
     // NOTE(marco): it might be better to use logarithmic slices to have better resolution
     // closer to the camera. We could also use a different far plane and discard any lights
     // that are too far
-    f32 bin_size = 1.0f / k_light_z_bins;
+    const f32 bin_size = 1.0f / k_light_z_bins;
+
+    Array<u32> bin_range_per_light;
+    bin_range_per_light.init( context.scratch_allocator, active_lights, active_lights );
+
+    for ( u32 i = 0; i < active_lights; ++i ) {
+        const SortedLight& light = sorted_lights[ i ];
+
+        if ( light.projected_z_min < 0.0f && light.projected_z_max < 0.0f ) {
+            // NOTE(marco): this light is behind the camera
+            bin_range_per_light[ i ] = u32_max;
+
+            continue;
+        }
+
+        const u32 min_bin = raptor::max( 0, raptor::floori32( light.projected_z_min * k_light_z_bins ) );
+        const u32 max_bin = raptor::max( 0, raptor::ceili32( light.projected_z_max * k_light_z_bins ) );
+
+        bin_range_per_light[ i ] = ( min_bin & 0xffff ) | ( ( max_bin & 0xffff ) << 16 );
+        // rprint( "Light %u min %u, max %u, linear z min %f max %f\n", i, min_bin, max_bin, light.projected_z_min * z_far, light.projected_z_max * z_far );
+    }
 
     for ( u32 bin = 0; bin < k_light_z_bins; ++bin ) {
         u32 min_light_id = k_num_lights + 1;
@@ -2140,12 +2975,18 @@ void RenderScene::upload_gpu_data( UploadGpuDataContext& context ) {
         f32 bin_min = bin_size * bin;
         f32 bin_max = bin_min + bin_size;
 
-        for ( u32 i = 0; i < k_num_lights; ++i ) {
+        for ( u32 i = 0; i < active_lights; ++i ) {
             const SortedLight& light = sorted_lights[ i ];
+            const u32 light_bins = bin_range_per_light[ i ];
 
-            if ( ( light.projected_z >= bin_min && light.projected_z <= bin_max ) ||
-                 ( light.projected_z_min >= bin_min && light.projected_z_min <= bin_max ) ||
-                 ( light.projected_z_max >= bin_min && light.projected_z_max <= bin_max ) ) {
+            if ( light_bins == u32_max ) {
+                continue;
+            }
+
+            const u32 min_bin = light_bins & 0xffff;
+            const u32 max_bin = light_bins >> 16;
+
+            if ( bin >= min_bin && bin <= max_bin ) {
                 if ( i < min_light_id ) {
                     min_light_id = i;
                 }
@@ -2154,7 +2995,24 @@ void RenderScene::upload_gpu_data( UploadGpuDataContext& context ) {
                     max_light_id = i;
                 }
             }
+            // OLD: left as a reference if new implementation breaks too much.
+            //if ( ( light.projected_z >= bin_min && light.projected_z <= bin_max ) ||
+            //     ( light.projected_z_min >= bin_min && light.projected_z_min <= bin_max ) ||
+            //     ( light.projected_z_max >= bin_min && light.projected_z_max <= bin_max ) ) {
+            //    if ( i < min_light_id ) {
+            //        min_light_id = i;
+
+            //        //rprint( "Light in bin %u\n", bin );
+            //    }
+
+            //    if ( i > max_light_id ) {
+            //        max_light_id = i;
+            //    }
+            //}
         }
+
+        //if (min_light_id != k_num_lights + 1)
+            //rprint( "Bin %u, light ids min %u, max %u\n", bin, min_light_id, max_light_id );
 
         lights_lut[ bin ] = min_light_id | ( max_light_id << 16 );
     }
@@ -2166,7 +3024,7 @@ void RenderScene::upload_gpu_data( UploadGpuDataContext& context ) {
     if ( gpu_light_indices ) {
         // TODO: improve
         //memcpy( gpu_light_indices, lights_lut.data, lights_lut.size * sizeof( u32 ) );
-        for ( u32 i = 0; i < k_num_lights; ++i ) {
+        for ( u32 i = 0; i < active_lights; ++i ) {
             gpu_light_indices[ i ] = sorted_lights[ i ].light_index;
         }
 
@@ -2199,7 +3057,7 @@ void RenderScene::upload_gpu_data( UploadGpuDataContext& context ) {
 
     GameCamera& game_camera = context.game_camera;
 
-    for ( u32 i = 0; i < k_num_lights; ++i ) {
+    for ( u32 i = 0; i < active_lights; ++i ) {
         const u32 light_index = sorted_lights[ i ].light_index;
         Light& light = lights[ light_index ];
 
@@ -2370,10 +3228,87 @@ void RenderScene::upload_gpu_data( UploadGpuDataContext& context ) {
         gpu.unmap_buffer( light_tiles_cb_map );
     }
 
+#if 0
+    // Too slow to work on CPU.
+    // Cluster debug draw
+    auto clip_to_view = [&]( vec4s clip ) -> vec4s {
+        vec4s view = glms_mat4_mulv( glms_mat4_inv( game_camera.camera.projection ), clip );
+        view = glms_vec4_divs( view, view.w );
+        return view;
+    };
+
+    auto screen_to_view = [&]( vec4s screen ) -> vec4s {
+        vec2s uv{ screen.x / gpu.swapchain_width, screen.y / gpu.swapchain_height };
+
+        //vec4s clip{ uv.x * 2.f - .1f, (1.f - uv.y) * 2.f - 1.f, screen.z, screen.w };
+        vec4s clip{ uv.x * 2.f - .1f, uv.y * 2.f - 1.f, screen.z, screen.w };
+        return clip_to_view( clip );
+    };
+
+    auto line_intersection_to_depth_plane = [&]( vec3s a, vec3s b, f32 z_distance ) -> vec3s {
+        vec3s normal{ 0,0,1 };
+
+        vec3s ab = glms_vec3_sub( b, a );
+
+        f32 t = ( z_distance - glms_vec3_dot( normal, a ) ) / glms_vec3_dot( normal, ab );
+
+        vec3s result = glms_vec3_add( glms_vec3_scale( ab, t ), a );
+        return result;
+    };
+
+    for ( u32 x = 0; x < tile_x_count; ++x ) {
+        for ( u32 y = 0; y < tile_y_count; ++y ) {
+            for ( u32 z = 0; z < k_light_z_bins; ++z ) {
+
+                // Skip empty z bins
+                u32 z_bin = lights_lut[ z ];
+                if ( ( z_bin & 0xffff ) == k_num_lights + 1 ) {
+                    continue;
+                }
+
+                // top right
+                vec4s maxpoint_screen_space{ ( x + 1 ) * 8.f, ( y + 1 ) * 8.f, 0.f, 1.f };
+                // bottom left
+                vec4s minpoint_screen_space{ ( x ) * 8.f, ( y ) * 8.f, 0.f, 1.f };
+
+                vec3s maxpoint_view_space = glms_vec3( screen_to_view( maxpoint_screen_space ) );
+                vec3s minpoint_view_space = glms_vec3( screen_to_view( minpoint_screen_space ) );
+
+                f32 zNear = game_camera.camera.near_plane;
+                f32 zFar = game_camera.camera.far_plane;
+
+                f32 tileNear = (bin_size * z) * zFar + zNear; // -zNear * pow( zFar / zNear, z / float( z ) );
+                f32 tileFar = tileNear + (bin_size * (zFar - zNear)); //-zNear * pow( zFar / zNear, ( z + 1 ) / float( z ) );
+
+                //Finding the 4 intersection points made from the maxPoint to the cluster near/far plane
+                vec3s eyePos = glms_vec3_zero();
+                vec3s minPointNear = line_intersection_to_depth_plane( eyePos, minpoint_view_space, tileNear );
+                vec3s minPointFar = line_intersection_to_depth_plane( eyePos, minpoint_view_space, tileFar );
+                vec3s maxPointNear = line_intersection_to_depth_plane( eyePos, maxpoint_view_space, tileNear );
+                vec3s maxPointFar = line_intersection_to_depth_plane( eyePos, maxpoint_view_space, tileFar );
+
+                // Transform points in world space
+                const mat4s view_to_world = glms_mat4_inv( scene_data.world_to_camera_debug );
+                minPointNear = glms_mat4_mulv3( view_to_world, minPointNear, 1.f );
+                minPointFar = glms_mat4_mulv3( view_to_world, minPointFar, 1.f );
+                maxPointNear = glms_mat4_mulv3( view_to_world, maxPointNear, 1.f );
+                maxPointFar = glms_mat4_mulv3( view_to_world, maxPointFar, 1.f );
+
+                vec3s minPointAABB = glms_vec3_minv( glms_vec3_minv( minPointNear, minPointFar ), glms_vec3_minv( maxPointNear, maxPointFar ) );
+                vec3s maxPointAABB = glms_vec3_maxv( glms_vec3_maxv( minPointNear, minPointFar ), glms_vec3_maxv( maxPointNear, maxPointFar ) );
+
+
+                debug_renderer.aabb( minPointAABB, maxPointAABB, { Color::white } );
+            }
+        }
+    }
+
+#endif // 0
+
     context.scratch_allocator->free_marker( current_marker );
 }
 
-void RenderScene::draw_mesh_instance( CommandBuffer* gpu_commands, MeshInstance& mesh_instance ) {
+void RenderScene::draw_mesh_instance( CommandBuffer* gpu_commands, MeshInstance& mesh_instance, bool transparent ) {
 
     Mesh& mesh = *mesh_instance.mesh;
     BufferHandle buffers[]{ mesh.position_buffer, mesh.tangent_buffer, mesh.normal_buffer, mesh.texcoord_buffer, mesh.joints_buffer, mesh.weights_buffer };
@@ -2389,11 +3324,94 @@ void RenderScene::draw_mesh_instance( CommandBuffer* gpu_commands, MeshInstance&
 
         gpu_commands->bind_local_descriptor_set( &descriptor_set, 1, nullptr, 0 );
     } else {
-        gpu_commands->bind_descriptor_set( &mesh.pbr_material.descriptor_set, 1, nullptr, 0 );
+        gpu_commands->bind_descriptor_set( transparent ? &mesh.pbr_material.descriptor_set_transparent : &mesh.pbr_material.descriptor_set_main, 1, nullptr, 0 );
     }
 
     // Gpu mesh index used to retrieve mesh data
     gpu_commands->draw_indexed( TopologyType::Triangle, mesh.primitive_count, 1, 0, 0, mesh_instance.gpu_mesh_instance_index );
+}
+
+void RenderScene::add_scene_descriptors( DescriptorSetCreation& descriptor_set_creation, GpuTechniquePass& pass ) {
+    const u16 binding = pass.get_binding_index( "SceneConstants" );
+    descriptor_set_creation.buffer( scene_cb, binding );
+}
+
+void RenderScene::add_mesh_descriptors( DescriptorSetCreation& descriptor_set_creation, GpuTechniquePass& pass ) {
+    //.buffer( meshes_sb, "MeshDraws").buffer(mesh_instances_sb, "MeshInstanceDraws").buffer(mesh_bounds_sb, "MeshBounds");
+
+    // These are always defined together.
+    const u16 binding_md = pass.get_binding_index( "MeshDraws" );
+    const u16 binding_mid = pass.get_binding_index( "MeshInstanceDraws" );
+    const u16 binding_mb = pass.get_binding_index( "MeshBounds" );
+
+    descriptor_set_creation.buffer( meshes_sb, binding_md ).buffer( mesh_instances_sb, binding_mid ).buffer( mesh_bounds_sb, binding_mb );
+}
+
+void RenderScene::add_meshlet_descriptors( DescriptorSetCreation& descriptor_set_creation, GpuTechniquePass& pass ) {
+    // .buffer(meshlets_sb, 1).buffer( meshlets_data_sb, 3 ).buffer( meshlets_vertex_pos_sb, 4 ).buffer( meshlets_vertex_data_sb, 5 )
+    // Handle optional bindings
+    u16 binding = pass.get_binding_index( "Meshlets" );
+    if ( binding != u16_max ) {
+        descriptor_set_creation.buffer( meshlets_sb, binding );
+    }
+
+    binding = pass.get_binding_index( "MeshletData" );
+    if ( binding != u16_max ) {
+        descriptor_set_creation.buffer( meshlets_data_sb, binding );
+    }
+
+    binding = pass.get_binding_index( "VertexPositions" );
+    if ( binding != u16_max ) {
+        descriptor_set_creation.buffer( meshlets_vertex_pos_sb, binding );
+    }
+
+    binding = pass.get_binding_index( "VertexData" );
+    if ( binding != u16_max ) {
+        descriptor_set_creation.buffer( meshlets_vertex_data_sb, binding );
+    }
+
+   // descriptor_set_creation.buffer( meshlets_sb, pass.get_binding_index( "Meshlets" ) ).buffer( meshlets_data_sb, pass.get_binding_index( "MeshletData" ) )
+       // .buffer( meshlets_vertex_pos_sb, pass.get_binding_index( "VertexPositions" ) ).buffer( meshlets_vertex_data_sb, pass.get_binding_index( "VertexData" ) );
+}
+
+void RenderScene::add_debug_descriptors( DescriptorSetCreation& descriptor_set_creation, GpuTechniquePass& pass ) {
+    // .buffer( debug_line_sb, 20 ).buffer( debug_line_count_sb, 21 ).buffer( debug_line_commands_sb, 22 )
+
+    //  These are always defined all together, no need to check.
+    const u16 binding_dl = pass.get_binding_index( "DebugLines" );
+    const u16 binding_dlc = pass.get_binding_index( "DebugLinesCount" );
+    const u16 binding_dlcmd = pass.get_binding_index( "DebugLineCommands" );
+
+    descriptor_set_creation.buffer( debug_line_sb, binding_dl ).buffer( debug_line_count_sb, binding_dlc ).buffer( debug_line_commands_sb, binding_dlcmd );
+}
+
+void RenderScene::add_lighting_descriptors( DescriptorSetCreation& descriptor_set_creation, GpuTechniquePass& pass, u32 frame_index ) {
+    // .buffer( scene.lights_lut_sb[ i ], 20 ).buffer( scene.lights_list_sb, 21 )
+    // .buffer( scene.lights_tiles_sb[ i ], 22 ).buffer( scene.lights_indices_sb[ i ], 25 )
+    u16 binding = pass.get_binding_index( "ZBins" );
+    if ( binding != u16_max ) {
+        descriptor_set_creation.buffer( lights_lut_sb[ frame_index ], binding );
+    }
+
+    binding = pass.get_binding_index( "Lights" );
+    if ( binding != u16_max ) {
+        descriptor_set_creation.buffer( lights_list_sb, binding );
+    }
+
+    binding = pass.get_binding_index( "Tiles" );
+    if ( binding != u16_max ) {
+        descriptor_set_creation.buffer( lights_tiles_sb[ frame_index ], binding );
+    }
+
+    binding = pass.get_binding_index( "LightIndices" );
+    if ( binding != u16_max ) {
+        descriptor_set_creation.buffer( lights_indices_sb[ frame_index ], binding );
+    }
+
+    binding = pass.get_binding_index( "LightConstants" );
+    if ( binding != u16_max ) {
+        descriptor_set_creation.buffer( lighting_constants_cb[ frame_index ], binding );
+    }
 }
 
 // DrawTask ///////////////////////////////////////////////////////////////
@@ -2415,7 +3433,7 @@ void DrawTask::init( GpuDevice* gpu_, FrameGraph* frame_graph_, Renderer* render
 void DrawTask::ExecuteRange( enki::TaskSetPartition range_, uint32_t threadnum_ ) {
     ZoneScoped;
 
-        using namespace raptor;
+    using namespace raptor;
 
     thread_id = threadnum_;
 
@@ -2469,10 +3487,10 @@ void FrameRenderer::init( Allocator* resident_allocator_, Renderer* renderer_,
     frame_graph->builder->register_render_pass( "transparent_pass", &transparent_pass );
     frame_graph->builder->register_render_pass( "depth_of_field_pass", &dof_pass );
     frame_graph->builder->register_render_pass( "debug_pass", &debug_pass );
-    frame_graph->builder->register_render_pass( "mesh_pass", &mesh_pass );
     frame_graph->builder->register_render_pass( "mesh_occlusion_early_pass", &mesh_occlusion_early_pass );
     frame_graph->builder->register_render_pass( "mesh_occlusion_late_pass", &mesh_occlusion_late_pass );
     frame_graph->builder->register_render_pass( "depth_pyramid_pass", &depth_pyramid_pass );
+    frame_graph->builder->register_render_pass( "point_shadows_pass", &pointlight_shadow_pass );
 }
 
 void FrameRenderer::shutdown() {
@@ -2486,6 +3504,7 @@ void FrameRenderer::shutdown() {
     mesh_occlusion_early_pass.free_gpu_resources();
     mesh_occlusion_late_pass.free_gpu_resources();
     depth_pyramid_pass.free_gpu_resources();
+    pointlight_shadow_pass.free_gpu_resources();
 
     renderer->gpu->destroy_descriptor_set( fullscreen_ds );
 }
@@ -2493,6 +3512,7 @@ void FrameRenderer::shutdown() {
 void FrameRenderer::upload_gpu_data( UploadGpuDataContext& context ) {
     light_pass.upload_gpu_data( *scene );
     dof_pass.upload_gpu_data();
+    pointlight_shadow_pass.upload_gpu_data( *scene );
 
     scene->upload_gpu_data( context );
 
@@ -2515,10 +3535,10 @@ void FrameRenderer::prepare_draws( StackAllocator* scratch_allocator ) {
     transparent_pass.prepare_draws( *scene, frame_graph, renderer->gpu->allocator, scratch_allocator );
     dof_pass.prepare_draws( *scene, frame_graph, renderer->gpu->allocator, scratch_allocator );
     debug_pass.prepare_draws( *scene, frame_graph, renderer->gpu->allocator, scratch_allocator );
-    mesh_pass.prepare_draws( *scene, frame_graph, renderer->gpu->allocator, scratch_allocator );
     mesh_occlusion_early_pass.prepare_draws( *scene, frame_graph, renderer->gpu->allocator, scratch_allocator );
     mesh_occlusion_late_pass.prepare_draws( *scene, frame_graph, renderer->gpu->allocator, scratch_allocator );
     depth_pyramid_pass.prepare_draws( *scene, frame_graph, renderer->gpu->allocator, scratch_allocator );
+    pointlight_shadow_pass.prepare_draws( *scene, frame_graph, renderer->gpu->allocator, scratch_allocator );
 
     // Handle fullscreen pass.
     fullscreen_tech = renderer->resource_cache.techniques.get( hash_calculate( "fullscreen" ) );
@@ -2598,4 +3618,232 @@ vec3s project( const mat4s& P, const vec3s& Q ) {
 
     return vec3s{ v.x, v.y, v.z };
 }
+
+void project_aabb_cubemap_positive_x( const vec3s aabb[ 2 ], f32& s_min, f32& s_max, f32& t_min, f32& t_max ) {
+    f32 rd_min = 1.f / glm_max( FLT_EPSILON, aabb[ 0 ].x );
+    f32 rd_max = 1.f / glm_max( FLT_EPSILON, aabb[ 1 ].x );
+
+    s_min = glm_min( -aabb[ 1 ].z * rd_min, -aabb[ 1 ].z * rd_max );
+    s_max = glm_max( -aabb[ 0 ].z * rd_min, -aabb[ 0 ].z * rd_max );
+
+    t_min = glm_min( -aabb[ 1 ].y * rd_min, -aabb[ 1 ].y * rd_max );
+    t_max = glm_max( -aabb[ 0 ].y * rd_min, -aabb[ 0 ].y * rd_max );
+}
+
+void project_aabb_cubemap_negative_x( const vec3s aabb[ 2 ], f32& s_min, f32& s_max, f32& t_min, f32& t_max ) {
+    f32 rd_min = 1.f / glm_max( FLT_EPSILON, -aabb[ 0 ].x );
+    f32 rd_max = 1.f / glm_max( FLT_EPSILON, -aabb[ 1 ].x );
+
+    s_min = glm_min( aabb[ 0 ].z * rd_min, aabb[ 0 ].z * rd_max );
+    s_max = glm_max( aabb[ 1 ].z * rd_min, aabb[ 1 ].z * rd_max );
+
+    t_min = glm_min( -aabb[ 1 ].y * rd_min, -aabb[ 1 ].y * rd_max );
+    t_max = glm_max( -aabb[ 0 ].y * rd_min, -aabb[ 0 ].y * rd_max );
+}
+
+void project_aabb_cubemap_positive_y( const vec3s aabb[ 2 ], f32& s_min, f32& s_max, f32& t_min, f32& t_max ) {
+    f32 rd_min = 1.f / glm_max( FLT_EPSILON, aabb[ 0 ].y );
+    f32 rd_max = 1.f / glm_max( FLT_EPSILON, aabb[ 1 ].y );
+
+    s_min = glm_min( -aabb[ 1 ].x * rd_min, -aabb[ 1 ].x * rd_max );
+    s_max = glm_max( -aabb[ 0 ].x * rd_min, -aabb[ 0 ].x * rd_max );
+
+    t_min = glm_min( -aabb[ 1 ].z * rd_min, -aabb[ 1 ].z * rd_max );
+    t_max = glm_max( -aabb[ 0 ].z * rd_min, -aabb[ 0 ].z * rd_max );
+}
+
+void project_aabb_cubemap_negative_y( const vec3s aabb[ 2 ], f32& s_min, f32& s_max, f32& t_min, f32& t_max ) {
+    f32 rd_min = 1.f / glm_max( FLT_EPSILON, -aabb[ 0 ].y );
+    f32 rd_max = 1.f / glm_max( FLT_EPSILON, -aabb[ 1 ].y );
+
+    s_min = glm_min( aabb[ 0 ].x * rd_min, aabb[ 0 ].x * rd_max );
+    s_max = glm_max( aabb[ 1 ].x * rd_min, aabb[ 1 ].x * rd_max );
+
+    t_min = glm_min( -aabb[ 1 ].z * rd_min, -aabb[ 1 ].z * rd_max );
+    t_max = glm_max( -aabb[ 0 ].z * rd_min, -aabb[ 0 ].z * rd_max );
+}
+
+void project_aabb_cubemap_positive_z( const vec3s aabb[ 2 ], f32& s_min, f32& s_max, f32& t_min, f32& t_max ) {
+    f32 rd_min = 1.f / glm_max( FLT_EPSILON, aabb[ 0 ].z );
+    f32 rd_max = 1.f / glm_max( FLT_EPSILON, aabb[ 1 ].z );
+
+    s_min = glm_min( -aabb[ 1 ].x * rd_min, -aabb[ 1 ].x * rd_max );
+    s_max = glm_max( -aabb[ 0 ].x * rd_min, -aabb[ 0 ].x * rd_max );
+
+    t_min = glm_min( -aabb[ 1 ].y * rd_min, -aabb[ 1 ].y * rd_max );
+    t_max = glm_max( -aabb[ 0 ].y * rd_min, -aabb[ 0 ].y * rd_max );
+}
+
+void project_aabb_cubemap_negative_z( const vec3s aabb[ 2 ], f32& s_min, f32& s_max, f32& t_min, f32& t_max ) {
+    f32 rd_min = 1.f / glm_max( FLT_EPSILON, -aabb[ 0 ].z );
+    f32 rd_max = 1.f / glm_max( FLT_EPSILON, -aabb[ 1 ].z );
+
+    s_min = glm_min( aabb[ 0 ].x * rd_min, aabb[ 0 ].x * rd_max );
+    s_max = glm_max( aabb[ 1 ].x * rd_min, aabb[ 1 ].x * rd_max );
+
+    t_min = glm_min( -aabb[ 1 ].y * rd_min, -aabb[ 1 ].y * rd_max );
+    t_max = glm_max( -aabb[ 0 ].y * rd_min, -aabb[ 0 ].y * rd_max );
+}
+
+// DebugRenderer //////////////////////////////////////////////////////////
+
+//
+//
+struct LineVertex {
+    vec3s                           position;
+    Color                           color;
+
+    void                            set( vec3s position_, Color color_ ) { position = position_; color = color_; }
+    void                            set( vec2s position_, Color color_ ) { position = { position_.x, position_.y, 0 }; color = color_; }
+}; // struct LineVertex
+
+//
+//
+struct LineVertex2D {
+    vec3s                           position;
+    u32                             color;
+
+    void                            set( vec2s position_, Color color_ ) { position = { position_.x, position_.y, 0 }, color = color_.abgr; }
+}; // struct LineVertex2D
+
+static const u32            k_max_lines = 1024 * 1024;
+
+static LineVertex           s_line_buffer[ k_max_lines ];
+static LineVertex2D         s_line_buffer_2d[ k_max_lines ];
+
+
+void DebugRenderer::render( u32 current_frame_index, CommandBuffer* gpu_commands, RenderScene* render_scene ) {
+
+    if ( current_line ) {
+
+        const u32 mapping_size = sizeof( LineVertex ) * current_line;
+        MapBufferParameters cb_map{ lines_vb, 0, mapping_size };
+        LineVertex* vtx_dst = ( LineVertex* )renderer->gpu->map_buffer( cb_map );
+
+        if ( vtx_dst ) {
+            memcpy( vtx_dst, &s_line_buffer[ 0 ], mapping_size );
+
+            renderer->gpu->unmap_buffer( cb_map );
+        }
+
+        gpu_commands->bind_pipeline( debug_lines_draw_pipeline );
+        gpu_commands->bind_vertex_buffer( lines_vb, 0, 0 );
+        gpu_commands->bind_descriptor_set( &debug_lines_draw_set, 1, nullptr, 0 );
+        // Draw using instancing and 6 vertices.
+        const uint32_t num_vertices = 6;
+        gpu_commands->draw( TopologyType::Triangle, 0, num_vertices, 0, current_line / 2 );
+
+        current_line = 0;
+    }
+
+    if ( current_line_2d ) {
+
+        const u32 mapping_size = sizeof( LineVertex2D ) * current_line_2d;
+        MapBufferParameters cb_map{ lines_vb_2d, 0, mapping_size };
+        LineVertex2D* vtx_dst = ( LineVertex2D* )renderer->gpu->map_buffer( cb_map );
+
+        if ( vtx_dst ) {
+            memcpy( vtx_dst, &s_line_buffer_2d[ 0 ], mapping_size );
+
+            renderer->gpu->unmap_buffer( cb_map );
+        }
+
+        gpu_commands->bind_pipeline( debug_lines_2d_draw_pipeline );
+        gpu_commands->bind_vertex_buffer( lines_vb_2d, 0, 0 );
+        gpu_commands->bind_descriptor_set( &debug_lines_draw_set, 1, nullptr, 0 );
+        // Draw using instancing and 6 vertices.
+        const uint32_t num_vertices = 6;
+        gpu_commands->draw( TopologyType::Triangle, 0, num_vertices, 0, current_line_2d / 2 );
+
+        current_line_2d = 0;
+    }
+}
+
+void DebugRenderer::init( RenderScene& scene, Allocator* resident_allocator, StackAllocator* scratch_allocator ) {
+
+    renderer = scene.renderer;
+
+    current_line_2d = current_line = 0;
+
+    BufferCreation buffer_creation;
+    buffer_creation.reset().set( VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, ResourceUsageType::Dynamic, sizeof( LineVertex ) * k_max_lines ).set_name( "lines_vb" );
+    lines_vb = renderer->gpu->create_buffer( buffer_creation );
+
+    buffer_creation.reset().set( VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, ResourceUsageType::Dynamic, sizeof( LineVertex2D ) * k_max_lines ).set_name( "lines_vb_2d" );
+    lines_vb_2d = renderer->gpu->create_buffer( buffer_creation );
+
+    const u64 hashed_name = hash_calculate( "debug" );
+    GpuTechnique* main_technique = renderer->resource_cache.techniques.get( hashed_name );
+
+    // Prepare CPU debug line resources
+    {
+        DescriptorSetCreation set_creation{ };
+
+        // Draw pass
+        u32 pass_index = main_technique->get_pass_index( "debug_line_cpu" );
+        GpuTechniquePass& pass = main_technique->passes[ pass_index ];
+        debug_lines_draw_pipeline = pass.pipeline;
+        DescriptorSetLayoutHandle layout = renderer->gpu->get_descriptor_set_layout( pass.pipeline, k_material_descriptor_set_index );
+
+        set_creation.reset().set_layout( layout );
+        scene.add_scene_descriptors( set_creation, pass );
+        scene.add_debug_descriptors( set_creation, pass );
+        debug_lines_draw_set = renderer->gpu->create_descriptor_set( set_creation );
+
+        pass_index = main_technique->get_pass_index( "debug_line_2d_cpu" );
+        debug_lines_2d_draw_pipeline = main_technique->passes[ pass_index ].pipeline;
+    }
+}
+
+void DebugRenderer::shutdown() {
+
+    renderer->gpu->destroy_buffer( lines_vb );
+    renderer->gpu->destroy_buffer( lines_vb_2d );
+    renderer->gpu->destroy_descriptor_set( debug_lines_draw_set );
+}
+
+void DebugRenderer::line( const vec3s& from, const vec3s& to, Color color ) {
+    line( from, to, color, color );
+}
+
+void DebugRenderer::line_2d( const vec2s& from, const vec2s& to, Color color ) {
+    if ( current_line_2d >= k_max_lines ) {
+        return;
+    }
+
+    s_line_buffer_2d[ current_line_2d++ ].set( from, color );
+    s_line_buffer_2d[ current_line_2d++ ].set( to, color );
+}
+
+void DebugRenderer::line( const vec3s& from, const vec3s& to, Color color0, Color color1 ) {
+    if ( current_line >= k_max_lines )
+        return;
+
+    s_line_buffer[ current_line++ ].set( from, color0 );
+    s_line_buffer[ current_line++ ].set( to, color1 );
+}
+
+void DebugRenderer::aabb( const vec3s& min, const vec3s max, Color color ) {
+
+    const f32 x0 = min.x;
+    const f32 y0 = min.y;
+    const f32 z0 = min.z;
+    const f32 x1 = max.x;
+    const f32 y1 = max.y;
+    const f32 z1 = max.z;
+
+    line( { x0, y0, z0 }, { x0, y1, z0 }, color, color );
+    line( { x0, y1, z0 }, { x1, y1, z0 }, color, color );
+    line( { x1, y1, z0 }, { x1, y0, z0 }, color, color );
+    line( { x1, y0, z0 }, { x0, y0, z0 }, color, color );
+    line( { x0, y0, z0 }, { x0, y0, z1 }, color, color );
+    line( { x0, y1, z0 }, { x0, y1, z1 }, color, color );
+    line( { x1, y1, z0 }, { x1, y1, z1 }, color, color );
+    line( { x1, y0, z0 }, { x1, y0, z1 }, color, color );
+    line( { x0, y0, z1 }, { x0, y1, z1 }, color, color );
+    line( { x0, y1, z1 }, { x1, y1, z1 }, color, color );
+    line( { x1, y1, z1 }, { x1, y0, z1 }, color, color );
+    line( { x1, y0, z1 }, { x0, y0, z1 }, color, color );
+}
+
 } // namespace raptor

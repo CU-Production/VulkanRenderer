@@ -68,37 +68,65 @@ namespace raptor {
         mat4s                   world_to_camera;    // view matrix
         mat4s                   world_to_camera_debug;
         mat4s                   previous_view_projection;
+        mat4s                   inverse_projection;
+        mat4s                   inverse_view;
 
         vec4s                   camera_position;
         vec4s                   camera_position_debug;
 
-        f32                     pad1000;
-        f32                     pad1001;
+        u32                     active_lights;
+        u32                     use_tetrahedron_shadows;
         u32                     dither_texture_index;
         f32                     z_near;
 
         f32                     z_far;
         f32                     projection_00;
         f32                     projection_11;
-        u32                     frustum_cull_meshes;
-
-        u32                     frustum_cull_meshlets;
-        u32                     occlusion_cull_meshes;
-        u32                     occlusion_cull_meshlets;
-        u32                     freeze_occlusion_camera;
+        u32                     culling_options;
 
         f32                     resolution_x;
         f32                     resolution_y;
         f32                     aspect_ratio;
-        f32                     pad0001;
-
-        // TEST packed light data.
-        vec4s                   light0_data0;
-        vec4s                   light0_data1;
+        u32                     num_mesh_instances;
 
         vec4s                   frustum_planes[ 6 ];
 
+        // Helpers for bit packing. Would be perfect for code generation
+        // NOTE: must be in sync with scene.h!
+        bool                    frustum_cull_meshes() const             { return ( culling_options &  1 ) ==  1; }
+        bool                    frustum_cull_meshlets() const           { return ( culling_options &  2 ) ==  2; }
+        bool                    occlusion_cull_meshes() const           { return ( culling_options &  4 ) ==  4; }
+        bool                    occlusion_cull_meshlets() const         { return ( culling_options &  8 ) ==  8; }
+        bool                    freeze_occlusion_camera() const         { return ( culling_options & 16 ) == 16; }
+        bool                    shadow_meshlets_cone_cull() const         { return ( culling_options & 32 ) == 32; }
+        bool                    shadow_meshlets_sphere_cull() const       { return ( culling_options & 64 ) == 64; }
+        bool                    shadow_meshlets_cubemap_face_cull() const { return ( culling_options & 128 ) == 128; }
+        bool                    shadow_mesh_sphere_cull() const         { return ( culling_options & 256 ) == 256; }
+
+        void                    set_frustum_cull_meshes(bool value)     { value ? (culling_options |=  1) : (culling_options &= ~( 1)); }
+        void                    set_frustum_cull_meshlets(bool value)   { value ? (culling_options |=  2) : (culling_options &= ~( 2)); }
+        void                    set_occlusion_cull_meshes(bool value)   { value ? (culling_options |=  4) : (culling_options &= ~( 4)); }
+        void                    set_occlusion_cull_meshlets(bool value) { value ? (culling_options |=  8) : (culling_options &= ~( 8)); }
+        void                    set_freeze_occlusion_camera(bool value) { value ? (culling_options |= 16) : (culling_options &= ~(16)); }
+        void                    set_shadow_meshlets_cone_cull( bool value )      { value ? ( culling_options |= 32 ) : ( culling_options &= ~( 32 ) ); }
+        void                    set_shadow_meshlets_sphere_cull( bool value )    { value ? ( culling_options |= 64 ) : ( culling_options &= ~( 64 ) ); }
+        void                    set_shadow_meshlets_cubemap_face_cull( bool value ) { value ? ( culling_options |= 128 ) : ( culling_options &= ~( 128 ) ); }
+        void                    set_shadow_mesh_sphere_cull( bool value ) { value ? ( culling_options |= 256 ) : ( culling_options &= ~( 256 ) ); }
+
     }; // struct GpuSceneData
+
+    struct alignas( 16 ) GpuLightingData {
+
+        u32                     cubemap_shadows_index;
+        u32                     debug_show_light_tiles;
+        u32                     debug_show_tiles;
+        u32                     debug_show_bins;
+
+        u32                     disable_shadows;
+        u32                     debug_modes;
+        u32                     debug_texture_index;
+        u32                     padding0;
+    }; // GpuLightingData
 
     struct glTFScene;
     struct Material;
@@ -110,7 +138,8 @@ namespace raptor {
         Material*               material        = nullptr;
 
         BufferHandle            material_buffer = k_invalid_buffer;
-        DescriptorSetHandle     descriptor_set  = k_invalid_set;
+        DescriptorSetHandle     descriptor_set_transparent  = k_invalid_set;
+        DescriptorSetHandle     descriptor_set_main = k_invalid_set;
 
         // Indices used for bindless textures.
         u16                     diffuse_texture_index   = u16_max;
@@ -463,7 +492,7 @@ namespace raptor {
     // Light //////////////////////////////////////////////////////////////
 
     //
-    struct Light {
+    struct alignas( 16 ) Light {
 
         vec3s                   world_position;
         f32                     radius;
@@ -471,16 +500,29 @@ namespace raptor {
         vec3s                   color;
         f32                     intensity;
 
+        vec4s                   aabb_min;
+        vec4s                   aabb_max;
+
+        f32                     shadow_map_resolution;
+        u32                     tile_x;
+        u32                     tile_y;
+        f32                     solid_angle;
+
     }; // struct Light
 
     // Separated from Light struct as it could contain unpacked data.
     struct alignas( 16 ) GpuLight {
 
         vec3s                   world_position;
-        f32                     attenuation;
+        f32                     radius;
 
         vec3s                   color;
         f32                     intensity;
+
+        f32                     shadow_map_resolution;
+        f32                     rcp_n_minus_f;          // Calculation of 1 / (n - f) used to retrieve cubemap shadows depth value.
+        f32                     pad1;
+        f32                     pad2;
 
     }; // struct GpuLight
 
@@ -593,6 +635,7 @@ namespace raptor {
         BufferHandle            last_lights_buffer = k_invalid_buffer;
 
         DescriptorSetHandle     lighting_descriptor_set[ k_max_frames ];
+        TextureHandle           lighting_debug_texture;
 
         FrameGraphResource*     color_texture;
         FrameGraphResource*     normal_texture;
@@ -615,6 +658,63 @@ namespace raptor {
         Renderer*               renderer;
         u32                     meshlet_technique_index;
     }; // struct TransparentPass
+
+    //
+    //
+    struct PointlightShadowPass : public FrameGraphRenderPass {
+        void                    pre_render( u32 current_frame_index, CommandBuffer* gpu_commands, FrameGraph* frame_graph, RenderScene* render_scene ) override;
+        void                    render( u32 current_frame_index, CommandBuffer* gpu_commands, RenderScene* render_scene ) override;
+
+        void                    prepare_draws( RenderScene& scene, FrameGraph* frame_graph, Allocator* resident_allocator, StackAllocator* scratch_allocator );
+        void                    upload_gpu_data( RenderScene& scene );
+        void                    free_gpu_resources();
+
+        void                    recreate_dependent_resources( RenderScene& scene );
+
+        Array<MeshInstanceDraw> mesh_instance_draws;
+        Renderer*               renderer;
+
+        u32                     last_active_lights = 0;
+
+        BufferHandle            pointlight_view_projections_cb[ k_max_frames ];
+        BufferHandle            pointlight_spheres_cb[ k_max_frames ];
+        // Manual pass generation, add support in framegraph for special cases like this?
+        RenderPassHandle        cubemap_render_pass;
+        FramebufferHandle       cubemap_framebuffer;
+        // Cubemap rendering
+        TextureHandle           cubemap_shadow_array_texture;
+        DescriptorSetHandle     cubemap_meshlet_draw_descriptor_set[ k_max_frames ];
+        PipelineHandle          cubemap_meshlets_pipeline;
+        // Tetrahedron rendering
+        TextureHandle           tetrahedron_shadow_texture;
+        PipelineHandle          tetrahedron_meshlet_pipeline;
+        FramebufferHandle       tetrahedron_framebuffer;
+
+        // Culling pass
+        PipelineHandle          meshlet_culling_pipeline;
+        DescriptorSetHandle     meshlet_culling_descriptor_set[ k_max_frames ];
+        BufferHandle            meshlet_visible_instances[ k_max_frames ];
+        BufferHandle            per_light_meshlet_instances[ k_max_frames ];
+
+        // Write command pass
+        PipelineHandle          meshlet_write_commands_pipeline;
+        DescriptorSetHandle     meshlet_write_commands_descriptor_set[ k_max_frames ];
+        BufferHandle            meshlet_shadow_indirect_cb[ k_max_frames ];
+
+        // Shadow resolution pass
+        BufferHandle            last_lights_buffer = k_invalid_buffer;
+
+        PipelineHandle          shadow_resolution_pipeline;
+        DescriptorSetHandle     shadow_resolution_descriptor_set[ k_max_frames ];
+        BufferHandle            light_aabbs;
+        BufferHandle            shadow_resolutions[ k_max_frames ];
+        BufferHandle            shadow_resolutions_readback[ k_max_frames ];
+
+        PagePoolHandle          shadow_maps_pool = k_invalid_page_pool;
+
+        TextureHandle           cubemap_debug_face_texture;
+
+    }; // struct CubemapShadowsPass
 
     //
     //
@@ -695,12 +795,6 @@ namespace raptor {
         float                   aperture;
     }; // struct DoFPass
 
-    struct MeshPass : public FrameGraphRenderPass {
-        void                    render( u32 current_frame_index, CommandBuffer* gpu_commands, RenderScene* render_scene ) override;
-
-        void                    prepare_draws( RenderScene& scene, FrameGraph* frame_graph, Allocator* resident_allocator, StackAllocator* scratch_allocator );
-    }; // struct MeshPass
-
     //
     //
     struct CullingEarlyPass : public FrameGraphRenderPass {
@@ -718,6 +812,8 @@ namespace raptor {
 
     }; // struct CullingPrePass
 
+    //
+    //
     struct CullingLatePass : public FrameGraphRenderPass {
         void                    render( u32 current_frame_index, CommandBuffer* gpu_commands, RenderScene* render_scene ) override;
 
@@ -734,8 +830,36 @@ namespace raptor {
     }; // struct CullingLatePass
 
     //
-    void                        get_bounds_for_axis( const vec3s& a, const vec3s& C, float r, float nearZ, vec3s& L, vec3s& U );
-    vec3s                       project( const mat4s& P, const vec3s& Q );
+    //
+    struct DebugRenderer {
+
+        void                    init( RenderScene& scene, Allocator* resident_allocator, StackAllocator* scratch_allocator );
+        void                    shutdown();
+
+        void                    render( u32 current_frame_index, CommandBuffer* gpu_commands, RenderScene* render_scene );
+
+
+        void                    line( const vec3s& from, const vec3s& to, Color color );
+        void                    line_2d( const vec2s& from, const vec2s& to, Color color );
+        void                    line( const vec3s& from, const vec3s& to, Color color0, Color color1 );
+
+        void                    aabb( const vec3s& min, const vec3s max, Color color );
+
+        Renderer*               renderer;
+
+        // CPU rendering resources
+        BufferHandle            lines_vb;
+        BufferHandle            lines_vb_2d;
+
+        u32                     current_line;
+        u32                     current_line_2d;
+
+        // Shared resources
+        PipelineHandle          debug_lines_draw_pipeline;
+        PipelineHandle          debug_lines_2d_draw_pipeline;
+        DescriptorSetHandle     debug_lines_draw_set;
+
+    }; // struct DebugRenderer
 
     //
     //
@@ -752,7 +876,16 @@ namespace raptor {
         void                    update_joints();
 
         void                    upload_gpu_data( UploadGpuDataContext& context );
-        void                    draw_mesh_instance( CommandBuffer* gpu_commands, MeshInstance& mesh_instance );
+        void                    draw_mesh_instance( CommandBuffer* gpu_commands, MeshInstance& mesh_instance, bool transparent );
+
+        // Helpers based on shaders. Ideally this would be coming from generated cpp files.
+        void                    add_scene_descriptors( DescriptorSetCreation& descriptor_set_creation, GpuTechniquePass& pass );
+        void                    add_mesh_descriptors( DescriptorSetCreation& descriptor_set_creation, GpuTechniquePass& pass );
+        void                    add_meshlet_descriptors( DescriptorSetCreation& descriptor_set_creation, GpuTechniquePass& pass );
+        void                    add_debug_descriptors( DescriptorSetCreation& descriptor_set_creation, GpuTechniquePass& pass );
+        void                    add_lighting_descriptors( DescriptorSetCreation& descriptor_set_creation, GpuTechniquePass& pass, u32 frame_index );
+
+        DebugRenderer           debug_renderer;
 
         // Mesh and MeshInstances
         Array<Mesh>             meshes;
@@ -773,6 +906,8 @@ namespace raptor {
         Array<Light>            lights;
         Array<u32>              lights_lut;
         vec3s                   mesh_aabb[2]; // 0 min, 1 max
+        u32                     active_lights   = 1;
+        bool                    shadow_constants_cpu_update = true;
 
         StringBuffer            names_buffer;   // Buffer containing all names of nodes, resources, etc.
 
@@ -799,6 +934,7 @@ namespace raptor {
         BufferHandle            lights_lut_sb[ k_max_frames ];
         BufferHandle            lights_tiles_sb[ k_max_frames ];
         BufferHandle            lights_indices_sb[ k_max_frames ];
+        BufferHandle            lighting_constants_cb[ k_max_frames ];
 
         // Gpu debug draw
         BufferHandle            debug_line_sb           = k_invalid_buffer;
@@ -828,9 +964,20 @@ namespace raptor {
         Allocator*              resident_allocator;
         Renderer*               renderer;
 
+        u32                     cubemap_shadows_index = 0;
+        u32                     lighting_debug_texture_index = 0;
+        u32                     cubemap_debug_array_index = 0;
+        u32                     cubemap_debug_face_index = 5;
+        bool                    cubemap_face_debug_enabled = false;
+
         bool                    use_meshlets = true;
         bool                    use_meshlets_emulation = false;
         bool                    show_debug_gpu_draws = false;
+        bool                    pointlight_rendering = true;
+        bool                    pointlight_use_meshlets = true;
+        bool                    use_tetrahedron_shadows = false;
+
+        bool                    cubeface_flip[ 6 ];
 
         f32                     global_scale = 1.f;
     }; // struct RenderScene
@@ -865,10 +1012,10 @@ namespace raptor {
         TransparentPass         transparent_pass;
         DoFPass                 dof_pass;
         DebugPass               debug_pass;
-        MeshPass                mesh_pass;
         CullingEarlyPass        mesh_occlusion_early_pass;
         CullingLatePass         mesh_occlusion_late_pass;
         DepthPyramidPass        depth_pyramid_pass;
+        PointlightShadowPass    pointlight_shadow_pass;
 
         // Fullscreen data
         GpuTechnique*           fullscreen_tech = nullptr;
@@ -887,7 +1034,7 @@ namespace raptor {
         FrameGraph*             frame_graph = nullptr;
         Renderer*               renderer    = nullptr;
         ImGuiService*           imgui       = nullptr;
-        GpuVisualProfiler*            gpu_profiler = nullptr;
+        GpuVisualProfiler*      gpu_profiler = nullptr;
         RenderScene*            scene       = nullptr;
         FrameRenderer*          frame_renderer = nullptr;
         u32                     thread_id   = 0;
@@ -901,6 +1048,18 @@ namespace raptor {
 
         void ExecuteRange( enki::TaskSetPartition range_, uint32_t threadnum_ ) override;
 
-    }; // struct glTFDrawTask
+    }; // struct DrawTask
+
+
+    // Math utils /////////////////////////////////////////////////////////
+    void                        get_bounds_for_axis( const vec3s& a, const vec3s& C, float r, float nearZ, vec3s& L, vec3s& U );
+    vec3s                       project( const mat4s& P, const vec3s& Q );
+
+    void                        project_aabb_cubemap_positive_x( const vec3s aabb[ 2 ], f32& s_min, f32& s_max, f32& t_min, f32& t_max );
+    void                        project_aabb_cubemap_negative_x( const vec3s aabb[ 2 ], f32& s_min, f32& s_max, f32& t_min, f32& t_max );
+    void                        project_aabb_cubemap_positive_y( const vec3s aabb[ 2 ], f32& s_min, f32& s_max, f32& t_min, f32& t_max );
+    void                        project_aabb_cubemap_negative_y( const vec3s aabb[ 2 ], f32& s_min, f32& s_max, f32& t_min, f32& t_max );
+    void                        project_aabb_cubemap_positive_z( const vec3s aabb[ 2 ], f32& s_min, f32& s_max, f32& t_min, f32& t_max );
+    void                        project_aabb_cubemap_negative_z( const vec3s aabb[ 2 ], f32& s_min, f32& s_max, f32& t_min, f32& t_max );
 
 } // namespace raptor

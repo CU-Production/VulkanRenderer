@@ -1,6 +1,6 @@
 
 
-#if defined(VERTEX_MAIN)
+#if defined(VERTEX_MAIN_TRIANGLE)
 
 layout (location = 0) out vec2 vTexCoord;
 layout (location = 1) flat out uint out_texture_id;
@@ -16,7 +16,7 @@ void main() {
 
 #endif // VERTEX_MAIN
 
-#if defined(FRAGMENT_MAIN)
+#if defined(FRAGMENT_MAIN_TRIANGLE)
 
 layout (location = 0) in vec2 vTexCoord;
 layout (location = 1) flat in uint texture_id;

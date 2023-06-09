@@ -16,6 +16,15 @@
 
 # Features
 
+## 20230609
+
+- [x] cubemap shadow map for point light
+- [x] use multiview rendering to speed up render to cubemap
+- [x] use sparse texture to save shadow map memory
+
+![](screenshots/Snipaste_2023-06-09_22-19-27.png)
+![](screenshots/Snipaste_2023-06-09_22-19-35.png)
+
 ## 20230607
 
 - [x] clustered deferred rendering

@@ -77,7 +77,7 @@ void main() {
 
 		// Transform bounding sphere to view space.
 		vec4 world_bounding_center = model * vec4(bounding_sphere.xyz, 1);
-		vec4 view_bounding_center = freeze_occlusion_camera == 0 ? world_to_camera * world_bounding_center : world_to_camera_debug * world_bounding_center;
+		vec4 view_bounding_center = freeze_occlusion_camera() ? world_to_camera * world_bounding_center : world_to_camera_debug * world_bounding_center;
 
     	float scale = length( model[0] );
     	float radius = bounding_sphere.w * scale * 1.1;	// Artificially inflate bounding sphere.
@@ -87,12 +87,12 @@ void main() {
 	        frustum_visible = frustum_visible && (dot( frustum_planes[i], view_bounding_center) > -radius);
 	    }
 
-	    frustum_visible = frustum_visible || (frustum_cull_meshes == 0);
+	    frustum_visible = frustum_visible || disable_frustum_cull_meshes();
 
 	    bool occlusion_visible = true;
 	    if ( frustum_visible ) {
 
-	    	vec3 camera_world_position = freeze_occlusion_camera == 0 ? camera_position.xyz : camera_position_debug.xyz;
+	    	vec3 camera_world_position = freeze_occlusion_camera() ? camera_position.xyz : camera_position_debug.xyz;
 	    	mat4 culling_view_projection = early_late_flag == 0 ? previous_view_projection : view_projection;
 
 	    	occlusion_visible = occlusion_cull( view_bounding_center.xyz, radius, z_near, projection_00, projection_11,
@@ -100,7 +100,7 @@ void main() {
 	    		                                culling_view_projection );
 	    }
 
-		occlusion_visible = occlusion_visible || (occlusion_cull_meshes == 0);
+		occlusion_visible = occlusion_visible || disable_occlusion_cull_meshes();
 
 	    uint flags = mesh_draw.flags;
 	    if ( frustum_visible && occlusion_visible ) {

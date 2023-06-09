@@ -164,6 +164,79 @@
 					"includes" : ["platform.h", "scene.h", "mesh.h", "meshlet.h", "culling.h"]
 				}
 			]
+		},
+		{
+			"name" : "depth_cubemap",
+			"render_pass" : "point_shadows_pass",
+			"depth" : {
+				"write" : true,
+				"test" : "less_or_equal"
+			},
+			"shaders" : [
+				{
+					"stage" : "mesh",
+					"shader" : "meshlet.glsl",
+					"includes" : ["platform.h", "scene.h", "mesh.h", "meshlet.h"]
+				},
+				{
+					"stage" : "task",
+					"shader" : "meshlet.glsl",
+					"includes" : ["platform.h", "scene.h", "mesh.h", "debug_rendering.h", "meshlet.h", "culling.h"]
+				}
+			]
+		},
+		{
+			"name" : "depth_tetrahedron",
+			"render_pass" : "point_shadows_pass",
+			"depth" : {
+				"write" : true,
+				"test" : "less_or_equal"
+			},
+			"shaders" : [
+				{
+					"stage" : "mesh",
+					"shader" : "meshlet.glsl",
+					"includes" : ["platform.h", "scene.h", "mesh.h", "meshlet.h"]
+				},
+				{
+					"stage" : "task",
+					"shader" : "meshlet.glsl",
+					"includes" : ["platform.h", "scene.h", "mesh.h", "debug_rendering.h", "meshlet.h", "culling.h"]
+				}
+			]
+		},
+		{
+			"name" : "meshlet_pointshadows_culling",
+			"render_pass" : "gbuffer_pass_early",
+			"shaders" : [
+				{
+					"stage" : "compute",
+					"shader" : "meshlet.glsl",
+					"includes" : ["platform.h", "scene.h", "mesh.h", "meshlet.h", "culling.h", "debug_rendering.h"]
+				}
+			]
+		},
+		{
+			"name" : "meshlet_pointshadows_commands_generation",
+			"render_pass" : "gbuffer_pass_early",
+			"shaders" : [
+				{
+					"stage" : "compute",
+					"shader" : "meshlet.glsl",
+					"includes" : ["platform.h", "scene.h"]
+				}
+			]
+		},
+		{
+			"name" : "pointshadows_resolution_calculation",
+			"render_pass" : "gbuffer_pass_early",
+			"shaders" : [
+				{
+					"stage" : "compute",
+					"shader" : "meshlet.glsl",
+					"includes" : ["platform.h", "scene.h"]
+				}
+			]
 		}
 	]
 }

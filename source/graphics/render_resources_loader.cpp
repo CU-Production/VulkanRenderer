@@ -323,6 +323,15 @@ VkBlendOp get_blend_op( const std::string op ) {
     return VK_BLEND_OP_ADD;
 }
 
+VkPipelineCreateFlags get_pipeline_flags( const std::string& flags ) {
+    if ( flags == "shading_rate_image" ) {
+        return VK_PIPELINE_RASTERIZATION_STATE_CREATE_FRAGMENT_SHADING_RATE_ATTACHMENT_BIT_KHR;
+    }
+
+    RASSERT( false );
+    return 0;
+}
+
 u64 shader_concatenate( cstring filename, raptor::StringBuffer& path_buffer, raptor::StringBuffer& shader_buffer, raptor::Allocator* temp_allocator ) {
     using namespace raptor;
 
@@ -591,6 +600,14 @@ bool parse_gpu_pipeline( nlohmann::json& pipeline, raptor::PipelineCreation& pc,
         } else {
             RASSERT( false );
         }
+    }
+
+    json flags = pipeline[ "flags" ];
+    if ( flags.is_string() ) {
+        std::string flags_value;
+        flags.get_to( flags_value );
+
+        pc.flags = get_pipeline_flags( flags_value );
     }
 
     json render_pass = pipeline[ "render_pass" ];

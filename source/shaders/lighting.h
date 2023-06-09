@@ -336,6 +336,12 @@ vec4 calculate_lighting(vec4 base_colour, vec3 orm, vec3 normal, vec3 emissive, 
 
         vec3 AbsVec = abs(position_to_light);
         float LocalZcomp = max(AbsVec.x, max(AbsVec.y, AbsVec.z));
+        if (LocalZcomp == AbsVec.z) {
+            position_to_light.x *= -1;
+        }
+        else {
+            position_to_light.z *= -1;
+        }
 
         const float current_depth = vector_to_depth_value(position_to_light, light.radius, light.rcp_n_minus_f);
         const float closest_depth = texture(global_textures_cubemaps[nonuniformEXT(cubemap_shadows_index)], vec3(position_to_light)).r;

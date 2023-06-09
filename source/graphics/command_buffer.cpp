@@ -234,6 +234,17 @@ void CommandBuffer::bind_pass( RenderPassHandle handle_, FramebufferHandle frame
                 rendering_info.pDepthAttachment =  has_depth_attachment ? &depth_attachment_info : nullptr;
                 rendering_info.pStencilAttachment = nullptr;
 
+                VkRenderingFragmentShadingRateAttachmentInfoKHR shading_rate_info { VK_STRUCTURE_TYPE_RENDERING_FRAGMENT_SHADING_RATE_ATTACHMENT_INFO_KHR };
+                if ( framebuffer->shader_rate_attachment.index != k_invalid_index ) {
+                    Texture* texture = gpu_device->access_texture( framebuffer->shader_rate_attachment );
+
+                    shading_rate_info.imageView = texture->vk_image_view;
+                    shading_rate_info.imageLayout = VK_IMAGE_LAYOUT_FRAGMENT_SHADING_RATE_ATTACHMENT_OPTIMAL_KHR;
+                    shading_rate_info.shadingRateAttachmentTexelSize = gpu_device->min_fragment_shading_rate_texel_size;
+
+                    rendering_info.pNext = ( void* )&shading_rate_info;
+                }
+
                 gpu_device->cmd_begin_rendering( vk_command_buffer, &rendering_info );
 
                 gpu_device->temporary_allocator->free_marker( marker );

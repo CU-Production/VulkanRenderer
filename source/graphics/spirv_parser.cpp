@@ -39,7 +39,7 @@ struct Id
     SpvStorageClass storage_class;
 
     // For constants
-    u32             value;
+    ConstantValue   value;
 
     // For structs
     StringView      name;
@@ -182,9 +182,16 @@ void parse_binary( const u32* data, size_t data_size, StringBuffer& name_buffer,
                         id.structured_buffer = false;
                         break;
                     }
+
                     case ( SpvDecorationBufferBlock ):
                     {
                         id.structured_buffer = true;
+                        break;
+                    }
+
+                    case ( SpvDecorationSpecId ):
+                    {
+                        id.binding = data[ word_index + 3 ];
                         break;
                     }
                 }
@@ -199,7 +206,7 @@ void parse_binary( const u32* data, size_t data_size, StringBuffer& name_buffer,
                 u32 id_index = data[ word_index + 1 ];
                 RASSERT( id_index < id_bound );
 
-                Id& id= ids[ id_index ];
+                Id& id = ids[ id_index ];
 
                 u32 member_index = data[ word_index + 2 ];
 
@@ -229,7 +236,7 @@ void parse_binary( const u32* data, size_t data_size, StringBuffer& name_buffer,
                 u32 id_index = data[ word_index + 1 ];
                 RASSERT( id_index < id_bound );
 
-                Id& id= ids[ id_index ];
+                Id& id = ids[ id_index ];
 
                 char* name = ( char* )( data + ( word_index + 2 ) );
                 char* name_view = name_buffer.append_use( name );
@@ -247,7 +254,7 @@ void parse_binary( const u32* data, size_t data_size, StringBuffer& name_buffer,
                 u32 id_index = data[ word_index + 1 ];
                 RASSERT( id_index < id_bound );
 
-                Id& id= ids[ id_index ];
+                Id& id = ids[ id_index ];
 
                 u32 member_index = data[ word_index + 2 ];
 
@@ -273,10 +280,11 @@ void parse_binary( const u32* data, size_t data_size, StringBuffer& name_buffer,
                 u32 id_index = data[ word_index + 1 ];
                 RASSERT( id_index < id_bound );
 
-                Id& id= ids[ id_index ];
+                Id& id = ids[ id_index ];
                 id.op = op;
                 id.width = ( u8 )data[ word_index + 2 ];
                 id.sign = ( u8 )data[ word_index + 3 ];
+                id.value.type = id.sign ? ConstantValue::Type::Type_i32 : ConstantValue::Type::Type_u32;
 
                 break;
             }
@@ -288,9 +296,10 @@ void parse_binary( const u32* data, size_t data_size, StringBuffer& name_buffer,
                 u32 id_index = data[ word_index + 1 ];
                 RASSERT( id_index < id_bound );
 
-                Id& id= ids[ id_index ];
+                Id& id = ids[ id_index ];
                 id.op = op;
                 id.width = ( u8 )data[ word_index + 2 ];
+                id.value.type = ConstantValue::Type::Type_f32;
 
                 break;
             }
@@ -302,7 +311,7 @@ void parse_binary( const u32* data, size_t data_size, StringBuffer& name_buffer,
                 u32 id_index = data[ word_index + 1 ];
                 RASSERT( id_index < id_bound );
 
-                Id& id= ids[ id_index ];
+                Id& id = ids[ id_index ];
                 id.op = op;
                 id.type_index = data[ word_index + 2 ];
                 id.count = data[ word_index + 3 ];
@@ -317,7 +326,7 @@ void parse_binary( const u32* data, size_t data_size, StringBuffer& name_buffer,
                 u32 id_index = data[ word_index + 1 ];
                 RASSERT( id_index < id_bound );
 
-                Id& id= ids[ id_index ];
+                Id& id = ids[ id_index ];
                 id.op = op;
                 id.type_index = data[ word_index + 2 ];
                 id.count = data[ word_index + 3 ];
@@ -345,7 +354,7 @@ void parse_binary( const u32* data, size_t data_size, StringBuffer& name_buffer,
                 u32 id_index = data[ word_index + 1 ];
                 RASSERT( id_index < id_bound );
 
-                Id& id= ids[ id_index ];
+                Id& id = ids[ id_index ];
                 id.op = op;
 
                 break;
@@ -358,7 +367,7 @@ void parse_binary( const u32* data, size_t data_size, StringBuffer& name_buffer,
                 u32 id_index = data[ word_index + 1 ];
                 RASSERT( id_index < id_bound );
 
-                Id& id= ids[ id_index ];
+                Id& id = ids[ id_index ];
                 id.op = op;
 
                 break;
@@ -371,7 +380,7 @@ void parse_binary( const u32* data, size_t data_size, StringBuffer& name_buffer,
                 u32 id_index = data[ word_index + 1 ];
                 RASSERT( id_index < id_bound );
 
-                Id& id= ids[ id_index ];
+                Id& id = ids[ id_index ];
                 id.op = op;
                 id.type_index = data[ word_index + 2 ];
                 id.count = data[ word_index + 3 ];
@@ -386,7 +395,7 @@ void parse_binary( const u32* data, size_t data_size, StringBuffer& name_buffer,
                 u32 id_index = data[ word_index + 1 ];
                 RASSERT( id_index < id_bound );
 
-                Id& id= ids[ id_index ];
+                Id& id = ids[ id_index ];
                 id.op = op;
                 id.type_index = data[ word_index + 2 ];
 
@@ -400,7 +409,7 @@ void parse_binary( const u32* data, size_t data_size, StringBuffer& name_buffer,
                 u32 id_index = data[ word_index + 1 ];
                 RASSERT( id_index < id_bound );
 
-                Id& id= ids[ id_index ];
+                Id& id = ids[ id_index ];
                 id.op = op;
 
                 if ( word_count > 2 ) {
@@ -459,7 +468,7 @@ void parse_binary( const u32* data, size_t data_size, StringBuffer& name_buffer,
                 u32 id_index = data[ word_index + 1 ];
                 RASSERT( id_index < id_bound );
 
-                Id& id= ids[ id_index ];
+                Id& id = ids[ id_index ];
                 id.op = op;
                 id.type_index = data[ word_index + 3 ];
 
@@ -473,10 +482,12 @@ void parse_binary( const u32* data, size_t data_size, StringBuffer& name_buffer,
                 u32 id_index = data[ word_index + 1 ];
                 RASSERT( id_index < id_bound );
 
-                Id& id= ids[ id_index ];
+                Id& id = ids[ id_index ];
                 id.op = op;
                 id.type_index = data[ word_index + 2 ];
-                id.value = data[ word_index + 3 ]; // NOTE(marco): we assume all constants to have maximum 32bit width
+                // Incoming data is always u32, so save the value anyway.
+                // The proper type can be resolved later using the type_index.
+                id.value.value.value_u = data[ word_index + 3 ];
 
                 break;
             }
@@ -488,10 +499,27 @@ void parse_binary( const u32* data, size_t data_size, StringBuffer& name_buffer,
                 u32 id_index = data[ word_index + 2 ];
                 RASSERT( id_index < id_bound );
 
-                Id& id= ids[ id_index ];
+                Id& id = ids[ id_index ];
                 id.op = op;
                 id.type_index = data[ word_index + 1 ];
                 id.storage_class = ( SpvStorageClass )data[ word_index + 3 ];
+
+                break;
+            }
+
+            case ( SpvOpSpecConstantTrue ):
+            case ( SpvOpSpecConstantFalse ):
+            case ( SpvOpSpecConstant ):
+            case ( SpvOpSpecConstantOp ):
+            case ( SpvOpSpecConstantComposite ):
+            {
+                u32 id_index = data[ word_index + 1 ];
+                RASSERT( id_index < id_bound );
+
+                Id& id = ids[ id_index ];
+                id.op = op;
+                id.type_index = data[ word_index + 2 ];
+                id.value.value.value_u = data[ word_index + 3 ];
 
                 break;
             }
@@ -503,6 +531,32 @@ void parse_binary( const u32* data, size_t data_size, StringBuffer& name_buffer,
     //
     for ( u32 id_index = 0; id_index < ids.size; ++id_index ) {
         Id& id = ids[ id_index ];
+
+        // Parse specialization constants
+        switch ( id.op ) {
+            case ( SpvOpSpecConstantTrue ):
+            case ( SpvOpSpecConstantFalse ):
+            case ( SpvOpSpecConstant ):
+            case ( SpvOpSpecConstantOp ):
+            case ( SpvOpSpecConstantComposite ):
+            {
+                Id& id_spec_binding = ids[ id.type_index ];
+                
+                // Cache specialization value
+                SpecializationConstant& specialization_constant = parse_result->specialization_constants[ parse_result->specialization_constants_count ];
+                specialization_constant.binding = id_spec_binding.binding;
+                specialization_constant.byte_stride = id.width / 8;
+                specialization_constant.default_value = id.value;
+
+                // Cache specialization name to lookup
+                SpecializationName& specialization_name = parse_result->specialization_names[ parse_result->specialization_constants_count ];
+                raptor::StringView::copy_to( id_spec_binding.name, specialization_name.name, 32 );
+
+                ++parse_result->specialization_constants_count;
+
+                break;
+            }
+        }
 
         if ( id.op == SpvOpVariable ) {
             switch ( id.storage_class ) {

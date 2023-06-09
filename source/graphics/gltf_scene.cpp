@@ -846,6 +846,7 @@ void glTFScene::shutdown( Renderer* renderer ) {
     }
 
     gpu.destroy_buffer( lights_list_sb );
+    gpu.destroy_texture( fragment_shading_rate_image );
 
     lights.shutdown();
     lights_lut.shutdown();

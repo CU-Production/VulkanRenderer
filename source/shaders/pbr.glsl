@@ -31,6 +31,8 @@ void main() {
 
 #if defined (FRAGMENT_MAIN)
 
+#extension GL_EXT_fragment_shading_rate : enable
+
 layout (location = 0) in vec2 vTexcoord0;
 
 layout (location = 0) out vec4 frag_color;
@@ -40,10 +42,39 @@ void main() {
     vec3 orm = texture(global_textures[nonuniformEXT(textures.y)], vTexcoord0).rgb;
     vec2 encoded_normal = texture(global_textures[nonuniformEXT(textures.z)], vTexcoord0).rg;
     vec3 normal = octahedral_decode(encoded_normal);
-    vec3 vPosition = texture(global_textures[nonuniformEXT(textures.w)], vTexcoord0).rgb;
     vec3 emissive = texture(global_textures[nonuniformEXT(emissive_index)], vTexcoord0).rgb;
 
-    frag_color = calculate_lighting( base_colour, orm, normal, emissive, vPosition );
+    vec4 color = vec4(0);
+
+    const float raw_depth = texelFetch(global_textures[nonuniformEXT(textures.w)], ivec2( gl_FragCoord.xy ), 0).r;
+    if ( raw_depth == 1.0f ) {
+        color = vec4( base_colour.rgb, 1 );
+    }
+    else {
+        const vec2 screen_uv = uv_from_pixels(ivec2( gl_FragCoord.xy ), output_width, output_height);
+        const vec3 pixel_world_position = world_position_from_depth(screen_uv, raw_depth, inverse_view_projection);
+
+        color = calculate_lighting( base_colour, orm, normal, emissive, pixel_world_position );
+    }
+
+#if 0
+    vec3 sr_color = vec3( 0.5, 0, 0 );
+
+    bool has_2vert_rate = ( gl_ShadingRateEXT & gl_ShadingRateFlag2VerticalPixelsEXT ) != 0;
+    bool has_2hor_rate = ( gl_ShadingRateEXT & gl_ShadingRateFlag2HorizontalPixelsEXT ) != 0;
+
+    if ( has_2vert_rate && has_2hor_rate )
+        sr_color = vec3( 0, 0.5, 0 );
+
+    if ( has_2hor_rate )
+        sr_color = vec3( 0, 0, 0.5 );
+
+    if ( has_2vert_rate )
+        sr_color = vec3( 0.5, 0.5, 0 );
+
+    color.rgb += ( sr_color * 0.2 );
+#endif
+    frag_color = color;
 }
 
 #endif // FRAGMENT
@@ -100,7 +131,7 @@ void main() {
 
             Light light = lights[ 0 ];
             const vec3 position_to_light = light.world_position - pixel_world_position;
-            
+
             imageStore(global_images_2d[debug_texture_index], pos.xy, vec4(normalize(position_to_light), 1));
         }
         else if (debug_modes == 4) {
@@ -110,7 +141,7 @@ void main() {
 
             Light light = lights[ 0 ];
             const vec3 position_to_light = pixel_world_position - light.world_position;
-            
+
             imageStore(global_images_2d[debug_texture_index], pos.xy, vec4(normalize(position_to_light), 1));
         }
         else if (debug_modes == 5) {
@@ -123,7 +154,7 @@ void main() {
             const float current_depth = length(position_to_light) / light.radius;
             float current_depth2 = vector_to_depth_value(position_to_light, light.radius, light.rcp_n_minus_f);
             const float closest_depth = texture(global_textures_cubemaps[nonuniformEXT(cubemap_shadows_index)], vec3(position_to_light)).r;
-            
+
             imageStore(global_images_2d[debug_texture_index], pos.xy, vec4(current_depth, current_depth2, closest_depth, 1));
 
             color.rgb = current_depth2 > closest_depth ? vec3(1) : vec3(0);
@@ -138,7 +169,7 @@ void main() {
             const float current_depth = length(position_to_light) / light.radius;
             float current_depth2 = vector_to_depth_value(position_to_light, light.radius, light.rcp_n_minus_f);
             const float closest_depth = texture(global_textures_cubemaps[nonuniformEXT(cubemap_shadows_index)], vec3(position_to_light)).r;
-            
+
             imageStore(global_images_2d[debug_texture_index], pos.xy, vec4(current_depth, current_depth2, closest_depth, 1));
 
             //color.rgb = current_depth2 < closest_depth ? vec3(1) : vec3(0);
@@ -188,3 +219,106 @@ void main() {
 }
 
 #endif // COMPUTE
+
+#if defined(COMPUTE_EDGE_DETECTION)
+
+// TODO(marco): this should changed based on VkPhysicalDeviceFragmentShadingRatePropertiesKHR::minFragmentShadingRateAttachmentTexelSize
+#define GROUP_SIZE 16
+#define LOCAL_DATA_SIZE ( GROUP_SIZE + 2 )
+
+layout ( local_size_x = GROUP_SIZE, local_size_y = GROUP_SIZE, local_size_z = 1 ) in;
+
+layout( set = MATERIAL_SET, binding = 2 ) readonly buffer FragmentShadingRateImage {
+    uint color_image_index;
+    uint fsr_image_index;
+};
+
+shared float local_image_data[ LOCAL_DATA_SIZE ][ LOCAL_DATA_SIZE ];
+shared uint min_rate;
+
+float luminance( vec3 rgb ) {
+    float l = 0.2126 * rgb.r + 0.7152 * rgb.g + 0.0722 * rgb.b;
+
+    return l;
+}
+
+void main() {
+    ivec2 iresolution = ivec2( resolution ) - 1;
+    if ( gl_GlobalInvocationID.x > iresolution.x || gl_GlobalInvocationID.y > iresolution.y )
+        return;
+
+    ivec2 local_index = ivec2( gl_LocalInvocationID.xy ) + ivec2( 1, 1 );
+    ivec2 global_index = ivec2( gl_GlobalInvocationID.xy );
+
+    local_image_data[ local_index.y ][ local_index.x ] = luminance( texelFetch( global_textures[ color_image_index ], global_index, 0 ).rgb );
+
+    if ( local_index.x == 1 && local_index.y == 1 ) {
+        local_image_data[ local_index.y - 1 ][ local_index.x - 1 ] = luminance( texelFetch( global_textures[ color_image_index ], clamp( global_index + ivec2( -1, -1 ), ivec2( 0 ), iresolution ), 0 ).rgb );
+    }
+
+    if ( local_index.x == 1 ) {
+        local_image_data[ local_index.y ][ local_index.x - 1 ] = luminance( texelFetch( global_textures[ color_image_index ], clamp( global_index + ivec2( -1, 0 ), ivec2( 0 ), iresolution ), 0 ).rgb );
+    }
+
+    if ( local_index.y == 1 ) {
+        local_image_data[ local_index.y - 1 ][ local_index.x ] = luminance( texelFetch( global_textures[ color_image_index ], clamp( global_index + ivec2( 0, -1 ), ivec2( 0 ), iresolution ), 0 ).rgb );
+    }
+
+    if ( local_index.x == GROUP_SIZE && local_index.y == GROUP_SIZE ) {
+        local_image_data[ local_index.y + 1 ][ local_index.x + 1 ] = luminance( texelFetch( global_textures[ color_image_index ], clamp( global_index + ivec2( 1, 1 ), ivec2( 0 ), iresolution ), 0 ).rgb );
+    }
+
+    if ( local_index.x == GROUP_SIZE ) {
+        local_image_data[ local_index.y ][ local_index.x + 1 ] = luminance( texelFetch( global_textures[ color_image_index ], clamp( global_index + ivec2( 1, 0 ), ivec2( 0 ), iresolution ), 0 ).rgb );
+    }
+
+    if ( local_index.y == GROUP_SIZE ) {
+        local_image_data[ local_index.y + 1 ][ local_index.x ] = luminance( texelFetch( global_textures[ color_image_index ], clamp( global_index + ivec2( 0, 1 ), ivec2( 0 ), iresolution ), 0 ).rgb );
+    }
+
+    barrier();
+
+    float normalization = 1.0; // 0.125;
+
+    // Horizontal filter
+    float dx =     local_image_data[ local_index.y - 1 ][ local_index.x - 1 ] -
+                   local_image_data[ local_index.y - 1 ][ local_index.x + 1 ] +
+               2 * local_image_data[ local_index.y     ][ local_index.x - 1 ] -
+               2 * local_image_data[ local_index.y     ][ local_index.x + 1 ] +
+                   local_image_data[ local_index.y + 1 ][ local_index.x - 1 ] -
+                   local_image_data[ local_index.y + 1 ][ local_index.x + 1 ];
+
+    dx *= normalization;
+
+    // Vertical filter
+    float dy =     local_image_data[ local_index.y - 1 ][ local_index.x - 1 ] +
+               2 * local_image_data[ local_index.y - 1 ][ local_index.x     ] +
+                   local_image_data[ local_index.y - 1 ][ local_index.x + 1 ] -
+                   local_image_data[ local_index.y + 1 ][ local_index.x - 1 ] -
+               2 * local_image_data[ local_index.y + 1 ][ local_index.x     ] -
+                   local_image_data[ local_index.y + 1 ][ local_index.x + 1 ];
+
+    dy *= normalization;
+
+    float d = pow( dx, 2 ) + pow( dy, 2 );
+
+    // NOTE(marco): 2x2 rate
+    uint rate = 1 << 2 | 1;
+
+    if ( d > 0.1 ) {
+        // NOTE(marco): 1x1 rate
+        rate = 0;
+    }
+
+    // TODO(marco): also use 1x2 and 2x1 rates
+
+    atomicMin( min_rate, rate );
+
+    barrier();
+
+    if ( gl_LocalInvocationID.xy == uvec2( 0, 0 ) ) {
+        imageStore( global_uimages_2d[ fsr_image_index ], ivec2( gl_GlobalInvocationID.xy / GROUP_SIZE ), uvec4( rate, 0, 0, 0 ) );
+    }
+}
+
+#endif // EDGE_DETECTION

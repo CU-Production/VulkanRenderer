@@ -367,9 +367,15 @@ struct GpuDevice : public Service {
     PFN_vkCmdPipelineBarrier2       cmd_pipeline_barrier2;
     
     // Mesh shaders functions
-    PFN_vkCmdDrawMeshTasksNV        cmd_draw_mesh_tasks;
+    PFN_vkCmdDrawMeshTasksNV              cmd_draw_mesh_tasks;
     PFN_vkCmdDrawMeshTasksIndirectCountNV cmd_draw_mesh_tasks_indirect_count;
-    PFN_vkCmdDrawMeshTasksIndirectNV cmd_draw_mesh_tasks_indirect;
+    PFN_vkCmdDrawMeshTasksIndirectNV      cmd_draw_mesh_tasks_indirect;
+
+    // Variable rate shading functions
+    PFN_vkGetPhysicalDeviceFragmentShadingRatesKHR get_physical_device_fragment_shading_rates_khr;
+    PFN_vkCmdSetFragmentShadingRateKHR             cmd_set_fragment_shading_rate_khr;
+
+    Array<VkPhysicalDeviceFragmentShadingRateKHR>  fragment_shading_rates;
 
     // These are dynamic - so that workload can be handled correctly.
     Array<ResourceUpdate>           resource_deletion_queue;
@@ -388,11 +394,13 @@ struct GpuDevice : public Service {
     bool                            synchronization2_extension_present      = false;
     bool                            mesh_shaders_extension_present  = false;
     bool                            multiview_extension_present     = false;
+    bool                            fragment_shading_rate_present   = false;
 
     sizet                           ubo_alignment                   = 256;
     sizet                           ssbo_alignemnt                  = 256;
     u32                             subgroup_size                   = 32;
     u32                             max_framebuffer_layers          = 1;
+    VkExtent2D                      min_fragment_shading_rate_texel_size;
 
     char                            vulkan_binaries_path[ 512 ];
 

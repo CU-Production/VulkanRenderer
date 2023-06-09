@@ -16,6 +16,12 @@
 
 # Features
 
+## 20230610
+
+- [x] variable rate shading (vrs)
+
+![](screenshots/Snipaste_2023-06-10_00-03-42.png)
+
 ## 20230609
 
 - [x] cubemap shadow map for point light

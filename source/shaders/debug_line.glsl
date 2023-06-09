@@ -226,7 +226,7 @@ layout (location = 0) out vec4 Out_Color;
 void main()
 {
     vec4 col = Frag_Color;
-    
+
     Out_Color = col;
 }
 

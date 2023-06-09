@@ -48,6 +48,8 @@ layout ( set = GLOBAL_SET, binding = BINDLESS_BINDING ) uniform samplerCubeArray
 // Writeonly images do not need format in layout
 layout( set = GLOBAL_SET, binding = BINDLESS_IMAGES ) writeonly uniform image2D global_images_2d[];
 
+layout( set = GLOBAL_SET, binding = BINDLESS_IMAGES ) writeonly uniform uimage2D global_uimages_2d[];
+
 
 // Common constants //////////////////////////////////////////////////////
 #define PI 3.1415926538
@@ -59,6 +61,11 @@ float saturate( float a ) {
 }
 
 #if defined (COMPUTE)
+
+// Wave size as a specialization constant.
+layout (constant_id = 0) const uint SUBGROUP_SIZE = 32;
+
+// Utility methods for barriers
 void global_shader_barrier() {
     memoryBarrierBuffer();
     memoryBarrierShared();
@@ -71,7 +78,7 @@ void group_barrier() {
     memoryBarrierShared();
     barrier();
 }
-#endif
+#endif // COMPUTE
 
 // Encoding/Decoding SRGB ////////////////////////////////////////////////
 vec3 decode_srgb( vec3 c ) {

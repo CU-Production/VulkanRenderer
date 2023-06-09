@@ -623,6 +623,8 @@ namespace raptor {
     //
     struct LightPass : public FrameGraphRenderPass {
         void                    render( u32 current_frame_index, CommandBuffer* gpu_commands, RenderScene* render_scene ) override;
+        void                    on_resize( GpuDevice& gpu, FrameGraph* frame_graph, u32 new_width, u32 new_height ) override;
+        void                    post_render( u32 current_frame_index, CommandBuffer* gpu_commands, FrameGraph* frame_graph, RenderScene* render_scene ) override;
 
         void                    prepare_draws( RenderScene& scene, FrameGraph* frame_graph, Allocator* resident_allocator, StackAllocator* scratch_allocator );
         void                    upload_gpu_data( RenderScene& scene );
@@ -636,6 +638,9 @@ namespace raptor {
 
         DescriptorSetHandle     lighting_descriptor_set[ k_max_frames ];
         TextureHandle           lighting_debug_texture;
+
+        DescriptorSetHandle     fragment_rate_descriptor_set[ k_max_frames ];
+        BufferHandle            fragment_rate_texture_index[ k_max_frames ];
 
         FrameGraphResource*     color_texture;
         FrameGraphResource*     normal_texture;
@@ -953,6 +958,8 @@ namespace raptor {
 
         BufferHandle            meshlet_instances_indirect_count_sb[ k_max_frames ];
 
+        TextureHandle           fragment_shading_rate_image;
+
         GpuMeshDrawCounts       mesh_draw_counts;
 
         DescriptorSetHandle     meshlet_emulation_descriptor_set[ k_max_frames ];
@@ -1008,7 +1015,7 @@ namespace raptor {
         DepthPrePass            depth_pre_pass;
         GBufferPass             gbuffer_pass_early;
         LateGBufferPass         gbuffer_pass_late;
-        LightPass                light_pass;
+        LightPass               light_pass;
         TransparentPass         transparent_pass;
         DoFPass                 dof_pass;
         DebugPass               debug_pass;

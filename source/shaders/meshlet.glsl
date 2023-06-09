@@ -1,6 +1,5 @@
 
 
-
 #if defined (TASK_DEPTH_PRE) || defined(TASK_GBUFFER_CULLING) || defined(TASK_TRANSPARENT_NO_CULL) || defined(TASK_DEPTH_CUBEMAP) || defined(TASK_DEPTH_TETRAHEDRON)
 
 #define CULL 1
@@ -110,7 +109,7 @@ void main()
 #if defined(TASK_DEPTH_CUBEMAP) || defined(TASK_DEPTH_TETRAHEDRON)
 
     const vec4 camera_sphere = camera_spheres[light_index];
-    
+
     // Cone cull
     accept = !coneCull(world_center.xyz, radius, cone_axis, cone_cutoff, camera_sphere.xyz) || disable_shadow_meshlets_cone_cull();
 
@@ -1395,7 +1394,7 @@ void main() {
         // Artificially inflate bounding sphere.
         float meshlet_radius = meshlets[meshlet_index].radius * scale * 1.1;
 
-        //if (sphere_intersect(meshlet_world_center.xyz, meshlet_radius, light.world_position, light.radius)) 
+        //if (sphere_intersect(meshlet_world_center.xyz, meshlet_radius, light.world_position, light.radius))
         {
             //per_light_meshlet_instances[light_index] = uint((light_index & 0xffff) | ((m << 16) & 0xffff));
             //uint per_light_offset = atomicAdd(per_light_meshlet_instances[light_index], 1);
@@ -1454,7 +1453,7 @@ mat4 cubemap_projection( float near_z, float far_z ) {
     // mat[0][0] is f / aspect = 1.0 / 1.0
     // mat[1][1] is f = 1.0
     const float fn = 1.0 / (near_z - far_z);
-    return mat4(1.0, 0.0, 0.0, 0.0, 
+    return mat4(1.0, 0.0, 0.0, 0.0,
                 0.0, 1.0, 0.0, 0.0,
                 0.0, 0.0, -far_z * fn, 1.0,
                 0.0, 0.0, near_z * far_z * fn, 0.0 );
@@ -1466,7 +1465,7 @@ void main() {
 
     if (gl_GlobalInvocationID.x == 0 ) {
 
-        // Use this as atomic int 
+        // Use this as atomic int
         per_light_meshlet_instances[NUM_LIGHTS] = 0;
     }
 

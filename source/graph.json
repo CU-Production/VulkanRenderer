@@ -249,10 +249,13 @@
                 {
                     "type": "texture",
                     "name": "depth"
+                },
+                {
+                    "type": "shading_rate",
+                    "name": "shading_rate_image"
                 }
             ],
             "name": "lighting_pass",
-            "type" : "compute",
             "outputs":
             [
                 {

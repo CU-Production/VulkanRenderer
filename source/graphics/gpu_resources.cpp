@@ -452,6 +452,12 @@ RenderPassCreation& RenderPassCreation::add_attachment( VkFormat format, VkImage
     return *this;
 }
 
+RenderPassCreation& RenderPassCreation::add_shading_rate_image( ) {
+    shading_rate_image_index = num_render_targets++;
+
+    return *this;
+}
+
 RenderPassCreation& RenderPassCreation::set_depth_stencil_texture( VkFormat format, VkImageLayout layout ) {
     depth_stencil_format = format;
     depth_stencil_final_layout = layout;
@@ -474,7 +480,7 @@ RenderPassCreation& RenderPassCreation::set_depth_stencil_operations( RenderPass
 
 RenderPassCreation& RenderPassCreation::set_multiview_mask( u32 mask ) {
     multiview_mask = mask;
-    
+
     return *this;
 }
 
@@ -507,6 +513,12 @@ FramebufferCreation& FramebufferCreation::set_depth_stencil_texture( TextureHand
     return *this;
 }
 
+FramebufferCreation& FramebufferCreation::add_shading_rate_attachment( TextureHandle texture ) {
+    shading_rate_attachment = texture;
+
+    return *this;
+}
+
 FramebufferCreation& FramebufferCreation::set_scaling( f32 scale_x_, f32 scale_y_, u8 resize_ ) {
     scale_x = scale_x_;
     scale_y = scale_y_;
@@ -523,7 +535,7 @@ FramebufferCreation& FramebufferCreation::set_width_height( u32 width_, u32 heig
 }
 
 FramebufferCreation& FramebufferCreation::set_layers( u32 layers_ ) {
-    
+
     layers = ( u16 )layers_;
 
     return *this;
@@ -697,6 +709,9 @@ VkAccessFlags util_to_vk_access_flags2( ResourceState state ) {
     if ( state & RESOURCE_STATE_PRESENT ) {
         ret |= VK_ACCESS_2_MEMORY_READ_BIT_KHR;
     }
+    if ( state & RESOURCE_STATE_SHADING_RATE_SOURCE ) {
+        ret |= VK_ACCESS_2_FRAGMENT_SHADING_RATE_ATTACHMENT_READ_BIT_KHR;
+    }
 #ifdef ENABLE_RAYTRACING
     if ( state & RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE ) {
         ret |= VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_NV | VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_NV;
@@ -734,6 +749,9 @@ VkImageLayout util_to_vk_image_layout( ResourceState usage ) {
     if ( usage == RESOURCE_STATE_COMMON )
         return VK_IMAGE_LAYOUT_GENERAL;
 
+    if ( usage == RESOURCE_STATE_SHADING_RATE_SOURCE )
+        return VK_IMAGE_LAYOUT_FRAGMENT_SHADING_RATE_ATTACHMENT_OPTIMAL_KHR;
+
     return VK_IMAGE_LAYOUT_UNDEFINED;
 }
 
@@ -765,6 +783,9 @@ VkImageLayout util_to_vk_image_layout2( ResourceState usage ) {
     if ( usage == RESOURCE_STATE_COMMON )
         return VK_IMAGE_LAYOUT_GENERAL;
 
+    if ( usage == RESOURCE_STATE_SHADING_RATE_SOURCE )
+        return VK_IMAGE_LAYOUT_FRAGMENT_SHADING_RATE_ATTACHMENT_OPTIMAL_KHR;
+
     return VK_IMAGE_LAYOUT_UNDEFINED;
 }
 
@@ -793,6 +814,9 @@ VkPipelineStageFlags util_determine_pipeline_stage_flags( VkAccessFlags access_f
 
             if ( ( access_flags & ( VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT ) ) != 0 )
                 flags |= VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+
+            if ( ( access_flags & VK_ACCESS_FRAGMENT_SHADING_RATE_ATTACHMENT_READ_BIT_KHR ) != 0 )
+                flags = VK_PIPELINE_STAGE_FRAGMENT_SHADING_RATE_ATTACHMENT_BIT_KHR;
 
             if ( ( access_flags & ( VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT ) ) != 0 )
                 flags |= VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
@@ -858,6 +882,9 @@ VkPipelineStageFlags2KHR util_determine_pipeline_stage_flags2( VkAccessFlags2KHR
 
             if ( ( access_flags & ( VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT ) ) != 0 )
                 flags |= VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT_KHR;
+
+            if ( ( access_flags & VK_ACCESS_FRAGMENT_SHADING_RATE_ATTACHMENT_READ_BIT_KHR ) != 0 )
+                flags = VK_PIPELINE_STAGE_2_FRAGMENT_SHADING_RATE_ATTACHMENT_BIT_KHR;
 
             if ( ( access_flags & ( VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT ) ) != 0 )
                 flags |= VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT_KHR | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT_KHR;

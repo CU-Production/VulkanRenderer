@@ -678,6 +678,47 @@ void LightPass::render( u32 current_frame_index, CommandBuffer* gpu_commands, Re
         gpu_commands->draw( TopologyType::Triangle, 0, 3, 0, 1 );
     }
 }
+void LightPass::on_resize( GpuDevice& gpu, FrameGraph* frame_graph, u32 new_width, u32 new_height ) {
+    if ( !enabled )
+        return;
+
+    FrameGraphResource* resource = frame_graph->get_resource( "shading_rate_image" );
+    if ( resource ) {
+        u32 adjusted_width = ( new_width + gpu.min_fragment_shading_rate_texel_size.width - 1 ) / gpu.min_fragment_shading_rate_texel_size.width;
+        u32 adjusted_height = ( new_height + gpu.min_fragment_shading_rate_texel_size.height - 1 ) / gpu.min_fragment_shading_rate_texel_size.height;
+        gpu.resize_texture( resource->resource_info.texture.handle, adjusted_width, new_height );
+
+        resource->resource_info.texture.width = adjusted_width;
+        resource->resource_info.texture.height = adjusted_height;
+    }
+}
+
+void LightPass::post_render( u32 current_frame_index, CommandBuffer* gpu_commands, FrameGraph* frame_graph, RenderScene* render_scene ) {
+
+    if ( gpu_commands->gpu_device->fragment_shading_rate_present ) {
+        Texture* attachment_texture = renderer->gpu->access_texture( output_texture->resource_info.texture.handle );
+        Texture* frs_texture = renderer->gpu->access_texture( render_scene->fragment_shading_rate_image );
+
+        util_add_image_barrier( renderer->gpu, gpu_commands->vk_command_buffer, attachment_texture,
+                                RESOURCE_STATE_SHADER_RESOURCE, 0, 1, false );
+
+        util_add_image_barrier( renderer->gpu, gpu_commands->vk_command_buffer, frs_texture,
+                                RESOURCE_STATE_UNORDERED_ACCESS, 0, 1, false );
+
+        u32 filter_size = 16;
+        u32 workgroup_x = ( attachment_texture->width + ( filter_size - 1 ) ) / filter_size;
+        u32 workgroup_y = ( attachment_texture->height + ( filter_size - 1 ) ) / filter_size;
+
+        PipelineHandle pipeline = renderer->get_pipeline( mesh.pbr_material.material, 2 );
+        gpu_commands->bind_pipeline( pipeline );
+        gpu_commands->bind_descriptor_set( &fragment_rate_descriptor_set[ current_frame_index ], 1, nullptr, 0 );
+
+        gpu_commands->dispatch( workgroup_x, workgroup_y, 1 );
+
+        util_add_image_barrier( renderer->gpu, gpu_commands->vk_command_buffer, frs_texture,
+                                RESOURCE_STATE_SHADING_RATE_SOURCE, 0, 1, false );
+    }
+}
 
 void LightPass::prepare_draws( RenderScene& scene, FrameGraph* frame_graph, Allocator* resident_allocator, StackAllocator* scratch_allocator ) {
     renderer = scene.renderer;
@@ -727,6 +768,39 @@ void LightPass::prepare_draws( RenderScene& scene, FrameGraph* frame_graph, Allo
 
     lighting_debug_texture = renderer->gpu->create_texture( texture_creation );
     scene.lighting_debug_texture_index = lighting_debug_texture.index;
+
+    for ( u32 f = 0; f < k_max_frames; ++f ) {
+        fragment_rate_descriptor_set[ f ].index = k_invalid_index;
+        fragment_rate_texture_index[ f ].index = k_invalid_index;
+    }
+
+    if ( renderer->gpu->fragment_shading_rate_present ) {
+        Texture* colour_texture = renderer->gpu->access_texture( color_texture->resource_info.texture.handle );
+
+        u32 frs_pass_index = 2;
+        GpuTechniquePass& pass = main_technique->passes[ frs_pass_index ];
+
+        BufferCreation buffer_creation{ };
+        buffer_creation.set_name( "fragment_rate_texture_index" ).set(  VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, ResourceUsageType::Dynamic, sizeof( u32 ) * 2 );
+
+        for ( u32 f = 0; f < k_max_frames; ++f ) {
+            fragment_rate_texture_index[ f ] = renderer->gpu->create_buffer( buffer_creation );
+
+            DescriptorSetHandle ds_handle = fragment_rate_descriptor_set[ f ];
+
+            renderer->gpu->destroy_descriptor_set( ds_handle );
+
+            DescriptorSetLayoutHandle frs_layout = renderer->gpu->get_descriptor_set_layout( pass.pipeline, k_material_descriptor_set_index );
+
+            DescriptorSetCreation ds_creation{ };
+            ds_creation.set_layout( frs_layout );
+            scene.add_scene_descriptors( ds_creation, pass );
+            ds_creation.buffer( mesh.pbr_material.material_buffer, 1 );
+            ds_creation.buffer( fragment_rate_texture_index[ f ], 2 );
+
+            fragment_rate_descriptor_set[ f ] = renderer->gpu->create_descriptor_set( ds_creation );
+        }
+    }
 }
 
 void LightPass::upload_gpu_data( RenderScene& scene ) {
@@ -738,7 +812,7 @@ void LightPass::upload_gpu_data( RenderScene& scene ) {
     MapBufferParameters cb_map = { mesh.pbr_material.material_buffer, 0, 0 };
     LightingConstants* lighting_data = ( LightingConstants* )renderer->gpu->map_buffer( cb_map );
     if ( lighting_data ) {
-        lighting_data->albedo_index = color_texture->resource_info.texture.handle.index;;
+        lighting_data->albedo_index = color_texture->resource_info.texture.handle.index;
         lighting_data->rmo_index = roughness_texture->resource_info.texture.handle.index;
         lighting_data->normal_index = normal_texture->resource_info.texture.handle.index;
         lighting_data->depth_index = depth_texture->resource_info.texture.handle.index;
@@ -798,6 +872,22 @@ void LightPass::upload_gpu_data( RenderScene& scene ) {
 
         last_lights_buffer.index = scene.lights_tiles_sb[ 0 ].index;
     }
+
+    if ( renderer->gpu->fragment_shading_rate_present ) {
+
+        for ( u32 f = 0; f < k_max_frames; ++f ) {
+
+            cb_map = { fragment_rate_texture_index[ f ], 0, 0 };
+            u32* frs_texture_indices = ( u32* )renderer->gpu->map_buffer( cb_map );
+
+            if ( frs_texture_indices != nullptr ) {
+                frs_texture_indices[ 0 ] = output_texture->resource_info.texture.handle.index;
+                frs_texture_indices[ 1 ] = scene.fragment_shading_rate_image.index;
+
+                renderer->gpu->unmap_buffer( cb_map );
+            }
+        }
+    }
 }
 
 void LightPass::free_gpu_resources() {
@@ -810,9 +900,13 @@ void LightPass::free_gpu_resources() {
     gpu.destroy_descriptor_set( mesh.pbr_material.descriptor_set_transparent );
     gpu.destroy_texture( lighting_debug_texture );
 
-    for ( u32 i = 0; i < k_max_frames; ++i ) {
-        gpu.destroy_descriptor_set( lighting_descriptor_set[ i ] );
+    for ( u32 f = 0; f < k_max_frames; ++f ) {
+        gpu.destroy_buffer( fragment_rate_texture_index[ f ] );
+        gpu.destroy_descriptor_set( fragment_rate_descriptor_set[ f ] );
+        gpu.destroy_descriptor_set( lighting_descriptor_set[ f ] );
     }
+
+    // TODO(marco): destroy scene.fragment_shading_rate_image
 }
 
 //
@@ -1486,8 +1580,10 @@ void DoFPass::free_gpu_resources() {
 
     GpuDevice& gpu = *renderer->gpu;
 
-    renderer->destroy_texture( scene_mips );
-
+    {
+        renderer->destroy_texture( scene_mips );
+    }
+    gpu.destroy_buffer( mesh.pbr_material.material_buffer );
     gpu.destroy_descriptor_set( mesh.pbr_material.descriptor_set_transparent );
 }
 
@@ -2405,14 +2501,14 @@ void PointlightShadowPass::free_gpu_resources() {
         gpu.destroy_buffer( pointlight_view_projections_cb[ i ] );
         gpu.destroy_buffer( pointlight_spheres_cb[ i ] );
         gpu.destroy_descriptor_set( cubemap_meshlet_draw_descriptor_set[ i ] );
-        gpu.destroy_descriptor_set(meshlet_culling_descriptor_set[ i ]);
-        gpu.destroy_buffer(meshlet_visible_instances[ i ]);
-        gpu.destroy_buffer(per_light_meshlet_instances[ i ]);
-        gpu.destroy_descriptor_set(shadow_resolution_descriptor_set[ i ]);
-        gpu.destroy_descriptor_set(meshlet_write_commands_descriptor_set[ i ]);
-        gpu.destroy_buffer(meshlet_shadow_indirect_cb[ i ]);
-        gpu.destroy_buffer(shadow_resolutions[ i ]);
-        gpu.destroy_buffer(shadow_resolutions_readback[ i ]);
+        gpu.destroy_descriptor_set( meshlet_culling_descriptor_set[ i ] );
+        gpu.destroy_buffer( meshlet_visible_instances[ i ] );
+        gpu.destroy_buffer( per_light_meshlet_instances[ i ] );
+        gpu.destroy_descriptor_set( shadow_resolution_descriptor_set[ i ] );
+        gpu.destroy_descriptor_set( meshlet_write_commands_descriptor_set[ i ] );
+        gpu.destroy_buffer( meshlet_shadow_indirect_cb[ i ] );
+        gpu.destroy_buffer( shadow_resolutions[ i ] );
+        gpu.destroy_buffer( shadow_resolutions_readback[ i ] );
     }
 
     gpu.destroy_render_pass( cubemap_render_pass );

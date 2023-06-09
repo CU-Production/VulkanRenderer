@@ -25,6 +25,7 @@
 			"name" : "main",
 			"vertex_input" : "tri",
 			"render_pass" : "lighting_pass",
+			"flags": "shading_rate_image",
 			"depth" : {
 				"write" : false,
 				"test" : "never"
@@ -50,6 +51,17 @@
 					"stage" : "compute",
 					"shader" : "pbr.glsl",
 					"includes" : ["platform.h", "scene.h", "lighting.h"]
+				}
+			]
+		},
+		{
+			"name" : "edge_detection",
+			"render_pass" : "lighting_pass",
+			"shaders" : [
+				{
+					"stage" : "compute",
+					"shader" : "pbr.glsl",
+					"includes" : ["platform.h", "scene.h"]
 				}
 			]
 		}

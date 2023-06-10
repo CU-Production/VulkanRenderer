@@ -17,8 +17,8 @@ struct Light {
 
     float           shadow_map_resolution;
     float           rcp_n_minus_f; // Calculation of 1 / (n - f) used to retrieve cubemap shadows depth value.
-    float           lpad01;
-    float           lpad02;
+    float           padding_l_001;
+    float           padding_l_002;
 };
 
 layout( set = MATERIAL_SET, binding = 20 ) readonly buffer ZBins {
@@ -44,6 +44,16 @@ layout ( std140, set = MATERIAL_SET, binding = 23 ) uniform LightConstants {
     uint        debug_modes;
     uint        debug_texture_index;
     uint        padding002;
+
+    uint        volumetric_fog_texture_index;
+    int         volumetric_fog_num_slices;
+    float       volumetric_fog_near;
+    float       volumetric_fog_far;
+
+    float       volumetric_fog_distribution_scale;
+    float       volumetric_fog_distribution_bias;
+    float       padding_lc_000;
+    float       padding_lc_001;
 };
 
 layout( set = MATERIAL_SET, binding = 25 ) readonly buffer LightIndices {
@@ -187,6 +197,26 @@ vec3 calculate_point_light_contribution(vec4 albedo, vec3 orm, vec3 normal, vec3
     }
 
     return pixel_luminance;
+}
+
+// Volumetric fog application
+vec3 apply_volumetric_fog( vec2 screen_uv, float raw_depth, vec3 color ) {
+
+    const float near = volumetric_fog_near;
+    const float far = volumetric_fog_far;
+    // Fog linear depth distribution
+    float linear_depth = raw_depth_to_linear_depth( raw_depth, near, far );
+    //float depth_uv = linear_depth / far;
+    // Exponential
+    float depth_uv = linear_depth_to_uv( near, far, linear_depth, volumetric_fog_num_slices );
+    vec3 froxel_uvw = vec3(screen_uv.xy, depth_uv);
+    vec4 scattering_transmittance = texture(global_textures_3d[nonuniformEXT(volumetric_fog_texture_index)], froxel_uvw);
+
+    const float scattering_modifier = enable_volumetric_fog_opacity_anti_aliasing() ? max( 1 - scattering_transmittance.a, 0.00000001f ) : 1.0f;
+
+    color.rgb = color.rgb * scattering_transmittance.a + scattering_transmittance.rgb * scattering_modifier;
+
+    return color;
 }
 
 // NOTE(marco): from https://en.wikipedia.org/wiki/De_Bruijn_sequence

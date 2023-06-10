@@ -37,26 +37,6 @@ const uint line_2d_offset = 1000;
 const uint k_max_lines = 640000;
 
 
-// Utility methods ///////////////////////////////////////////////////////
-uint vec4_to_rgba( vec4 color ) {
-    return (uint(color.r * 255.f) | (uint(color.g * 255.f) << 8) | 
-           (uint(color.b * 255.f) << 16) | ((uint(color.a * 255.f) << 24)));
-}
-
-vec4 unpack_color_rgba( uint color ) {
-    return vec4( ( color & 0xffu ) / 255.f,
-                 ( ( color >> 8u ) & 0xffu ) / 255.f,
-                 ( ( color >> 16u ) & 0xffu ) / 255.f,
-                 ( ( color >> 24u ) & 0xffu ) / 255.f );
-}
-
-vec4 unpack_color_abgr( uint color ) {
-    return vec4( ( ( color >> 24u ) & 0xffu ) / 255.f,
-                 ( ( color >> 16u ) & 0xffu ) / 255.f,
-                 ( ( color >> 8u ) & 0xffu ) / 255.f,
-                 ( color & 0xffu ) / 255.f );
-}
-
 // Draw methods //////////////////////////////////////////////////////////
 void debug_draw_line_coloru( vec3 start, vec3 end, uint start_color, uint end_color ) {
 

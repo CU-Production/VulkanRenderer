@@ -206,6 +206,351 @@ u32 get_cube_face_mask( vec3s cube_map_pos, vec3s aabb[2] ) {
     return fpx | ( fnx << 1 ) | ( fpy << 2 ) | ( fny << 3 ) | ( fpz << 4 ) | ( fnz << 5 );
 }
 
+static void perform_geometric_tests( bool enable_aabb_cubemap_test, raptor::RenderScene* scene, const vec3s& aabb_test_position,
+                                     raptor::GpuSceneData& scene_data, bool freeze_occlusion_camera, raptor::GameCamera& game_camera,
+                                     bool enable_light_tile_debug, raptor::Allocator* allocator, bool enable_light_cluster_debug ) {
+
+    using namespace raptor;
+
+    //f32 distance = glms_vec3_distance( { 0,0,0 }, light.world_position );
+    //f32 distance_normalized = distance / (half_radius * 2.f);
+    //f32 f = half_radius * 2;
+    //f32 n = 0.01f;
+    //float NormZComp = ( f + n ) / ( f - n ) - ( 2 * f * n ) / ( f - n ) / distance;
+    //float NormZComp2 = ( f ) / ( n - f ) - ( f * n ) / ( n - f ) / distance;
+
+    //// return z_near * z_far / (z_far + depth * (z_near - z_far));
+    //f32 linear_d = n * f / ( f + 0.983 * ( n - f ) );
+    //f32 linear_d2 = n * f / ( f + 1 * ( n - f ) );
+    //f32 linear_d3 = n * f / ( f + 0.01 * ( n - f ) );
+
+    //// ( f + z * ( n - f ) ) * lin_z = n * f;
+    //// f * lin_z + (z * lin_z * (n - f ) = n * f
+    //// ((n * f) - f * lin_z ) / (n - f) = z * lin_z
+
+    //NormZComp = ( f + n ) / ( f - n ) - ( 2 * f * n ) / ( f - n ) / n;
+    //NormZComp = ( f + n ) / ( f - n ) - ( 2 * f * n ) / ( f - n ) / f;
+    //NormZComp2 = -( f ) / ( n - f ) - ( f * n ) / ( n - f ) / n;
+    //NormZComp2 = -( f ) / ( n - f ) - ( f * n ) / ( n - f ) / f;
+
+    //mat4s view = glms_look( light.world_position, { 0,0,-1 }, { 0,-1,0 } );
+    //// TODO: this should be radius of the light.
+    //mat4s projection = glms_perspective( glm_rad( 90.f ), 1.f, 0.01f, light.radius );
+    //mat4s view_projection = glms_mat4_mul( projection, view );
+
+    //vec3s pos_cs = project( view_projection, { 0,0,0 } );
+
+    //rprint( "DDDD %f %f %f %f\n", NormZComp, -NormZComp2, linear_d, pos_cs.z );
+    //{
+    //    float fn = 1.0f / ( 0.01f - light.radius );
+    //    float a = ( 0.01f + light.radius ) * fn;
+    //    float b = 2.0f * 0.01f * light.radius * fn;
+    //    float projectedDistance = light.world_position.z;
+    //    float z = projectedDistance * a + b;
+    //    float dbDistance = z / projectedDistance;
+
+    //    float bc = dbDistance - NormZComp;
+    //    float bd = dbDistance - NormZComp2;
+    //}
+
+
+    // Test AABB cubemap intersection method
+    if ( enable_aabb_cubemap_test ) {
+        // Draw enclosing cubemap aabb
+        vec3s cubemap_position = { 0.f, 0.f, 0.f };
+        vec3s cubemap_half_size = { 1, 1, 1 };
+        scene->debug_renderer.aabb( glms_vec3_sub( cubemap_position, cubemap_half_size ), glms_vec3_add( cubemap_position, cubemap_half_size ), { Color::blue } );
+
+        vec3s aabb[] = { glms_vec3_subs( aabb_test_position, 0.2f ), glms_vec3_adds( aabb_test_position, 0.2f ) };
+        u32 res = get_cube_face_mask( cubemap_position, aabb );
+        // Positive X
+        if ( ( res & 1 ) ) {
+            scene->debug_renderer.aabb( glms_vec3_add( cubemap_position, { 1,0,0 } ), glms_vec3_add( cubemap_position, { 1.2, .2, .2 } ), { Color::get_distinct_color( 0 ) } );
+        }
+        // Negative X
+        if ( ( res & 2 ) ) {
+            scene->debug_renderer.aabb( glms_vec3_add( cubemap_position, { -1,0,0 } ), glms_vec3_add( cubemap_position, { -1.2, -.2, -.2 } ), { Color::get_distinct_color( 1 ) } );
+        }
+        // Positive Y
+        if ( ( res & 4 ) ) {
+            scene->debug_renderer.aabb( glms_vec3_add( cubemap_position, { 0,1,0 } ), glms_vec3_add( cubemap_position, { .2, 1.2, .2 } ), { Color::get_distinct_color( 2 ) } );
+        }
+        // Negative Y
+        if ( ( res & 8 ) ) {
+            scene->debug_renderer.aabb( glms_vec3_add( cubemap_position, { 0,-1,0 } ), glms_vec3_add( cubemap_position, { .2, -1.2, .2 } ), { Color::get_distinct_color( 3 ) } );
+        }
+        // Positive Z
+        if ( ( res & 16 ) ) {
+            scene->debug_renderer.aabb( glms_vec3_add( cubemap_position, { 0,0,1 } ), glms_vec3_add( cubemap_position, { .2, .2, 1.2 } ), { Color::get_distinct_color( 4 ) } );
+        }
+        // Negative Z
+        if ( ( res & 32 ) ) {
+            scene->debug_renderer.aabb( glms_vec3_add( cubemap_position, { 0,0,-1 } ), glms_vec3_add( cubemap_position, { .2, .2, -1.2 } ), { Color::get_distinct_color( 5 ) } );
+        }
+        // Draw aabb to test inside cubemap
+        scene->debug_renderer.aabb( aabb[ 0 ], aabb[ 1 ], { Color::white } );
+        //scene->debug_renderer.line( { -1,-1,-1 }, { 1,1,1 }, { Color::white } );
+        //scene->debug_renderer.line( { -1,-1,1 }, { 1,1,-1 }, { Color::white } );
+
+        /*scene->debug_renderer.line({0.5,0,-0.5}, {-1 + .5,1,0 - .5}, {Color::blue});
+        scene->debug_renderer.line( { -0.5,0,-0.5 }, { 1 - .5,1,0 - .5 }, { Color::green } );
+        scene->debug_renderer.line( { 0,0,0 }, { 1,0,1 }, { Color::red } );
+        scene->debug_renderer.line( { 0,0,0 }, { 1,0,-1 }, { Color::yellow } );
+        scene->debug_renderer.line( { 0,0,0 }, { 0,1,1 }, { Color::white } );
+        scene->debug_renderer.line( { 0,0,0 }, { 0,-1,1 }, { 0xffffff00 } ); */
+
+        // AABB -> cubemap face rectangle test
+        f32 s_min, s_max, t_min, t_max;
+        project_aabb_cubemap_positive_x( aabb, s_min, s_max, t_min, t_max );
+        //rprint( "POS X s %f,%f | t %f,%f\n", s_min, s_max, t_min, t_max );
+        project_aabb_cubemap_negative_x( aabb, s_min, s_max, t_min, t_max );
+        //rprint( "NEG X s %f,%f | t %f,%f\n", s_min, s_max, t_min, t_max );
+        project_aabb_cubemap_positive_y( aabb, s_min, s_max, t_min, t_max );
+        //rprint( "POS Y s %f,%f | t %f,%f\n", s_min, s_max, t_min, t_max );
+        project_aabb_cubemap_negative_y( aabb, s_min, s_max, t_min, t_max );
+        //rprint( "NEG Y s %f,%f | t %f,%f\n", s_min, s_max, t_min, t_max );
+        project_aabb_cubemap_positive_z( aabb, s_min, s_max, t_min, t_max );
+        //rprint( "POS Z s %f,%f | t %f,%f\n", s_min, s_max, t_min, t_max );
+        project_aabb_cubemap_negative_z( aabb, s_min, s_max, t_min, t_max );
+        //rprint( "NEG Z s %f,%f | t %f,%f\n", s_min, s_max, t_min, t_max );
+    }
+
+    if ( false ) {
+        // NOTE(marco): adpated from http://www.aortiz.me/2018/12/21/CG.html#clustered-shading
+        const u32 z_count = 32;
+        const f32 tile_size = 64.0f;
+        const f32 tile_pixels = tile_size * tile_size;
+        const u32 tile_x_count = scene_data.resolution_x / f32( tile_size );
+        const u32 tile_y_count = scene_data.resolution_y / f32( tile_size );
+
+        const f32 tile_radius_sq = ( ( tile_size * 0.5f ) * ( tile_size * 0.5f ) ) * 2;
+
+        const vec3s eye_pos = vec3s{ 0, 0, 0 };
+
+        static Camera last_camera{ };
+
+        if ( !freeze_occlusion_camera ) {
+            last_camera = game_camera.camera;
+        }
+
+        mat4s inverse_projection = glms_mat4_inv( last_camera.projection );
+        mat4s inverse_view = glms_mat4_inv( last_camera.view );
+
+        auto screen_to_view = [&]( const vec4s& screen_pos ) -> vec3s {
+            //Convert to NDC
+            vec2s text_coord{ screen_pos.x / scene_data.resolution_x, screen_pos.y / scene_data.resolution_y };
+
+            //Convert to clipSpace
+            vec4s clip = vec4s{ text_coord.x * 2.0f - 1.0f,
+                                ( 1.0f - text_coord.y ) * 2.0f - 1.0f,
+                                screen_pos.z,
+                                screen_pos.w };
+
+            //View space transform
+            vec4s view = glms_mat4_mulv( inverse_projection, clip );
+
+            //Perspective projection
+            // view = glms_vec4_scale( view, 1.0f / view.w );
+
+            return vec3s{ view.x, view.y, view.z };
+        };
+
+        auto line_intersection_to_z_plane = [&]( const vec3s& a, const vec3s& b, f32 z ) -> vec3s {
+            //all clusters planes are aligned in the same z direction
+            vec3s normal = vec3s{ 0.0, 0.0, 1.0 };
+
+            //getting the line from the eye to the tile
+            vec3s ab = glms_vec3_sub( b, a );
+
+            //Computing the intersection length for the line and the plane
+            f32 t = ( z - glms_dot( normal, a ) ) / glms_dot( normal, ab );
+
+            //Computing the actual xyz position of the point along the line
+            vec3s result = glms_vec3_add( a, glms_vec3_scale( ab, t ) );
+
+            return result;
+        };
+
+        const f32 z_near = scene_data.z_near;
+        const f32 z_far = scene_data.z_far;
+        const f32 z_ratio = z_far / z_near;
+        const f32 z_bin_range = 1.0f / f32( z_count );
+
+        u32 light_count = scene->active_lights;
+
+        Array<vec3s> lights_aabb_view;
+        lights_aabb_view.init( allocator, light_count * 2, light_count * 2 );
+
+        for ( u32 l = 0; l < light_count; ++l ) {
+            Light& light = scene->lights[ l ];
+            light.shadow_map_resolution = 0.0f;
+            light.tile_x = 0;
+            light.tile_y = 0;
+            light.solid_angle = 0.0f;
+
+            vec4s aabb_min_view = glms_mat4_mulv( last_camera.view, light.aabb_min );
+            vec4s aabb_max_view = glms_mat4_mulv( last_camera.view, light.aabb_max );
+
+            lights_aabb_view[ l * 2 ] = vec3s{ aabb_min_view.x, aabb_min_view.y, aabb_min_view.z };
+            lights_aabb_view[ l * 2 + 1 ] = vec3s{ aabb_max_view.x, aabb_max_view.y, aabb_max_view.z };
+        }
+
+        for ( u32 z = 0; z < z_count; ++z ) {
+            for ( u32 y = 0; y < tile_y_count; ++y ) {
+                for ( u32 x = 0; x < tile_x_count; ++x ) {
+                    // Calculating the min and max point in screen space
+                    vec4s max_point_screen = vec4s{ f32( ( x + 1 ) * tile_size ),
+                                                    f32( ( y + 1 ) * tile_size ),
+                                                    0.0f, 1.0f }; // Top Right
+
+                    vec4s min_point_screen = vec4s{ f32( x * tile_size ),
+                                                    f32( y * tile_size ),
+                                                    0.0f, 1.0f }; // Top Right
+
+                    vec4s tile_center_screen = glms_vec4_scale( glms_vec4_add( min_point_screen, max_point_screen ), 0.5f );
+                    vec2s tile_center{ tile_center_screen.x, tile_center_screen.y };
+
+                    // Pass min and max to view space
+                    vec3s max_point_view = screen_to_view( max_point_screen );
+                    vec3s min_point_view = screen_to_view( min_point_screen );
+
+                    // Near and far values of the cluster in view space
+                    // We use equation (2) directly to obtain the tile values
+                    f32 tile_near = z_near * pow( z_ratio, f32( z ) * z_bin_range );
+                    f32 tile_far = z_near * pow( z_ratio, f32( z + 1 ) * z_bin_range );
+
+                    // Finding the 4 intersection points made from each point to the cluster near/far plane
+                    vec3s min_point_near = line_intersection_to_z_plane( eye_pos, min_point_view, tile_near );
+                    vec3s min_point_far = line_intersection_to_z_plane( eye_pos, min_point_view, tile_far );
+                    vec3s max_point_near = line_intersection_to_z_plane( eye_pos, max_point_view, tile_near );
+                    vec3s max_point_far = line_intersection_to_z_plane( eye_pos, max_point_view, tile_far );
+
+                    vec3s min_point_aabb_view = glms_vec3_minv( glms_vec3_minv( min_point_near, min_point_far ), glms_vec3_minv( max_point_near, max_point_far ) );
+                    vec3s max_point_aabb_view = glms_vec3_maxv( glms_vec3_maxv( min_point_near, min_point_far ), glms_vec3_maxv( max_point_near, max_point_far ) );
+
+                    vec4s min_point_aabb_world{ min_point_aabb_view.x, min_point_aabb_view.y, min_point_aabb_view.z, 1.0f };
+                    vec4s max_point_aabb_world{ max_point_aabb_view.x, max_point_aabb_view.y, max_point_aabb_view.z, 1.0f };
+
+                    min_point_aabb_world = glms_mat4_mulv( inverse_view, min_point_aabb_world );
+                    max_point_aabb_world = glms_mat4_mulv( inverse_view, max_point_aabb_world );
+
+                    bool intersects_light = false;
+                    for ( u32 l = 0; l < scene->active_lights; ++l ) {
+                        Light& light = scene->lights[ l ];
+
+                        vec3s& light_aabb_min = lights_aabb_view[ l * 2 ];
+                        vec3s& light_aabb_max = lights_aabb_view[ l * 2 + 1 ];
+
+                        f32 minx = min( min( light_aabb_min.x, light_aabb_max.x ), min( min_point_aabb_view.x, max_point_aabb_view.x ) );
+                        f32 miny = min( min( light_aabb_min.y, light_aabb_max.y ), min( min_point_aabb_view.y, max_point_aabb_view.y ) );
+                        f32 minz = min( min( light_aabb_min.z, light_aabb_max.z ), min( min_point_aabb_view.z, max_point_aabb_view.z ) );
+
+                        f32 maxx = max( max( light_aabb_min.x, light_aabb_max.x ), max( min_point_aabb_view.x, max_point_aabb_view.x ) );
+                        f32 maxy = max( max( light_aabb_min.y, light_aabb_max.y ), max( min_point_aabb_view.y, max_point_aabb_view.y ) );
+                        f32 maxz = max( max( light_aabb_min.z, light_aabb_max.z ), max( min_point_aabb_view.z, max_point_aabb_view.z ) );
+
+                        f32 dx = abs( maxx - minx );
+                        f32 dy = abs( maxy - miny );
+                        f32 dz = abs( maxz - minz );
+
+                        f32 allx = abs( light_aabb_max.x - light_aabb_min.x ) + abs( max_point_aabb_view.x - min_point_aabb_view.x );
+                        f32 ally = abs( light_aabb_max.y - light_aabb_min.y ) + abs( max_point_aabb_view.y - min_point_aabb_view.y );
+                        f32 allz = abs( light_aabb_max.z - light_aabb_min.z ) + abs( max_point_aabb_view.z - min_point_aabb_view.z );
+
+                        bool intersects = ( dx <= allx ) && ( dy < ally ) && ( dz <= allz );
+
+                        if ( intersects ) {
+                            intersects_light = true;
+
+                            vec4s sphere_world{ light.world_position.x, light.world_position.y, light.world_position.z, 1.0f };
+                            vec4s sphere_ndc = glms_mat4_mulv( last_camera.view_projection, sphere_world );
+
+                            sphere_ndc.x /= sphere_ndc.w;
+                            sphere_ndc.y /= sphere_ndc.w;
+
+                            vec2s sphere_screen{ ( ( sphere_ndc.x + 1.0f ) * 0.5f ) * scene_data.resolution_x, ( ( sphere_ndc.y + 1.0f ) * 0.5f ) * scene_data.resolution_y, };
+
+                            f32 d = glms_vec2_distance( sphere_screen, tile_center );
+
+                            f32 diff = d * d - tile_radius_sq;
+
+                            if ( diff < 1.0e-4 ) {
+                                continue;
+                            }
+
+                            // NOTE(marco): as defined in https://math.stackexchange.com/questions/73238/calculating-solid-angle-for-a-sphere-in-space
+                            f32 solid_angle = ( 2.0f * rpi ) * ( 1.0f - ( sqrtf( diff ) / d ) );
+
+                            // NOTE(marco): following https://efficientshading.com/wp-content/uploads/s2015_shadows.pdf
+                            f32 resolution = sqrtf( ( 4.0f * rpi * tile_pixels ) / ( 6 * solid_angle ) );
+
+                            if ( resolution > light.shadow_map_resolution ) {
+                                light.shadow_map_resolution = resolution;
+                                light.tile_x = x;
+                                light.tile_y = y;
+                                light.solid_angle = solid_angle;
+                            }
+                        }
+                    }
+
+                    if ( enable_light_cluster_debug && intersects_light ) {
+                        scene->debug_renderer.aabb( vec3s{ min_point_aabb_world.x, min_point_aabb_world.y, min_point_aabb_world.z },
+                                                    vec3s{ max_point_aabb_world.x, max_point_aabb_world.y, max_point_aabb_world.z },
+                                                    { Color::get_distinct_color( z ) } );
+                    }
+                }
+            }
+        }
+
+        lights_aabb_view.shutdown();
+
+        if ( enable_light_tile_debug ) {
+            f32 light_pos_len = 0.01;
+            for ( u32 l = 0; l < light_count; ++l ) {
+                Light& light = scene->lights[ l ];
+
+                //rprint( "Light resolution %f\n", light.shadow_map_resolution );
+
+                if ( light.shadow_map_resolution != 0.0f ) {
+                    {
+                        vec4s sphere_world{ light.world_position.x, light.world_position.y, light.world_position.z, 1.0f };
+                        vec4s sphere_ndc = glms_mat4_mulv( last_camera.view_projection, sphere_world );
+
+                        sphere_ndc.x /= sphere_ndc.w;
+                        sphere_ndc.y /= sphere_ndc.w;
+
+                        vec2s top_left{ sphere_ndc.x - light_pos_len, sphere_ndc.y - light_pos_len };
+                        vec2s bottom_right{ sphere_ndc.x + light_pos_len, sphere_ndc.y + light_pos_len };
+                        vec2s top_right{ sphere_ndc.x + light_pos_len, sphere_ndc.y - light_pos_len };
+                        vec2s bottom_left{ sphere_ndc.x - light_pos_len, sphere_ndc.y + light_pos_len };
+
+                        scene->debug_renderer.line_2d( top_left, bottom_right, { Color::get_distinct_color( l + 1 ) } );
+                        scene->debug_renderer.line_2d( top_right, bottom_left, { Color::get_distinct_color( l + 1 ) } );
+                    }
+
+                    {
+                        vec2s screen_scale{ 1.0f / f32( scene_data.resolution_x ), 1.0f / ( scene_data.resolution_y ) };
+
+                        vec2s bottom_right{ f32( ( light.tile_x + 1 ) * tile_size ), f32( scene_data.resolution_y - ( light.tile_y + 1 ) * tile_size ) };
+                        bottom_right = glms_vec2_subs( glms_vec2_scale( glms_vec2_mul( bottom_right, screen_scale ), 2.0f ), 1.0f );
+
+                        vec2s top_left{ f32( ( light.tile_x ) * tile_size ), f32( scene_data.resolution_y - ( light.tile_y ) * tile_size ) };
+                        top_left = glms_vec2_subs( glms_vec2_scale( glms_vec2_mul( top_left, screen_scale ), 2.0f ), 1.0f );
+
+                        vec2s top_right{ bottom_right.x, top_left.y };
+                        vec2s bottom_left{ top_left.x, bottom_right.y };
+
+                        scene->debug_renderer.line_2d( top_left, top_right, { Color::get_distinct_color( l + 1 ) } );
+                        scene->debug_renderer.line_2d( top_right, bottom_right, { Color::get_distinct_color( l + 1 ) } );
+                        scene->debug_renderer.line_2d( bottom_left, bottom_right, { Color::get_distinct_color( l + 1 ) } );
+                        scene->debug_renderer.line_2d( bottom_left, top_left, { Color::get_distinct_color( l + 1 ) } );
+                    }
+                }
+            }
+        }
+    }
+}
+
 //
 //
 int main( int argc, char** argv ) {
@@ -258,7 +603,7 @@ int main( int argc, char** argv ) {
     dc.resource_pool_creation.render_passes = 256;
     dc.resource_pool_creation.shaders = 256;
     dc.resource_pool_creation.samplers = 128;
-    dc.resource_pool_creation.textures = 128;
+    dc.resource_pool_creation.textures = 256;
     dc.descriptor_pool_creation.combined_image_samplers = 700;
     dc.descriptor_pool_creation.storage_texel_buffers = 1;
     dc.descriptor_pool_creation.uniform_texel_buffers = 1;
@@ -288,7 +633,6 @@ int main( int argc, char** argv ) {
     time_service_init();
 
     RenderResourcesLoader render_resources_loader;
-    TextureResource* dither_texture = nullptr;
 
     sizet scratch_marker = scratch_allocator.get_marker();
 
@@ -296,7 +640,7 @@ int main( int argc, char** argv ) {
     temporary_name_buffer.init( 1024, &scratch_allocator );
 
     // Create binaries folders
-    cstring shader_binaries_folder = temporary_name_buffer.append_use_f( "%s/shaders /", RAPTOR_DATA_FOLDER );
+    cstring shader_binaries_folder = temporary_name_buffer.append_use_f( "%s/shaders/", RAPTOR_DATA_FOLDER );
     if ( !directory_exists(shader_binaries_folder) ) {
         if ( directory_create( shader_binaries_folder ) ) {
             rprint( "Created folder %s\n", shader_binaries_folder );
@@ -361,21 +705,16 @@ int main( int argc, char** argv ) {
         scene->fragment_shading_rate_image = gpu.create_texture( texture_creation );
 
         FrameGraphResourceInfo resource_info{ };
-
-        resource_info.external = true;
-
-        resource_info.texture.format = VK_FORMAT_R8_UINT;
-        resource_info.texture.width = adjusted_width;
-        resource_info.texture.height = adjusted_height;
-        resource_info.texture.handle = scene->fragment_shading_rate_image;
-
+        resource_info.set_external_texture_2d( adjusted_width, adjusted_height, VK_FORMAT_R8_UINT, 0, scene->fragment_shading_rate_image );
         frame_graph.add_resource( "shading_rate_image", FrameGraphResourceType_ShadingRate, resource_info );
     }
 
+    TextureResource* dither_texture = nullptr;
+    TextureResource* blue_noise_128_rg_texture = nullptr;
+    SamplerHandle repeat_sampler, repeat_nearest_sampler;
     // Load frame graph and parse gpu techniques
     {
         cstring frame_graph_path = temporary_name_buffer.append_use_f( "%s/%s", RAPTOR_WORKING_FOLDER, "graph.json" );
-//        cstring frame_graph_path = temporary_name_buffer.append_use_f( "%s/%s", RAPTOR_WORKING_FOLDER, "graph_meshlet.json" );
 
         frame_graph.parse( frame_graph_path, &scratch_allocator );
         frame_graph.compile();
@@ -392,29 +731,185 @@ int main( int argc, char** argv ) {
 
         render_resources_loader.init( &renderer, &scratch_allocator, &frame_graph );
 
+        SamplerCreation sampler_creation;
+        sampler_creation.set_address_mode_uv( VK_SAMPLER_ADDRESS_MODE_REPEAT, VK_SAMPLER_ADDRESS_MODE_REPEAT )
+            .set_min_mag_mip( VK_FILTER_LINEAR, VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_LINEAR ).set_name( "repeat_sampler" );
+        repeat_sampler = gpu.create_sampler( sampler_creation );
+
+        sampler_creation.set_min_mag_mip( VK_FILTER_NEAREST, VK_FILTER_NEAREST, VK_SAMPLER_MIPMAP_MODE_NEAREST ).set_name( "repeat_nearest_sampler" );
+        repeat_nearest_sampler = gpu.create_sampler( sampler_creation );
+
         // TODO: add this to render graph itself.
-        // Add utility textures (dithering, ...)
+        // Add utility textures (dithering, blue noise ...)
         temporary_name_buffer.clear();
         cstring dither_texture_path = temporary_name_buffer.append_use_f( "%s/BayerDither4x4.png", RAPTOR_DATA_FOLDER );
         dither_texture = render_resources_loader.load_texture( dither_texture_path, false );
 
+        gpu.link_texture_sampler( dither_texture->handle, repeat_nearest_sampler );
+
+        temporary_name_buffer.clear();
+        cstring blue_noise_texture_path = temporary_name_buffer.append_use_f( "%s/LDR_RG01_0.png", RAPTOR_DATA_FOLDER );
+        blue_noise_128_rg_texture = render_resources_loader.load_texture( blue_noise_texture_path, false );
+
+        gpu.link_texture_sampler( blue_noise_128_rg_texture->handle, repeat_sampler );
+
+        scene->blue_noise_128_rg_texture_index = blue_noise_128_rg_texture->handle.index;
+
         // Parse techniques
         GpuTechniqueCreation gtc;
         const bool use_shader_cache = true;
-        auto parse_technique = [ & ]( cstring technique_name ) {
+        auto parse_technique = [&]( cstring technique_name ) {
             temporary_name_buffer.clear();
             cstring path = temporary_name_buffer.append_use_f( "%s/%s", RAPTOR_SHADER_FOLDER, technique_name );
             render_resources_loader.load_gpu_technique( path, use_shader_cache );
         };
 
-        cstring techniques[] = { "meshlet.json", "fullscreen.json", "main.json",
+        cstring techniques[] = { "ray_tracing.json", "meshlet.json", "fullscreen.json", "main.json",
                                  "pbr_lighting.json", "dof.json", "cloth.json", "debug.json",
-                                 "culling.json" };
+                                 "culling.json", "volumetric_fog.json" };
 
         const sizet num_techniques = ArraySize( techniques );
         for ( sizet t = 0; t < num_techniques; ++t ) {
             parse_technique( techniques[ t ] );
         }
+    }
+
+    // NOTE(marco): build AS before preparing draws
+    {
+        CommandBuffer* gpu_commands = gpu.get_command_buffer( 0, 0, true );
+
+        // NOTE(marco): build BLAS
+        VkAccelerationStructureBuildGeometryInfoKHR as_info{ VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR };
+        as_info.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+        as_info.flags = VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR | VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_COMPACTION_BIT_KHR;
+        as_info.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
+        as_info.geometryCount = scene->geometries.size;
+        as_info.pGeometries = scene->geometries.data;
+
+        Array<u32> max_primitives_count;
+        max_primitives_count.init( gpu.allocator, scene->geometries.size, scene->geometries.size );
+
+        for ( u32 range_index = 0; range_index < scene->geometries.size; range_index++ ) {
+            max_primitives_count[ range_index ] = scene->build_range_infos[ range_index ].primitiveCount;
+        }
+
+        VkAccelerationStructureBuildSizesInfoKHR as_size_info{ VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR };
+        gpu.vkGetAccelerationStructureBuildSizesKHR( gpu.vulkan_device, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &as_info, max_primitives_count.data, &as_size_info );
+
+        BufferCreation as_buffer_creation{ };
+        as_buffer_creation.set( VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR, ResourceUsageType::Immutable, as_size_info.accelerationStructureSize ).set_device_only( true ).set_name( "blas_buffer" );
+        scene->blas_buffer = gpu.create_buffer( as_buffer_creation );
+
+        Buffer* blas_buffer = gpu.access_buffer( scene->blas_buffer );
+
+        as_buffer_creation.reset().set( VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT_KHR, ResourceUsageType::Immutable, as_size_info.buildScratchSize ).set_device_only( true ).set_name( "blas_scratch_buffer" );
+
+        BufferHandle blas_scratch_buffer_handle = gpu.create_buffer( as_buffer_creation );
+
+        VkAccelerationStructureCreateInfoKHR as_create_info{ VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR };
+        as_create_info.buffer = blas_buffer->vk_buffer;
+        as_create_info.offset = 0;
+        as_create_info.size = as_size_info.accelerationStructureSize;
+        as_create_info.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+
+        gpu.vkCreateAccelerationStructureKHR( gpu.vulkan_device, &as_create_info, gpu.vulkan_allocation_callbacks, &scene->blas );
+
+        as_info.dstAccelerationStructure = scene->blas;
+
+        as_info.scratchData.deviceAddress = gpu.get_buffer_device_address( blas_scratch_buffer_handle );
+
+        VkAccelerationStructureBuildRangeInfoKHR* blas_ranges[] = {
+            scene->build_range_infos.data
+        };
+
+        gpu.vkCmdBuildAccelerationStructuresKHR( gpu_commands->vk_command_buffer, 1, &as_info, blas_ranges );
+
+        gpu.submit_immediate( gpu_commands );
+
+        // NOTE(marco): build TLAS
+        VkAccelerationStructureDeviceAddressInfoKHR blas_address_info{ VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR };
+        blas_address_info.accelerationStructure = scene->blas;
+
+        VkDeviceAddress blas_address = gpu.vkGetAccelerationStructureDeviceAddressKHR( gpu.vulkan_device, &blas_address_info );
+
+        VkAccelerationStructureInstanceKHR tlas_structure{ };
+        // NOTE(marco): identity matrix
+        tlas_structure.transform.matrix[ 0 ][ 0 ] = 1.0f;
+        tlas_structure.transform.matrix[ 1 ][ 1 ] = 1.0f;
+        tlas_structure.transform.matrix[ 2 ][ 2 ] = 1.0f;
+        tlas_structure.mask = 0xff;
+        tlas_structure.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
+        tlas_structure.accelerationStructureReference = blas_address;
+
+        as_buffer_creation.reset().set( VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, ResourceUsageType::Immutable, sizeof( VkAccelerationStructureInstanceKHR ) ).set_data( &tlas_structure ).set_name( "tlas_instance_buffer" );
+        BufferHandle tlas_instance_buffer_handle = gpu.create_buffer( as_buffer_creation );
+
+        VkAccelerationStructureGeometryKHR tlas_geometry{ VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR };
+        tlas_geometry.geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR;
+        tlas_geometry.geometry.instances.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR;
+        tlas_geometry.geometry.instances.arrayOfPointers = false;
+        tlas_geometry.geometry.instances.data.deviceAddress = gpu.get_buffer_device_address( tlas_instance_buffer_handle );
+
+        as_info.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
+        as_info.geometryCount = 1;
+        as_info.pGeometries = &tlas_geometry;
+
+        u32 max_instance_count = 1;
+
+        gpu.vkGetAccelerationStructureBuildSizesKHR( gpu.vulkan_device, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &as_info, &max_instance_count, &as_size_info );
+
+        as_buffer_creation.reset().set( VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR, ResourceUsageType::Immutable, as_size_info.accelerationStructureSize ).set_device_only( true ).set_name( "tlas_buffer" );
+        scene->tlas_buffer = gpu.create_buffer( as_buffer_creation );
+
+        Buffer* tlas_buffer = gpu.access_buffer( scene->tlas_buffer );
+
+        as_buffer_creation.reset().set( VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT_KHR, ResourceUsageType::Immutable, as_size_info.buildScratchSize ).set_device_only( true ).set_name( "tlas_scratch_buffer" );
+
+        BufferHandle tlas_scratch_buffer_handle = gpu.create_buffer( as_buffer_creation );
+
+        as_create_info.buffer = tlas_buffer->vk_buffer;
+        as_create_info.offset = 0;
+        as_create_info.size = as_size_info.accelerationStructureSize;
+        as_create_info.type = VK_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL_KHR;
+
+        gpu.vkCreateAccelerationStructureKHR( gpu.vulkan_device, &as_create_info, gpu.vulkan_allocation_callbacks, &scene->tlas );
+
+        as_info.dstAccelerationStructure = scene->tlas;
+
+        as_info.scratchData.deviceAddress = gpu.get_buffer_device_address( tlas_scratch_buffer_handle );
+
+        VkAccelerationStructureBuildRangeInfoKHR tlas_range_info{ };
+        tlas_range_info.primitiveCount = 1;
+
+        VkAccelerationStructureBuildRangeInfoKHR* tlas_ranges[] = {
+            &tlas_range_info
+        };
+
+        gpu_commands->reset();
+
+        gpu_commands->begin();
+
+        // TODO(marco): we shouldn't be doing this manually
+        GpuThreadFramePools* thread_pools = gpu_commands->thread_frame_pool;
+        thread_pools->time_queries->reset();
+        vkCmdResetQueryPool( gpu_commands->vk_command_buffer, thread_pools->vulkan_timestamp_query_pool, 0, thread_pools->time_queries->time_queries.size );
+
+        vkCmdResetQueryPool( gpu_commands->vk_command_buffer, thread_pools->vulkan_pipeline_stats_query_pool, 0, GpuPipelineStatistics::Count );
+
+        vkCmdBeginQuery( gpu_commands->vk_command_buffer, thread_pools->vulkan_pipeline_stats_query_pool, 0, 0 );
+
+        gpu.vkCmdBuildAccelerationStructuresKHR( gpu_commands->vk_command_buffer, 1, &as_info, tlas_ranges );
+
+        gpu.submit_immediate( gpu_commands );
+
+        scene->geometries.shutdown();
+        scene->build_range_infos.shutdown();
+
+        gpu.destroy_buffer( blas_scratch_buffer_handle );
+        gpu.destroy_buffer( tlas_scratch_buffer_handle );
+        gpu.destroy_buffer( tlas_instance_buffer_handle );
+
+        max_primitives_count.shutdown();
     }
 
     FrameRenderer frame_renderer;
@@ -471,6 +966,8 @@ int main( int argc, char** argv ) {
             renderer.resize_swapchain( window.width, window.height );
             window.resized = false;
             frame_graph.on_resize( gpu, window.width, window.height );
+            scene->on_resize( gpu, &frame_graph, window.width, window.height );
+            frame_renderer.update_dependent_resources();
 
             game_camera.camera.set_aspect_ratio( window.width * 1.f / window.height );
         }
@@ -520,63 +1017,116 @@ int main( int argc, char** argv ) {
                 ImGui::InputFloat3( "Camera position", game_camera.camera.position.raw );
                 ImGui::InputFloat3( "Camera target movement", game_camera.target_movement.raw );
                 ImGui::Separator();
-                ImGui::InputFloat3( "Wind direction", wind_direction.raw );
-                ImGui::InputFloat( "Air density", &air_density );
-                ImGui::InputFloat( "Spring stiffness", &spring_stiffness );
-                ImGui::InputFloat( "Spring damping", &spring_damping );
-                ImGui::Checkbox( "Enable AABB cubemap test", &enable_aabb_cubemap_test );
-                ImGui::Checkbox( "Enable light cluster debug", &enable_light_cluster_debug );
-                ImGui::Checkbox( "Enable light tile debug", &enable_light_tile_debug );
-                ImGui::SliderFloat3( "AABB test position", aabb_test_position.raw, -1.5f, 1.5f, "%1.2f" );
-                ImGui::Checkbox( "Reset simulation", &reset_simulation );
-                ImGui::SliderUint( "Active Lights", &scene->active_lights, 1, k_num_lights - 1 );
-                ImGui::SliderUint( "Light Index", &light_to_debug, 0, scene->active_lights - 1 );
-                ImGui::SliderFloat3( "Light position", scene->lights[light_to_debug].world_position.raw, -4.f, 4.f, "%1.3f");
-                ImGui::SliderFloat( "Light radius", &scene->lights[ light_to_debug ].radius, 0.01f, 10.f, "%2.3f" );
-                ImGui::SliderFloat( "Light intensity", &scene->lights[ light_to_debug ].intensity, 0.01f, 10.f, "%2.3f" );
-                ImGui::Checkbox( "Cubeface switch Pos X", &scene->cubeface_flip[ 0 ] );
-                ImGui::Checkbox( "Cubeface switch Neg X", &scene->cubeface_flip[ 1 ] );
-                ImGui::Checkbox( "Cubeface switch Pos Y", &scene->cubeface_flip[ 2 ] );
-                ImGui::Checkbox( "Cubeface switch Neg Y", &scene->cubeface_flip[ 3 ] );
-                ImGui::Checkbox( "Cubeface switch Pos Z", &scene->cubeface_flip[ 4 ] );
-                ImGui::Checkbox( "Cubeface switch Neg Z", &scene->cubeface_flip[ 5 ] );
+                if ( ImGui::CollapsingHeader( "Physics" ) ) {
+                    ImGui::InputFloat3( "Wind direction", wind_direction.raw );
+                    ImGui::InputFloat( "Air density", &air_density );
+                    ImGui::InputFloat( "Spring stiffness", &spring_stiffness );
+                    ImGui::InputFloat( "Spring damping", &spring_damping );
+                    ImGui::Checkbox( "Reset simulation", &reset_simulation );
+                }
+
+                if ( ImGui::CollapsingHeader( "Math tests" ) ) {
+                    ImGui::Checkbox( "Enable AABB cubemap test", &enable_aabb_cubemap_test );
+                    ImGui::Checkbox( "Enable light cluster debug", &enable_light_cluster_debug );
+                    ImGui::Checkbox( "Enable light tile debug", &enable_light_tile_debug );
+                    ImGui::SliderFloat3( "AABB test position", aabb_test_position.raw, -1.5f, 1.5f, "%1.2f" );
+                }
+
+                // Light editing
+                if ( ImGui::CollapsingHeader( "Lights" ) ) {
+                    ImGui::SliderUint( "Active Lights", &scene->active_lights, 1, k_num_lights - 1 );
+                    ImGui::SliderUint( "Light Index", &light_to_debug, 0, scene->active_lights - 1 );
+
+                    Light& selected_light = scene->lights[ light_to_debug ];
+                    ImGui::SliderFloat3( "Light position", selected_light.world_position.raw, -10.f, 10.f, "%2.3f" );
+                    ImGui::SliderFloat( "Light radius", &selected_light.radius, 0.01f, 10.f, "%2.3f" );
+                    ImGui::SliderFloat( "Light intensity", &selected_light.intensity, 0.01f, 10.f, "%2.3f" );
+
+                    f32 light_color[ 3 ] = { selected_light.color.x, selected_light.color.y, selected_light.color.z };
+                    ImGui::ColorEdit3( "Light color", light_color );
+                    selected_light.color = { light_color[ 0 ], light_color[ 1 ], light_color[ 2 ] };
+
+                    ImGui::Checkbox( "Light Edit Debug Draws", &scene->show_light_edit_debug_draws );
+                }
+
+                if ( ImGui::CollapsingHeader( "Meshlets" ) ) {
+                    static bool enable_meshlets = false;
+                    enable_meshlets = scene->use_meshlets && gpu.mesh_shaders_extension_present;
+                    ImGui::Checkbox( "Use meshlets", &enable_meshlets );
+                    scene->use_meshlets = enable_meshlets;
+                    ImGui::Checkbox( "Use meshlets emulation", &scene->use_meshlets_emulation );
+                    ImGui::Checkbox( "Use frustum cull for meshes", &enable_frustum_cull_meshes );
+                    ImGui::Checkbox( "Use frustum cull for meshlets", &enable_frustum_cull_meshlets );
+                    ImGui::Checkbox( "Use occlusion cull for meshes", &enable_occlusion_cull_meshes );
+                    ImGui::Checkbox( "Use occlusion cull for meshlets", &enable_occlusion_cull_meshlets );
+                    ImGui::Checkbox( "Use meshes sphere cull for shadows", &shadow_meshes_sphere_cull );
+                    ImGui::Checkbox( "Use meshlets cone cull for shadows", &shadow_meshlets_cone_cull );
+                    ImGui::Checkbox( "Use meshlets sphere cull for shadows", &shadow_meshlets_sphere_cull );
+                    ImGui::Checkbox( "Use meshlets cubemap face cull for shadows", &shadow_meshlets_cubemap_face_cull );
+                    ImGui::Checkbox( "Freeze occlusion camera", &freeze_occlusion_camera );
+                }
+                if ( ImGui::CollapsingHeader( "Clustered Lighting" ) ) {
+
+                    ImGui::Checkbox( "Enable Camera Inside approximation", &enable_camera_inside );
+                    ImGui::Checkbox( "Use McGuire method for AABB sphere", &use_mcguire_method );
+                    ImGui::Checkbox( "Skip invisible lights", &skip_invisible_lights );
+                    ImGui::Checkbox( "use view aabb", &use_view_aabb );
+                    ImGui::Checkbox( "force fullscreen light aabb", &force_fullscreen_light_aabb );
+                    ImGui::Checkbox( "debug show light tiles", &debug_show_light_tiles );
+                    ImGui::Checkbox( "debug show tiles", &debug_show_tiles );
+                    ImGui::Checkbox( "debug show bins", &debug_show_bins );
+                    ImGui::SliderUint( "Lighting debug modes", &lighting_debug_modes, 0, 10 );
+                }
+                if ( ImGui::CollapsingHeader( "PointLight Shadows" ) ) {
+                    ImGui::Checkbox( "Pointlight rendering", &scene->pointlight_rendering );
+                    ImGui::Checkbox( "Pointlight rendering use meshlets", &scene->pointlight_use_meshlets );
+                    ImGui::Checkbox( "Disable shadows", &disable_shadows );
+                    ImGui::Checkbox( "Use tetrahedron shadows", &scene->use_tetrahedron_shadows );
+                    ImGui::Checkbox( "Cubeface switch Pos X", &scene->cubeface_flip[ 0 ] );
+                    ImGui::Checkbox( "Cubeface switch Neg X", &scene->cubeface_flip[ 1 ] );
+                    ImGui::Checkbox( "Cubeface switch Pos Y", &scene->cubeface_flip[ 2 ] );
+                    ImGui::Checkbox( "Cubeface switch Neg Y", &scene->cubeface_flip[ 3 ] );
+                    ImGui::Checkbox( "Cubeface switch Pos Z", &scene->cubeface_flip[ 4 ] );
+                    ImGui::Checkbox( "Cubeface switch Neg Z", &scene->cubeface_flip[ 5 ] );
+                }
+                if ( ImGui::CollapsingHeader( "Volumetric Fog" ) ) {
+                    ImGui::SliderFloat( "Fog Constant Density", &scene->volumetric_fog_density, 0.0f, 1.0f );
+                    ImGui::SliderFloat( "Fog Scattering Factor", &scene->volumetric_fog_scattering_factor, 0.0f, 1.0f );
+                    ImGui::SliderFloat( "Height Fog Density", &scene->volumetric_fog_height_fog_density, 0.0f, 10.0f );
+                    ImGui::SliderFloat( "Height Fog Falloff", &scene->volumetric_fog_height_fog_falloff, 0.0f, 10.0f );
+                    ImGui::SliderFloat( "Fog Anisotropy", &scene->volumetric_fog_phase_anisotropy_01, 0.0f, 1.0f );
+                    ImGui::SliderFloat( "Fog Noise Scale", &scene->volumetric_fog_noise_scale, 0.0f, 1.0f );
+                    ImGui::SliderFloat( "Fog Integration Noise Scale", &scene->volumetric_fog_integration_noise_scale, 0.0f, 1.0f );
+                    ImGui::SliderUint( "Fog Noise Type", &scene->volumetric_fog_noise_type, 0, 2 );
+                    ImGui::SliderFloat( "Temporal Reprojection Percentage", &scene->volumetric_fog_temporal_reprojection_percentage, 0.0f, 1.0f );
+                    ImGui::SliderFloat( "Temporal Reprojection Jittering Scale", &scene->volumetric_fog_temporal_reprojection_jittering_scale, 0.0f, 10.0f );
+                    ImGui::Checkbox( "Use Temporal Reprojection", &scene->volumetric_fog_use_temporal_reprojection );
+                    ImGui::Checkbox( "Use Spatial Filtering", &scene->volumetric_fog_use_spatial_filtering);
+                    ImGui::SliderUint( "Phase Function Type", &scene->volumetric_fog_phase_function_type, 0, 3 );
+                    ImGui::Checkbox( "Fog Application Opacity AA", &scene->volumetric_fog_application_apply_opacity_anti_aliasing );
+                    ImGui::SliderFloat( "Fog Volumetric Noise Position Scale", &scene->volumetric_fog_noise_position_scale, 0.0f, 1.0f );
+                    ImGui::SliderFloat( "Fog Volumetric Noise Speed Scale", &scene->volumetric_fog_noise_speed_scale, 0.0f, 1.0f );
+                    ImGui::SliderFloat3( "Box position", scene->volumetric_fog_box_position.raw, -10.f, 10.f, "%2.3f" );
+                    ImGui::SliderFloat3( "Box size", scene->volumetric_fog_box_size.raw, -4.f, 4.f, "%1.3f" );
+                    ImGui::SliderFloat( "Box density", &scene->volumetric_fog_box_density, 0.0f, 10.0f );
+
+                    Color box_color = { scene->volumetric_fog_box_color };
+                    f32 box_color_floats[ 3 ] = { box_color.r(), box_color.g(), box_color.b() };
+                    if ( ImGui::ColorEdit3( "Box color", box_color_floats ) ) {
+
+                        box_color.set( box_color_floats[ 0 ], box_color_floats[ 1 ], box_color_floats[ 2 ], 1.0f );
+
+                        scene->volumetric_fog_box_color = box_color.abgr;
+                    }
+                }
                 ImGui::Separator();
 
-                static bool enable_meshlets = false;
-                enable_meshlets = scene->use_meshlets && gpu.mesh_shaders_extension_present;
-                ImGui::Checkbox( "Use meshlets", &enable_meshlets );
-                scene->use_meshlets = enable_meshlets;
-                ImGui::Checkbox( "Use meshlets emulation", &scene->use_meshlets_emulation );
-                ImGui::Checkbox( "Use frustum cull for meshes", &enable_frustum_cull_meshes );
-                ImGui::Checkbox( "Use frustum cull for meshlets", &enable_frustum_cull_meshlets );
-                ImGui::Checkbox( "Use occlusion cull for meshes", &enable_occlusion_cull_meshes );
-                ImGui::Checkbox( "Use occlusion cull for meshlets", &enable_occlusion_cull_meshlets );
-                ImGui::Checkbox( "Use meshes sphere cull for shadows", &shadow_meshes_sphere_cull );
-                ImGui::Checkbox( "Use meshlets cone cull for shadows", &shadow_meshlets_cone_cull );
-                ImGui::Checkbox( "Use meshlets sphere cull for shadows", &shadow_meshlets_sphere_cull );
-                ImGui::Checkbox( "Use meshlets cubemap face cull for shadows", &shadow_meshlets_cubemap_face_cull );
-                ImGui::Checkbox( "Freeze occlusion camera", &freeze_occlusion_camera );
                 ImGui::Checkbox( "Show Debug GPU Draws", &scene->show_debug_gpu_draws );
-                ImGui::Separator();
-                ImGui::Checkbox( "Enable Camera Inside approximation", &enable_camera_inside );
-                ImGui::Checkbox( "Use McGuire method for AABB sphere", &use_mcguire_method );
-                ImGui::Checkbox( "Skip invisible lights", &skip_invisible_lights );
-                ImGui::Checkbox( "use view aabb", &use_view_aabb );
-                ImGui::Checkbox( "force fullscreen light aabb", &force_fullscreen_light_aabb );
-                ImGui::Checkbox( "debug show light tiles", &debug_show_light_tiles );
-                ImGui::Checkbox( "debug show tiles", &debug_show_tiles );
-                ImGui::Checkbox( "debug show bins", &debug_show_bins );
-                ImGui::Separator();
-                ImGui::Checkbox( "Pointlight rendering", &scene->pointlight_rendering );
-                ImGui::Checkbox( "Pointlight rendering use meshlets", &scene->pointlight_use_meshlets );
-                ImGui::Checkbox( "Disable shadows", &disable_shadows );
-                ImGui::Checkbox( "Use tetrahedron shadows", &scene->use_tetrahedron_shadows );
-                ImGui::Separator();
-                ImGui::SliderUint( "Lighting debug modes", &lighting_debug_modes, 0, 10 );
                 ImGui::Checkbox( "Dynamically recreate descriptor sets", &recreate_per_thread_descriptors );
                 ImGui::Checkbox( "Use secondary command buffers", &use_secondary_command_buffers );
-
+                ImGui::Separator();
                 ImGui::SliderFloat( "Animation Speed Multiplier", &animation_speed_multiplier, 0.0f, 10.0f );
+                ImGui::Separator();
 
                 static bool fullscreen = false;
                 if ( ImGui::Checkbox( "Fullscreen", &fullscreen ) ) {
@@ -647,12 +1197,6 @@ int main( int argc, char** argv ) {
             }
             ImGui::End();
 
-//            if ( ImGui::Begin("Shading Rate Image") ) {
-//                const ImVec2 window_size = ImGui::GetWindowSize();
-//                ImGui::Image(( ImTextureID )&scene->fragment_shading_rate_image.index, window_size );
-//            }
-//            ImGui::End();
-
             if ( ImGui::Begin( "Lights Debug" ) ) {
                 const u32 lights_count = scene->lights.size;
 
@@ -688,6 +1232,7 @@ int main( int argc, char** argv ) {
             scene_data.inverse_view = glms_mat4_inv( game_camera.camera.view );
             scene_data.world_to_camera = game_camera.camera.view;
             scene_data.camera_position = vec4s{ game_camera.camera.position.x, game_camera.camera.position.y, game_camera.camera.position.z, 1.0f };
+            scene_data.camera_direction = game_camera.camera.direction;
             scene_data.dither_texture_index = dither_texture ? dither_texture->handle.index : 0;
 
             scene_data.use_tetrahedron_shadows = scene->use_tetrahedron_shadows;
@@ -711,6 +1256,7 @@ int main( int argc, char** argv ) {
             scene_data.resolution_y = gpu.swapchain_height * 1.f;
             scene_data.aspect_ratio = gpu.swapchain_width * 1.f / gpu.swapchain_height;
             scene_data.num_mesh_instances = scene->mesh_instances.size;
+            scene_data.volumetric_fog_opacity_anti_aliasing = scene->volumetric_fog_application_apply_opacity_anti_aliasing ? 1 : 0;
 
             // Frustum computations
             if ( !freeze_occlusion_camera ) {
@@ -719,6 +1265,13 @@ int main( int argc, char** argv ) {
                 scene_data.view_projection_debug = scene_data.view_projection;
                 projection_transpose = glms_mat4_transpose( game_camera.camera.projection );
             }
+
+            static i32 jitter_index = 0;
+
+            scene_data.halton_x = 2.0f * halton( jitter_index + 1, 2 ) - 1.0f;
+            scene_data.halton_y = 2.0f * halton( jitter_index + 1, 3 ) - 1.0f;
+
+            jitter_index = ( jitter_index + 1 ) % 8;
 
             scene_data.frustum_planes[ 0 ] = normalize_plane( glms_vec4_add( projection_transpose.col[ 3 ], projection_transpose.col[ 0 ] ) ); // x + w  < 0;
             scene_data.frustum_planes[ 1 ] = normalize_plane( glms_vec4_sub( projection_transpose.col[ 3 ], projection_transpose.col[ 0 ] ) ); // x - w  < 0;
@@ -748,6 +1301,17 @@ int main( int argc, char** argv ) {
                 gpu_lighting_data->debug_modes = (u32)lighting_debug_modes;
                 gpu_lighting_data->debug_texture_index = scene->lighting_debug_texture_index;
 
+                // Volumetric fog data
+                // TODO: parametrize it
+                gpu_lighting_data->volumetric_fog_texture_index = scene->volumetric_fog_texture_index;
+                gpu_lighting_data->volumetric_fog_num_slices = scene->volumetric_fog_slices;
+                gpu_lighting_data->volumetric_fog_near = game_camera.camera.near_plane;
+                gpu_lighting_data->volumetric_fog_far = game_camera.camera.far_plane;
+                // linear_depth_to_uv_optimize offloads this calculations here:
+                const float one_over_log_f_over_n = 1.0f / log2( game_camera.camera.far_plane / game_camera.camera.near_plane );
+                gpu_lighting_data->volumetric_fog_distribution_scale = scene->volumetric_fog_slices * one_over_log_f_over_n;
+                gpu_lighting_data->volumetric_fog_distribution_bias = -( scene->volumetric_fog_slices * log2( game_camera.camera.near_plane ) * one_over_log_f_over_n );
+
                 gpu.unmap_buffer( cb_map );
             }
 
@@ -758,30 +1322,6 @@ int main( int argc, char** argv ) {
                 //place_lights( scene->lights, true );
             }
 
-            const u32 tile_x_count = ceilu32( scene_data.resolution_x / k_tile_size );
-            const u32 tile_y_count = ceilu32( scene_data.resolution_y / k_tile_size );
-            const u32 tiles_entry_count = tile_x_count * tile_y_count * k_num_words;
-            const u32 buffer_size = tiles_entry_count * sizeof( u32 );
-
-            Buffer* lights_tiles_buffer = nullptr;
-            // Check just the first tile, as we destroy/create them together
-            if ( scene->lights_tiles_sb[ 0 ].index != k_invalid_buffer.index ) {
-                lights_tiles_buffer = renderer.gpu->access_buffer( scene->lights_tiles_sb[ gpu.current_frame ] );
-            }
-
-            if ( lights_tiles_buffer == nullptr || lights_tiles_buffer->size != buffer_size ) {
-                for ( u32 i = 0; i < k_max_frames; ++i ) {
-                    renderer.gpu->destroy_buffer( scene->lights_tiles_sb[ i ] );
-                }
-
-                BufferCreation buffer_creation{ };
-                buffer_creation.reset().set( VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, ResourceUsageType::Dynamic, buffer_size ).set_name( "light_tiles" );
-
-                for ( u32 i = 0; i < k_max_frames; ++i ) {
-                    scene->lights_tiles_sb[ i ] = renderer.gpu->create_buffer( buffer_creation );
-                }
-            }
-
             UploadGpuDataContext upload_context{ game_camera, &scratch_allocator};
             upload_context.enable_camera_inside = enable_camera_inside;
             upload_context.force_fullscreen_light_aabb = force_fullscreen_light_aabb;
@@ -790,347 +1330,12 @@ int main( int argc, char** argv ) {
             upload_context.use_view_aabb = use_view_aabb;
             frame_renderer.upload_gpu_data( upload_context );
 
-
             // Place light AABB with a smaller aabb to indicate the center.
-            const Light& light = scene->lights[ light_to_debug ];
-            f32 half_radius = light.radius;
-            scene->debug_renderer.aabb( glms_vec3_sub( light.world_position, { half_radius, half_radius ,half_radius } ), glms_vec3_add( light.world_position, { half_radius, half_radius , half_radius } ), { Color::white } );
-            scene->debug_renderer.aabb( glms_vec3_sub( light.world_position, { .1, .1, .1 } ), glms_vec3_add( light.world_position, { .1, .1, .1 } ), { Color::green } );
-
-            //f32 distance = glms_vec3_distance( { 0,0,0 }, light.world_position );
-            //f32 distance_normalized = distance / (half_radius * 2.f);
-            //f32 f = half_radius * 2;
-            //f32 n = 0.01f;
-            //float NormZComp = ( f + n ) / ( f - n ) - ( 2 * f * n ) / ( f - n ) / distance;
-            //float NormZComp2 = ( f ) / ( n - f ) - ( f * n ) / ( n - f ) / distance;
-
-            //// return z_near * z_far / (z_far + depth * (z_near - z_far));
-            //f32 linear_d = n * f / ( f + 0.983 * ( n - f ) );
-            //f32 linear_d2 = n * f / ( f + 1 * ( n - f ) );
-            //f32 linear_d3 = n * f / ( f + 0.01 * ( n - f ) );
-
-            //// ( f + z * ( n - f ) ) * lin_z = n * f;
-            //// f * lin_z + (z * lin_z * (n - f ) = n * f
-            //// ((n * f) - f * lin_z ) / (n - f) = z * lin_z
-
-            //NormZComp = ( f + n ) / ( f - n ) - ( 2 * f * n ) / ( f - n ) / n;
-            //NormZComp = ( f + n ) / ( f - n ) - ( 2 * f * n ) / ( f - n ) / f;
-            //NormZComp2 = -( f ) / ( n - f ) - ( f * n ) / ( n - f ) / n;
-            //NormZComp2 = -( f ) / ( n - f ) - ( f * n ) / ( n - f ) / f;
-
-            //mat4s view = glms_look( light.world_position, { 0,0,-1 }, { 0,-1,0 } );
-            //// TODO: this should be radius of the light.
-            //mat4s projection = glms_perspective( glm_rad( 90.f ), 1.f, 0.01f, light.radius );
-            //mat4s view_projection = glms_mat4_mul( projection, view );
-
-            //vec3s pos_cs = project( view_projection, { 0,0,0 } );
-
-            //rprint( "DDDD %f %f %f %f\n", NormZComp, -NormZComp2, linear_d, pos_cs.z );
-            //{
-            //    float fn = 1.0f / ( 0.01f - light.radius );
-            //    float a = ( 0.01f + light.radius ) * fn;
-            //    float b = 2.0f * 0.01f * light.radius * fn;
-            //    float projectedDistance = light.world_position.z;
-            //    float z = projectedDistance * a + b;
-            //    float dbDistance = z / projectedDistance;
-
-            //    float bc = dbDistance - NormZComp;
-            //    float bd = dbDistance - NormZComp2;
-            //}
-            // Test AABB cubemap intersection method
-            if ( enable_aabb_cubemap_test ) {
-                // Draw enclosing cubemap aabb
-                vec3s cubemap_position = { 0.f, 0.f, 0.f };
-                vec3s cubemap_half_size = { 1, 1, 1 };
-                scene->debug_renderer.aabb( glms_vec3_sub(cubemap_position, cubemap_half_size), glms_vec3_add(cubemap_position, cubemap_half_size), { Color::blue } );
-
-                vec3s aabb[] = { glms_vec3_subs( aabb_test_position, 0.2f ), glms_vec3_adds( aabb_test_position, 0.2f ) };
-                u32 res = get_cube_face_mask( cubemap_position, aabb );
-                // Positive X
-                if ( ( res & 1 ) ) {
-                    scene->debug_renderer.aabb( glms_vec3_add( cubemap_position, { 1,0,0 } ), glms_vec3_add( cubemap_position, { 1.2, .2, .2 }), { Color::get_distinct_color( 0 ) } );
-                }
-                // Negative X
-                if ( ( res & 2 ) ) {
-                    scene->debug_renderer.aabb( glms_vec3_add( cubemap_position, { -1,0,0 }), glms_vec3_add( cubemap_position, { -1.2, -.2, -.2 }), { Color::get_distinct_color( 1 ) } );
-                }
-                // Positive Y
-                if ( ( res & 4 ) ) {
-                    scene->debug_renderer.aabb( glms_vec3_add( cubemap_position, { 0,1,0 }), glms_vec3_add( cubemap_position, { .2, 1.2, .2 }), { Color::get_distinct_color( 2 ) } );
-                }
-                // Negative Y
-                if ( ( res & 8 ) ) {
-                    scene->debug_renderer.aabb( glms_vec3_add( cubemap_position, { 0,-1,0 }), glms_vec3_add( cubemap_position, { .2, -1.2, .2 }), { Color::get_distinct_color( 3 ) } );
-                }
-                // Positive Z
-                if ( ( res & 16 ) ) {
-                    scene->debug_renderer.aabb( glms_vec3_add( cubemap_position, { 0,0,1 }), glms_vec3_add( cubemap_position, { .2, .2, 1.2 }), { Color::get_distinct_color( 4 ) } );
-                }
-                // Negative Z
-                if ( ( res & 32 ) ) {
-                    scene->debug_renderer.aabb( glms_vec3_add( cubemap_position, { 0,0,-1 }), glms_vec3_add( cubemap_position, { .2, .2, -1.2 }), { Color::get_distinct_color( 5 ) } );
-                }
-                // Draw aabb to test inside cubemap
-                scene->debug_renderer.aabb( aabb[ 0 ], aabb[ 1 ], { Color::white } );
-                //scene->debug_renderer.line( { -1,-1,-1 }, { 1,1,1 }, { Color::white } );
-                //scene->debug_renderer.line( { -1,-1,1 }, { 1,1,-1 }, { Color::white } );
-
-                /*scene->debug_renderer.line({0.5,0,-0.5}, {-1 + .5,1,0 - .5}, {Color::blue});
-                scene->debug_renderer.line( { -0.5,0,-0.5 }, { 1 - .5,1,0 - .5 }, { Color::green } );
-                scene->debug_renderer.line( { 0,0,0 }, { 1,0,1 }, { Color::red } );
-                scene->debug_renderer.line( { 0,0,0 }, { 1,0,-1 }, { Color::yellow } );
-                scene->debug_renderer.line( { 0,0,0 }, { 0,1,1 }, { Color::white } );
-                scene->debug_renderer.line( { 0,0,0 }, { 0,-1,1 }, { 0xffffff00 } ); */
-
-                // AABB -> cubemap face rectangle test
-                f32 s_min, s_max, t_min, t_max;
-                project_aabb_cubemap_positive_x( aabb, s_min, s_max, t_min, t_max );
-                //rprint( "POS X s %f,%f | t %f,%f\n", s_min, s_max, t_min, t_max );
-                project_aabb_cubemap_negative_x( aabb, s_min, s_max, t_min, t_max );
-                //rprint( "NEG X s %f,%f | t %f,%f\n", s_min, s_max, t_min, t_max );
-                project_aabb_cubemap_positive_y( aabb, s_min, s_max, t_min, t_max );
-                //rprint( "POS Y s %f,%f | t %f,%f\n", s_min, s_max, t_min, t_max );
-                project_aabb_cubemap_negative_y( aabb, s_min, s_max, t_min, t_max );
-                //rprint( "NEG Y s %f,%f | t %f,%f\n", s_min, s_max, t_min, t_max );
-                project_aabb_cubemap_positive_z( aabb, s_min, s_max, t_min, t_max );
-                //rprint( "POS Z s %f,%f | t %f,%f\n", s_min, s_max, t_min, t_max );
-                project_aabb_cubemap_negative_z( aabb, s_min, s_max, t_min, t_max );
-                //rprint( "NEG Z s %f,%f | t %f,%f\n", s_min, s_max, t_min, t_max );
-            }
-
-            if ( false ) {
-                // NOTE(marco): adpated from http://www.aortiz.me/2018/12/21/CG.html#clustered-shading
-                const u32 z_count = 32;
-                const f32 tile_size = 64.0f;
-                const f32 tile_pixels = tile_size * tile_size;
-                const u32 tile_x_count = scene_data.resolution_x / f32( tile_size );
-                const u32 tile_y_count = scene_data.resolution_y / f32( tile_size );
-
-                const f32 tile_radius_sq = ( ( tile_size * 0.5f ) * ( tile_size * 0.5f ) ) * 2;
-
-                const vec3s eye_pos = vec3s{0, 0, 0};
-
-                static Camera last_camera{ };
-
-                if ( !freeze_occlusion_camera ) {
-                    last_camera = game_camera.camera;
-                }
-
-                mat4s inverse_projection = glms_mat4_inv( last_camera.projection );
-                mat4s inverse_view = glms_mat4_inv( last_camera.view );
-
-                auto screen_to_view = [&]( const vec4s& screen_pos ) -> vec3s {
-                    //Convert to NDC
-                    vec2s text_coord{ screen_pos.x / scene_data.resolution_x, screen_pos.y / scene_data.resolution_y };
-
-                    //Convert to clipSpace
-                    vec4s clip = vec4s{ text_coord.x * 2.0f - 1.0f,
-                                        ( 1.0f - text_coord.y ) * 2.0f - 1.0f,
-                                        screen_pos.z,
-                                        screen_pos.w };
-
-                    //View space transform
-                    vec4s view = glms_mat4_mulv( inverse_projection, clip );
-
-                    //Perspective projection
-                    // view = glms_vec4_scale( view, 1.0f / view.w );
-
-                    return vec3s{ view.x, view.y, view.z };
-                };
-
-                auto line_intersection_to_z_plane = [&]( const vec3s& a, const vec3s& b, f32 z ) -> vec3s {
-                    //all clusters planes are aligned in the same z direction
-                    vec3s normal = vec3s{ 0.0, 0.0, 1.0 };
-
-                    //getting the line from the eye to the tile
-                    vec3s ab =  glms_vec3_sub( b, a );
-
-                    //Computing the intersection length for the line and the plane
-                    f32 t = ( z - glms_dot( normal, a ) ) / glms_dot( normal, ab );
-
-                    //Computing the actual xyz position of the point along the line
-                    vec3s result = glms_vec3_add( a, glms_vec3_scale( ab, t ) );
-
-                    return result;
-                };
-
-                const f32 z_near = scene_data.z_near;
-                const f32 z_far = scene_data.z_far;
-                const f32 z_ratio = z_far / z_near;
-                const f32 z_bin_range = 1.0f / f32(z_count);
-
-                u32 light_count = scene->active_lights;
-
-                Array<vec3s> lights_aabb_view;
-                lights_aabb_view.init( allocator, light_count * 2, light_count * 2 );
-
-                for ( u32 l = 0; l < light_count; ++l ) {
-                    Light& light = scene->lights[ l ];
-                    light.shadow_map_resolution = 0.0f;
-                    light.tile_x = 0;
-                    light.tile_y = 0;
-                    light.solid_angle = 0.0f;
-
-                    vec4s aabb_min_view = glms_mat4_mulv( last_camera.view, light.aabb_min );
-                    vec4s aabb_max_view = glms_mat4_mulv( last_camera.view, light.aabb_max );
-
-                    lights_aabb_view[ l * 2 ]     = vec3s{ aabb_min_view.x, aabb_min_view.y, aabb_min_view.z };
-                    lights_aabb_view[ l * 2 + 1 ] = vec3s{ aabb_max_view.x, aabb_max_view.y, aabb_max_view.z };
-                }
-
-                for ( u32 z = 0; z < z_count; ++z ) {
-                    for ( u32 y = 0; y < tile_y_count; ++y ) {
-                        for ( u32 x = 0; x < tile_x_count; ++x ) {
-                            // Calculating the min and max point in screen space
-                            vec4s max_point_screen = vec4s{ f32( ( x + 1 ) * tile_size ),
-                                                            f32( ( y + 1 ) * tile_size ),
-                                                            0.0f, 1.0f }; // Top Right
-
-                            vec4s min_point_screen = vec4s{ f32( x * tile_size ),
-                                                            f32( y * tile_size ),
-                                                            0.0f, 1.0f }; // Top Right
-
-                            vec4s tile_center_screen = glms_vec4_scale( glms_vec4_add( min_point_screen, max_point_screen ), 0.5f );
-                            vec2s tile_center{ tile_center_screen.x, tile_center_screen.y };
-
-                            // Pass min and max to view space
-                            vec3s max_point_view = screen_to_view( max_point_screen );
-                            vec3s min_point_view = screen_to_view( min_point_screen );
-
-                            // Near and far values of the cluster in view space
-                            // We use equation (2) directly to obtain the tile values
-                            f32 tile_near  = z_near * pow( z_ratio, f32( z ) * z_bin_range );
-                            f32 tile_far   = z_near * pow( z_ratio, f32( z + 1 ) * z_bin_range );
-
-                            // Finding the 4 intersection points made from each point to the cluster near/far plane
-                            vec3s min_point_near = line_intersection_to_z_plane( eye_pos, min_point_view, tile_near );
-                            vec3s min_point_far  = line_intersection_to_z_plane( eye_pos, min_point_view, tile_far );
-                            vec3s max_point_near = line_intersection_to_z_plane( eye_pos, max_point_view, tile_near );
-                            vec3s max_point_far  = line_intersection_to_z_plane( eye_pos, max_point_view, tile_far );
-
-                            vec3s min_point_aabb_view = glms_vec3_minv( glms_vec3_minv( min_point_near, min_point_far ), glms_vec3_minv( max_point_near, max_point_far ) );
-                            vec3s max_point_aabb_view = glms_vec3_maxv( glms_vec3_maxv( min_point_near, min_point_far ), glms_vec3_maxv( max_point_near, max_point_far ) );
-
-                            vec4s min_point_aabb_world{ min_point_aabb_view.x, min_point_aabb_view.y, min_point_aabb_view.z, 1.0f };
-                            vec4s max_point_aabb_world{ max_point_aabb_view.x, max_point_aabb_view.y, max_point_aabb_view.z, 1.0f };
-
-                            min_point_aabb_world = glms_mat4_mulv( inverse_view, min_point_aabb_world );
-                            max_point_aabb_world = glms_mat4_mulv( inverse_view, max_point_aabb_world );
-
-                            bool intersects_light = false;
-                            for ( u32 l = 0; l < scene->active_lights; ++l ) {
-                                Light& light = scene->lights[ l ];
-
-                                vec3s& light_aabb_min = lights_aabb_view[ l * 2 ];
-                                vec3s& light_aabb_max = lights_aabb_view[ l * 2 + 1 ];
-
-                                f32 minx = min( min( light_aabb_min.x, light_aabb_max.x ), min( min_point_aabb_view.x, max_point_aabb_view.x ) );
-                                f32 miny = min( min( light_aabb_min.y, light_aabb_max.y ), min( min_point_aabb_view.y, max_point_aabb_view.y ) );
-                                f32 minz = min( min( light_aabb_min.z, light_aabb_max.z ), min( min_point_aabb_view.z, max_point_aabb_view.z ) );
-
-                                f32 maxx = max( max( light_aabb_min.x, light_aabb_max.x ), max( min_point_aabb_view.x, max_point_aabb_view.x ) );
-                                f32 maxy = max( max( light_aabb_min.y, light_aabb_max.y ), max( min_point_aabb_view.y, max_point_aabb_view.y ) );
-                                f32 maxz = max( max( light_aabb_min.z, light_aabb_max.z ), max( min_point_aabb_view.z, max_point_aabb_view.z ) );
-
-                                f32 dx = abs( maxx - minx );
-                                f32 dy = abs( maxy - miny );
-                                f32 dz = abs( maxz - minz );
-
-                                f32 allx = abs( light_aabb_max.x - light_aabb_min.x ) + abs( max_point_aabb_view.x - min_point_aabb_view.x );
-                                f32 ally = abs( light_aabb_max.y - light_aabb_min.y ) + abs( max_point_aabb_view.y - min_point_aabb_view.y );
-                                f32 allz = abs( light_aabb_max.z - light_aabb_min.z ) + abs( max_point_aabb_view.z - min_point_aabb_view.z );
-
-                                bool intersects = ( dx <= allx ) && ( dy < ally ) && ( dz <= allz );
-
-                                if ( intersects ) {
-                                    intersects_light = true;
-
-                                    vec4s sphere_world{ light.world_position.x, light.world_position.y, light.world_position.z, 1.0f };
-                                    vec4s sphere_ndc = glms_mat4_mulv( last_camera.view_projection, sphere_world );
-
-                                    sphere_ndc.x /= sphere_ndc.w;
-                                    sphere_ndc.y /= sphere_ndc.w;
-
-                                    vec2s sphere_screen{ ( ( sphere_ndc.x + 1.0f ) * 0.5f ) * scene_data.resolution_x, ( ( sphere_ndc.y + 1.0f ) * 0.5f ) * scene_data.resolution_y, };
-
-                                    f32 d = glms_vec2_distance( sphere_screen, tile_center );
-
-                                    f32 diff = d * d - tile_radius_sq;
-
-                                    if ( diff < 1.0e-4 ) {
-                                        continue;
-                                    }
-
-                                    // NOTE(marco): as defined in https://math.stackexchange.com/questions/73238/calculating-solid-angle-for-a-sphere-in-space
-                                    f32 solid_angle = ( 2.0f * rpi ) * ( 1.0f - ( sqrtf( diff ) / d ) );
-
-                                    // NOTE(marco): following https://efficientshading.com/wp-content/uploads/s2015_shadows.pdf
-                                    f32 resolution = sqrtf( ( 4.0f * rpi * tile_pixels ) / ( 6 * solid_angle ) );
-
-                                    if ( resolution > light.shadow_map_resolution ) {
-                                        light.shadow_map_resolution = resolution;
-                                        light.tile_x = x;
-                                        light.tile_y = y;
-                                        light.solid_angle = solid_angle;
-                                    }
-                                }
-                            }
-
-                            if ( enable_light_cluster_debug && intersects_light ) {
-                                scene->debug_renderer.aabb( vec3s{ min_point_aabb_world.x, min_point_aabb_world.y, min_point_aabb_world.z },
-                                                            vec3s{ max_point_aabb_world.x, max_point_aabb_world.y, max_point_aabb_world.z },
-                                                            { Color::get_distinct_color( z ) } );
-                            }
-                        }
-                    }
-                }
-
-                lights_aabb_view.shutdown();
-
-                if ( enable_light_tile_debug ) {
-                    f32 light_pos_len = 0.01;
-                    for ( u32 l = 0; l < light_count; ++l ) {
-                        Light& light = scene->lights[ l ];
-
-                        //rprint( "Light resolution %f\n", light.shadow_map_resolution );
-
-                        if ( light.shadow_map_resolution != 0.0f ) {
-                            {
-                                vec4s sphere_world{ light.world_position.x, light.world_position.y, light.world_position.z, 1.0f };
-                                vec4s sphere_ndc = glms_mat4_mulv( last_camera.view_projection, sphere_world );
-
-                                sphere_ndc.x /= sphere_ndc.w;
-                                sphere_ndc.y /= sphere_ndc.w;
-
-                                vec2s top_left{ sphere_ndc.x - light_pos_len, sphere_ndc.y - light_pos_len };
-                                vec2s bottom_right{ sphere_ndc.x + light_pos_len, sphere_ndc.y + light_pos_len };
-                                vec2s top_right{ sphere_ndc.x + light_pos_len, sphere_ndc.y - light_pos_len };
-                                vec2s bottom_left{ sphere_ndc.x - light_pos_len, sphere_ndc.y + light_pos_len };
-
-                                scene->debug_renderer.line_2d( top_left, bottom_right, { Color::get_distinct_color( l + 1 ) } );
-                                scene->debug_renderer.line_2d( top_right, bottom_left, { Color::get_distinct_color( l + 1 ) } );
-                            }
-
-                            {
-                                vec2s screen_scale{ 1.0f / f32( scene_data.resolution_x ), 1.0f / ( scene_data.resolution_y ) };
-
-                                vec2s bottom_right{ f32( ( light.tile_x + 1 ) * tile_size ), f32( scene_data.resolution_y - ( light.tile_y + 1 ) * tile_size ) };
-                                bottom_right = glms_vec2_subs( glms_vec2_scale( glms_vec2_mul( bottom_right, screen_scale ), 2.0f ), 1.0f );
-
-                                vec2s top_left{ f32( ( light.tile_x ) * tile_size ), f32( scene_data.resolution_y - ( light.tile_y ) * tile_size ) };
-                                top_left = glms_vec2_subs( glms_vec2_scale( glms_vec2_mul( top_left, screen_scale ), 2.0f ), 1.0f );
-
-                                vec2s top_right{ bottom_right.x, top_left.y };
-                                vec2s bottom_left{ top_left.x, bottom_right.y };
-
-                                scene->debug_renderer.line_2d( top_left, top_right, { Color::get_distinct_color( l + 1 ) } );
-                                scene->debug_renderer.line_2d( top_right, bottom_right, { Color::get_distinct_color( l + 1 ) } );
-                                scene->debug_renderer.line_2d( bottom_left, bottom_right, { Color::get_distinct_color( l + 1 ) } );
-                                scene->debug_renderer.line_2d( bottom_left, top_left, { Color::get_distinct_color( l + 1 ) } );
-                            }
-                        }
-                    }
-                }
+            if ( scene->show_light_edit_debug_draws ) {
+                const Light& light = scene->lights[ light_to_debug ];
+                f32 half_radius = light.radius;
+                scene->debug_renderer.aabb( glms_vec3_sub( light.world_position, { half_radius, half_radius ,half_radius } ), glms_vec3_add( light.world_position, { half_radius, half_radius , half_radius } ), { Color::white } );
+                scene->debug_renderer.aabb( glms_vec3_sub( light.world_position, { .1, .1, .1 } ), glms_vec3_add( light.world_position, { .1, .1, .1 } ), { Color::green } );
             }
         }
 
@@ -1166,6 +1371,14 @@ int main( int argc, char** argv ) {
     vkDeviceWaitIdle( gpu.vulkan_device );
 
     async_loader.shutdown();
+
+    // Destroy resources built here.
+    gpu.destroy_buffer( scene->blas_buffer );
+    gpu.vkDestroyAccelerationStructureKHR( gpu.vulkan_device, scene->blas, gpu.vulkan_allocation_callbacks );
+    gpu.destroy_buffer( scene->tlas_buffer );
+    gpu.vkDestroyAccelerationStructureKHR( gpu.vulkan_device, scene->tlas, gpu.vulkan_allocation_callbacks );
+    gpu.destroy_sampler( repeat_nearest_sampler );
+    gpu.destroy_sampler( repeat_sampler );
 
     imgui->shutdown();
 

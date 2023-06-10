@@ -354,6 +354,13 @@ DescriptorSetCreation& DescriptorSetCreation::texture_sampler( TextureHandle tex
     return *this;
 }
 
+DescriptorSetCreation& DescriptorSetCreation::set_as( VkAccelerationStructureKHR as_, u16 binding ) {
+    as = as_;
+    bindings[ num_resources++ ] = binding;
+
+    return *this;
+}
+
 DescriptorSetCreation& DescriptorSetCreation::set_set_index( u32 index ) {
     set_index = index;
 
@@ -579,6 +586,14 @@ cstring to_compiler_extension( VkShaderStageFlagBits value ) {
             return "mesh";
         case VK_SHADER_STAGE_TASK_BIT_NV:
             return "task";
+        case VK_SHADER_STAGE_RAYGEN_BIT_KHR:
+            return "rgen";
+        case VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR:
+            return "rchit";
+        case VK_SHADER_STAGE_ANY_HIT_BIT_KHR:
+            return "rahit";
+        case VK_SHADER_STAGE_MISS_BIT_KHR:
+            return "rmiss";
         default:
             return "";
     }
@@ -597,6 +612,14 @@ cstring to_stage_defines( VkShaderStageFlagBits value ) {
             return "MESH";
         case VK_SHADER_STAGE_TASK_BIT_NV:
             return "TASK";
+        case VK_SHADER_STAGE_RAYGEN_BIT_KHR:
+            return "RAYGEN";
+        case VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR:
+            return "CLOSEST_HIT";
+        case VK_SHADER_STAGE_ANY_HIT_BIT_KHR:
+            return "ANY_HIT";
+        case VK_SHADER_STAGE_MISS_BIT_KHR:
+            return "MISS";
         default:
             return "";
     }
@@ -666,11 +689,9 @@ VkAccessFlags util_to_vk_access_flags( ResourceState state ) {
     if ( state & RESOURCE_STATE_PRESENT ) {
         ret |= VK_ACCESS_MEMORY_READ_BIT;
     }
-#ifdef ENABLE_RAYTRACING
     if ( state & RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE ) {
-        ret |= VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_NV | VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_NV;
+        ret |= VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
     }
-#endif
 
     return ret;
 }
@@ -712,11 +733,9 @@ VkAccessFlags util_to_vk_access_flags2( ResourceState state ) {
     if ( state & RESOURCE_STATE_SHADING_RATE_SOURCE ) {
         ret |= VK_ACCESS_2_FRAGMENT_SHADING_RATE_ATTACHMENT_READ_BIT_KHR;
     }
-#ifdef ENABLE_RAYTRACING
     if ( state & RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE ) {
-        ret |= VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_NV | VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_NV;
+        ret |= VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
     }
-#endif
 
     return ret;
 }
@@ -802,15 +821,16 @@ VkPipelineStageFlags util_determine_pipeline_stage_flags( VkAccessFlags access_f
                 flags |= VK_PIPELINE_STAGE_VERTEX_SHADER_BIT;
                 flags |= VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
                 flags |= VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
-#ifdef ENABLE_RAYTRACING
-                if ( pRenderer->mVulkan.mRaytracingExtension ) {
-                    flags |= VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_NV;
-                }
-#endif
+
+                // TODO(marco): check RT extension is present/enabled
+                flags |= VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR;
             }
 
             if ( ( access_flags & VK_ACCESS_INPUT_ATTACHMENT_READ_BIT ) != 0 )
                 flags |= VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+
+            if ( ( access_flags & ( VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR ) ) != 0 )
+                flags |= VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
 
             if ( ( access_flags & ( VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT ) ) != 0 )
                 flags |= VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
@@ -870,15 +890,16 @@ VkPipelineStageFlags2KHR util_determine_pipeline_stage_flags2( VkAccessFlags2KHR
                 flags |= VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT_KHR;
                 flags |= VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT_KHR;
                 flags |= VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT_KHR;
-#ifdef ENABLE_RAYTRACING
-                if ( pRenderer->mVulkan.mRaytracingExtension ) {
-                    flags |= VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_NV;
-                }
-#endif
+
+                // TODO(marco): check RT extension is present/enabled
+                flags |= VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
             }
 
             if ( ( access_flags & VK_ACCESS_INPUT_ATTACHMENT_READ_BIT ) != 0 )
                 flags |= VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT_KHR;
+
+            if ( ( access_flags & ( VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_2_ACCELERATION_STRUCTURE_WRITE_BIT_KHR ) ) != 0 )
+                flags |= VK_PIPELINE_STAGE_2_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
 
             if ( ( access_flags & ( VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT ) ) != 0 )
                 flags |= VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT_KHR;

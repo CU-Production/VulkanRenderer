@@ -77,6 +77,22 @@ VkShaderStageFlags parse_execution_model( SpvExecutionModel model )
         {
             return VK_SHADER_STAGE_TASK_BIT_NV;
         }
+        case ( SpvExecutionModelRayGenerationKHR ):
+        {
+            return VK_SHADER_STAGE_RAYGEN_BIT_KHR;
+        }
+        case ( SpvExecutionModelClosestHitKHR ):
+        {
+            return VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR;
+        }
+        case ( SpvExecutionModelAnyHitKHR ):
+        {
+            return VK_SHADER_STAGE_ANY_HIT_BIT_KHR;
+        }
+        case ( SpvExecutionModelMissKHR ):
+        {
+            return VK_SHADER_STAGE_MISS_BIT_KHR;
+        }
     }
 
     return 0;
@@ -116,7 +132,7 @@ void parse_binary( const u32* data, size_t data_size, StringBuffer& name_buffer,
 
     size_t word_index = 5;
     while ( word_index < spv_word_count ) {
-        SpvOp op = ( SpvOp )( data[ word_index ] & 0xFF );
+        SpvOp op = ( SpvOp )( data[ word_index ] & 0xFFFF );
         u16 word_count = ( u16 )( data[ word_index ] >> 16 );
 
         switch( op ) {
@@ -347,6 +363,19 @@ void parse_binary( const u32* data, size_t data_size, StringBuffer& name_buffer,
                 break;
             }
 
+            case ( SpvOpTypeAccelerationStructureKHR ):
+            {
+                RASSERT( word_count == 2 );
+
+                u32 id_index = data[ word_index + 1 ];
+                RASSERT( id_index < id_bound );
+
+                Id& id = ids[ id_index ];
+                id.op = op;
+
+                break;
+            };
+
             case ( SpvOpTypeSampler ):
             {
                 RASSERT( word_count == 2 );
@@ -541,7 +570,7 @@ void parse_binary( const u32* data, size_t data_size, StringBuffer& name_buffer,
             case ( SpvOpSpecConstantComposite ):
             {
                 Id& id_spec_binding = ids[ id.type_index ];
-                
+
                 // Cache specialization value
                 SpecializationConstant& specialization_constant = parse_result->specialization_constants[ parse_result->specialization_constants_count ];
                 specialization_constant.binding = id_spec_binding.binding;
@@ -635,6 +664,13 @@ void parse_binary( const u32* data, size_t data_size, StringBuffer& name_buffer,
                         case SpvOpTypeImage:
                         {
                             binding.type = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+                            binding.name = id.name.text;
+                            break;
+                        }
+
+                        case SpvOpTypeAccelerationStructureKHR:
+                        {
+                            binding.type = VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR;
                             binding.name = id.name.text;
                             break;
                         }

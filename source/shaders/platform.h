@@ -1,7 +1,7 @@
 // Header file for common defines
 
 // Global glsl version ///////////////////////////////////////////////////
-#version 450
+#version 460
 
 #define GLOBAL_SET 0
 #define MATERIAL_SET 1
@@ -48,6 +48,8 @@ layout ( set = GLOBAL_SET, binding = BINDLESS_BINDING ) uniform samplerCubeArray
 // Writeonly images do not need format in layout
 layout( set = GLOBAL_SET, binding = BINDLESS_IMAGES ) writeonly uniform image2D global_images_2d[];
 
+layout( set = GLOBAL_SET, binding = BINDLESS_IMAGES ) writeonly uniform image3D global_images_3d[];
+
 layout( set = GLOBAL_SET, binding = BINDLESS_IMAGES ) writeonly uniform uimage2D global_uimages_2d[];
 
 
@@ -58,6 +60,25 @@ layout( set = GLOBAL_SET, binding = BINDLESS_IMAGES ) writeonly uniform uimage2D
 // Utility ///////////////////////////////////////////////////////////////
 float saturate( float a ) {
     return clamp(a, 0.0f, 1.0f);
+}
+
+uint vec4_to_rgba( vec4 color ) {
+    return (uint(color.r * 255.f) | (uint(color.g * 255.f) << 8) | 
+           (uint(color.b * 255.f) << 16) | ((uint(color.a * 255.f) << 24)));
+}
+
+vec4 unpack_color_rgba( uint color ) {
+    return vec4( ( color & 0xffu ) / 255.f,
+                 ( ( color >> 8u ) & 0xffu ) / 255.f,
+                 ( ( color >> 16u ) & 0xffu ) / 255.f,
+                 ( ( color >> 24u ) & 0xffu ) / 255.f );
+}
+
+vec4 unpack_color_abgr( uint color ) {
+    return vec4( ( ( color >> 24u ) & 0xffu ) / 255.f,
+                 ( ( color >> 16u ) & 0xffu ) / 255.f,
+                 ( ( color >> 8u ) & 0xffu ) / 255.f,
+                 ( color & 0xffu ) / 255.f );
 }
 
 #if defined (COMPUTE)
@@ -81,6 +102,18 @@ void group_barrier() {
 #endif // COMPUTE
 
 // Encoding/Decoding SRGB ////////////////////////////////////////////////
+// sRGB to Linear.
+// Assuming using sRGB typed textures this should not be needed.
+float ToLinear1 (float c) {
+    return ( c <= 0.04045 ) ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4);
+}
+
+// Linear to sRGB.
+// Assuing using sRGB typed textures this should not be needed.
+float ToSrgb1(float c){
+    return (c < 0.0031308 ? c * 12.92 : 1.055 * pow(c, 0.41666) - 0.055);
+}
+
 vec3 decode_srgb( vec3 c ) {
     vec3 result;
     if ( c.r <= 0.04045) {
@@ -186,5 +219,44 @@ vec3 view_position_from_depth( vec2 uv, float raw_depth, mat4 inverse_projection
 }
 
 vec2 uv_from_pixels( ivec2 pixel_position, uint width, uint height ) {
-    return pixel_position / vec2((width - 1) * 1.f, (height - 1) * 1.f);
+    return pixel_position / vec2(width * 1.f, height * 1.f);
+}
+
+// Convert raw_depth (0..1) to linear depth (near...far)
+float raw_depth_to_linear_depth( float raw_depth, float near, float far ) {
+    // NOTE(marco): Vulkan depth is [0, 1]
+    return near * far / (far + raw_depth * (near - far));
+}
+
+// Convert linear depth (near...far) to raw_depth (0..1)
+float linear_depth_to_raw_depth( float linear_depth, float near, float far ) {
+    return ( near * far ) / ( linear_depth * ( near - far ) ) - far / ( near - far );
+}
+
+// Exponential distribution as in https://advances.realtimerendering.com/s2016/Siggraph2016_idTech6.pdf
+// Convert slice index to (near...far) value distributed with exponential function.
+float slice_to_exponential_depth( float near, float far, int slice, int num_slices ) {
+    return near * pow( far / near, (float(slice) + 0.5f) / float(num_slices) );
+}
+
+float slice_to_exponential_depth_jittered( float near, float far, float jitter, int slice, int num_slices ) {
+    return near * pow( far / near, (float(slice) + 0.5f + jitter) / float(num_slices) );
+}
+
+// http://www.aortiz.me/2018/12/21/CG.html
+// Convert linear depth (near...far) to (0...1) value distributed with exponential functions
+// like slice_to_exponential_depth.
+// This function is performing all calculations, a more optimized one precalculates factors on CPU.
+float linear_depth_to_uv( float near, float far, float linear_depth, int num_slices ) {
+    const float one_over_log_f_over_n = 1.0f / log2( far / near );
+    const float scale = num_slices * one_over_log_f_over_n;
+    const float bias = - ( num_slices * log2(near) * one_over_log_f_over_n );
+
+    return max(log2(linear_depth) * scale + bias, 0.0f) / float(num_slices);
+}
+
+// Convert linear depth (near...far) to (0...1) value distributed with exponential functions.
+// Uses CPU cached values of scale and bias.
+float linear_depth_to_uv_optimized( float scale, float bias, float linear_depth, int num_slices ) {
+    return max(log2(linear_depth) * scale + bias, 0.0f) / float(num_slices);
 }

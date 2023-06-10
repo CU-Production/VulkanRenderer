@@ -546,6 +546,35 @@ void CommandBuffer::dispatch_indirect( BufferHandle buffer_handle, u32 offset ) 
     vkCmdDispatchIndirect( vk_command_buffer, vk_buffer, vk_offset );
 }
 
+void CommandBuffer::trace_rays( PipelineHandle pipeline_, u32 width, u32 height, u32 depth ) {
+    Pipeline* pipeline = gpu_device->access_pipeline( pipeline_ );
+
+    u32 shader_group_handle_size = gpu_device->ray_tracing_pipeline_properties.shaderGroupHandleSize;
+
+    // NOTE(marco): always 0 in the shader table for now
+    VkStridedDeviceAddressRegionKHR raygen_table{ };
+    raygen_table.deviceAddress = gpu_device->get_buffer_device_address( pipeline->shader_binding_table_raygen );
+    raygen_table.stride = shader_group_handle_size;
+    raygen_table.size = shader_group_handle_size;
+
+    // NOTE(marco): always 1 in the shader table for now
+    VkStridedDeviceAddressRegionKHR hit_table{ };
+    hit_table.deviceAddress = gpu_device->get_buffer_device_address( pipeline->shader_binding_table_hit );
+    hit_table.stride = shader_group_handle_size;
+    hit_table.size = shader_group_handle_size;
+
+    // NOTE(marco): always 2 in the shader table for now
+    VkStridedDeviceAddressRegionKHR miss_table{ };
+    miss_table.deviceAddress = gpu_device->get_buffer_device_address( pipeline->shader_binding_table_miss );
+    miss_table.stride = shader_group_handle_size;
+    miss_table.size = shader_group_handle_size;
+
+    // NOTE(marco): unused for now
+    VkStridedDeviceAddressRegionKHR callable_table{ };
+
+    gpu_device->vkCmdTraceRaysKHR( vk_command_buffer, &raygen_table, &miss_table, &hit_table, &callable_table, width, height, depth );
+}
+
 // DrawIndirect = 0, VertexInput = 1, VertexShader = 2, FragmentShader = 3, RenderTarget = 4, ComputeShader = 5, Transfer = 6
 static ResourceState to_resource_state( PipelineStage::Enum stage ) {
     static ResourceState s_states[] = { RESOURCE_STATE_INDIRECT_ARGUMENT, RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, RESOURCE_STATE_PIXEL_SHADER_RESOURCE, RESOURCE_STATE_RENDER_TARGET, RESOURCE_STATE_UNORDERED_ACCESS, RESOURCE_STATE_COPY_DEST };

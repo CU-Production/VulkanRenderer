@@ -310,6 +310,26 @@
                     "name": "point_shadows_depth"
                 }
             ]
+        },
+        {
+            "inputs":
+            [
+                {
+                    "type": "texture",
+                    "name": "dummy_resource"
+                }
+            ],
+            "name": "volumetric_fog_pass",
+            "enabled": true,
+            "type": "compute",
+            "outputs":
+            [
+                {
+                    "type": "texture",
+                    "external": true,
+                    "name": "volumetric_fog_texture"
+                }
+            ]
         }
     ]
 }

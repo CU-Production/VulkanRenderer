@@ -15,6 +15,8 @@ layout ( std140, set = MATERIAL_SET, binding = 0 ) uniform SceneConstants {
 
     vec4        camera_position;
     vec4        camera_position_debug;
+    vec3        camera_direction;
+    float       pad_sc_000;
 
     uint        active_lights;
     uint        use_tetrahedron_shadows;
@@ -30,8 +32,16 @@ layout ( std140, set = MATERIAL_SET, binding = 0 ) uniform SceneConstants {
     float       aspect_ratio;
     uint        num_mesh_instances;
 
+    vec2        halton_xy;
+    uint        volumetric_fog_opacity_anti_aliasing;
+    float       pad_sc_002;
+
     vec4        frustum_planes[6];
 };
+
+bool enable_volumetric_fog_opacity_anti_aliasing() {
+    return volumetric_fog_opacity_anti_aliasing > 0;
+}
 
 
 bool disable_frustum_cull_meshes() {
@@ -77,9 +87,10 @@ float dither(vec2 screen_pixel_position, float value)
     return value - dither_value;
 }
 
-float linearize_depth(float depth) {
+// Convert raw_depth (0..1) to linear depth (near...far)
+float linearize_raw_depth(float raw_depth) {
     // NOTE(marco): Vulkan depth is [0, 1]
-    return z_near * z_far / (z_far + depth * (z_near - z_far));
+    return z_near * z_far / (z_far + raw_depth * (z_near - z_far));
 }
 
 #endif // RAPTOR_GLSL_SCENE_H

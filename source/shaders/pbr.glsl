@@ -46,16 +46,18 @@ void main() {
 
     vec4 color = vec4(0);
 
+    const vec2 screen_uv = uv_from_pixels(ivec2( gl_FragCoord.xy ), output_width, output_height);
     const float raw_depth = texelFetch(global_textures[nonuniformEXT(textures.w)], ivec2( gl_FragCoord.xy ), 0).r;
     if ( raw_depth == 1.0f ) {
         color = vec4( base_colour.rgb, 1 );
     }
     else {
-        const vec2 screen_uv = uv_from_pixels(ivec2( gl_FragCoord.xy ), output_width, output_height);
         const vec3 pixel_world_position = world_position_from_depth(screen_uv, raw_depth, inverse_view_projection);
 
         color = calculate_lighting( base_colour, orm, normal, emissive, pixel_world_position );
     }
+
+    color.rgb = apply_volumetric_fog( screen_uv, raw_depth, color.rgb );
 
 #if 0
     vec3 sr_color = vec3( 0.5, 0, 0 );
@@ -104,6 +106,7 @@ void main() {
         color = calculate_lighting( base_colour, orm, normal, emissive, pixel_world_position );
     }
 
+    // DEBUG:
     if ( debug_modes > 0 ) {
 
         if ( debug_modes == 1 ) {

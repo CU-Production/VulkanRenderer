@@ -662,6 +662,9 @@ void main() {
     color_out = vColour;
 #else
     color_out = calculate_lighting( base_colour, orm, normal, emissive_colour.rgb, world_position );
+
+    const vec2 screen_uv = uv_from_pixels(ivec2( gl_FragCoord.xy ), uint(resolution.x), uint(resolution.y));
+    color_out.rgb = apply_volumetric_fog( screen_uv, gl_FragCoord.z, color_out.rgb );
 #endif
 }
 

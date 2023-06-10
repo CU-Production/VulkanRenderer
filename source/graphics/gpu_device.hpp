@@ -119,10 +119,9 @@ struct GpuDeviceCreation {
 struct GpuDevice : public Service {
 
     // Helper methods
-    static void                     fill_write_descriptor_sets( GpuDevice& gpu, const DescriptorSetLayout* descriptor_set_layout, VkDescriptorSet vk_descriptor_set,
+    static void                     fill_write_descriptor_sets( GpuDevice& gpu, const DescriptorSetLayout* descriptor_set_layout, DescriptorSet* descriptor_set,
                                                                 VkWriteDescriptorSet* descriptor_write, VkDescriptorBufferInfo* buffer_info, VkDescriptorImageInfo* image_info,
-                                                                VkSampler vk_default_sampler, u32& num_resources, const ResourceHandle* resources,
-                                                                const SamplerHandle* samplers, const u16* bindings );
+                                                                VkSampler vk_default_sampler, u32& num_resources );
 
     // Init/Terminate methods
     void                            init( const GpuDeviceCreation& creation );
@@ -182,6 +181,7 @@ struct GpuDevice : public Service {
 
     bool                            get_family_queue( VkPhysicalDevice physical_device );
 
+    VkDeviceAddress                 get_buffer_device_address( BufferHandle handle );
     VkShaderModuleCreateInfo        compile_shader( cstring code, u32 code_size, VkShaderStageFlagBits stage, cstring name );
 
     // Swapchain //////////////////////////////////////////////////////////
@@ -224,6 +224,7 @@ struct GpuDevice : public Service {
 
     // Compute ///////////////////////////////////////////////////////////
     void                            submit_compute_load( CommandBuffer* command_buffer );
+    void                            submit_immediate( CommandBuffer* command_buffer );
 
     // Names and markers /////////////////////////////////////////////////
     void                            set_resource_name( VkObjectType object_type, u64 handle, const char* name );
@@ -346,6 +347,8 @@ struct GpuDevice : public Service {
     u64                             last_compute_semaphore_value = 0;
     bool                            has_async_work = false;
 
+    VkFence                         vulkan_immediate_fence;
+
     // Windows specific
     VkSurfaceKHR                    vulkan_window_surface;
     VkSurfaceFormatKHR              vulkan_surface_format;
@@ -375,7 +378,27 @@ struct GpuDevice : public Service {
     PFN_vkGetPhysicalDeviceFragmentShadingRatesKHR get_physical_device_fragment_shading_rates_khr;
     PFN_vkCmdSetFragmentShadingRateKHR             cmd_set_fragment_shading_rate_khr;
 
-    Array<VkPhysicalDeviceFragmentShadingRateKHR>  fragment_shading_rates;
+    // Ray tracing functions
+    PFN_vkCreateRayTracingPipelinesKHR vkCreateRayTracingPipelinesKHR;
+    PFN_vkCmdTraceRaysKHR           vkCmdTraceRaysKHR;
+    PFN_vkCmdTraceRaysIndirectKHR   vkCmdTraceRaysIndirectKHR;
+    PFN_vkGetRayTracingShaderGroupHandlesKHR vkGetRayTracingShaderGroupHandlesKHR;
+    PFN_vkGetBufferDeviceAddressKHR vkGetBufferDeviceAddressKHR;
+    PFN_vkCreateAccelerationStructureKHR vkCreateAccelerationStructureKHR;
+    PFN_vkDestroyAccelerationStructureKHR vkDestroyAccelerationStructureKHR;
+    PFN_vkGetAccelerationStructureDeviceAddressKHR vkGetAccelerationStructureDeviceAddressKHR;
+    PFN_vkGetAccelerationStructureBuildSizesKHR vkGetAccelerationStructureBuildSizesKHR;
+    PFN_vkCmdBuildAccelerationStructuresKHR vkCmdBuildAccelerationStructuresKHR;
+    PFN_vkCmdBuildAccelerationStructuresIndirectKHR vkCmdBuildAccelerationStructuresIndirectKHR;
+    PFN_vkCmdWriteAccelerationStructuresPropertiesKHR vkCmdWriteAccelerationStructuresPropertiesKHR;
+    PFN_vkCmdCopyAccelerationStructureKHR vkCmdCopyAccelerationStructureKHR;
+    PFN_vkCmdCopyMemoryToAccelerationStructureKHR vkCmdCopyMemoryToAccelerationStructureKHR;
+    PFN_vkBuildAccelerationStructuresKHR vkBuildAccelerationStructuresKHR;
+    PFN_vkWriteAccelerationStructuresPropertiesKHR vkWriteAccelerationStructuresPropertiesKHR;
+    PFN_vkCopyAccelerationStructureKHR vkCopyAccelerationStructureKHR;
+    PFN_vkCopyMemoryToAccelerationStructureKHR vkCopyMemoryToAccelerationStructureKHR;
+
+    Array<VkPhysicalDeviceFragmentShadingRateKHR> fragment_shading_rates;
 
     // These are dynamic - so that workload can be handled correctly.
     Array<ResourceUpdate>           resource_deletion_queue;
@@ -395,12 +418,16 @@ struct GpuDevice : public Service {
     bool                            mesh_shaders_extension_present  = false;
     bool                            multiview_extension_present     = false;
     bool                            fragment_shading_rate_present   = false;
+    bool                            ray_tracing_present             = false;
 
     sizet                           ubo_alignment                   = 256;
     sizet                           ssbo_alignemnt                  = 256;
     u32                             subgroup_size                   = 32;
     u32                             max_framebuffer_layers          = 1;
     VkExtent2D                      min_fragment_shading_rate_texel_size;
+    VkPhysicalDeviceRayTracingPipelineFeaturesKHR   ray_tracing_pipeline_features;
+    VkPhysicalDeviceRayTracingPipelinePropertiesKHR ray_tracing_pipeline_properties;
+    VkPhysicalDeviceAccelerationStructureFeaturesKHR acceleration_structure_features;
 
     char                            vulkan_binaries_path[ 512 ];
 

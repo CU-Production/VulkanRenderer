@@ -385,6 +385,7 @@ struct DescriptorSetCreation {
     ResourceHandle                  resources[ k_max_descriptors_per_set ];
     SamplerHandle                   samplers[ k_max_descriptors_per_set ];
     u16                             bindings[ k_max_descriptors_per_set ];
+    VkAccelerationStructureKHR      as;
 
     DescriptorSetLayoutHandle       layout;
     u32                             num_resources   = 0;
@@ -399,6 +400,7 @@ struct DescriptorSetCreation {
     DescriptorSetCreation&          texture( TextureHandle texture, u16 binding );
     DescriptorSetCreation&          buffer( BufferHandle buffer, u16 binding );
     DescriptorSetCreation&          texture_sampler( TextureHandle texture, SamplerHandle sampler, u16 binding );   // TODO: separate samplers from textures
+    DescriptorSetCreation&          set_as( VkAccelerationStructureKHR as, u16 binding );
     DescriptorSetCreation&          set_name( cstring name );
     DescriptorSetCreation&          set_set_index( u32 index );
 
@@ -854,11 +856,13 @@ struct Texture {
 struct ShaderState {
 
     VkPipelineShaderStageCreateInfo shader_stage_info[ k_max_shader_stages ];
+    VkRayTracingShaderGroupCreateInfoKHR  shader_group_info[ k_max_shader_stages ];
 
     cstring                         name            = nullptr;
 
     u32                             active_shaders  = 0;
     bool                            graphics_pipeline = false;
+    bool                            ray_tracing_pipeline = false;
 
     spirv::ParseResult*             parse_result;
 }; // struct ShaderState
@@ -890,6 +894,7 @@ struct DescriptorSet {
     ResourceHandle*                 resources       = nullptr;
     SamplerHandle*                  samplers        = nullptr;
     u16*                            bindings        = nullptr;
+    VkAccelerationStructureKHR      as              = VK_NULL_HANDLE;
 
     const DescriptorSetLayout*      layout          = nullptr;
     u32                             num_resources   = 0;
@@ -915,9 +920,9 @@ struct Pipeline {
     BlendStateCreation              blend_state;
     RasterizationCreation           rasterization;
 
-    PipelineHandle                  handle;
-    bool                            graphics_pipeline = true;
-
+    BufferHandle                    shader_binding_table_raygen;
+    BufferHandle                    shader_binding_table_hit;
+    BufferHandle                    shader_binding_table_miss;
 }; // struct Pipeline
 
 

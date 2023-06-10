@@ -281,7 +281,7 @@ void glTFScene::init( cstring filename, cstring path, Allocator* resident_alloca
 
         glTF::Buffer& buffer = gltf_scene.buffers[ buffer_index ];
 
-        VkBufferUsageFlags flags = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+        VkBufferUsageFlags flags = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT_KHR | VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
 
         char* buffer_name = names_buffer.append_use_f( "buffer_%u", buffer_index );
 
@@ -310,6 +310,8 @@ void glTFScene::init( cstring filename, cstring path, Allocator* resident_alloca
 
     mesh_aabb[0] = vec3s{ FLT_MAX, FLT_MAX, FLT_MAX };
     mesh_aabb[1] = vec3s{ FLT_MIN, FLT_MIN, FLT_MIN };
+
+    sizet temp_marker = temp_allocator->get_marker();
 
     for ( u32 mi = 0; mi < gltf_scene.meshes_count; ++mi ) {
         glTF::Mesh& mesh = gltf_scene.meshes[ mi ];
@@ -414,7 +416,6 @@ void glTFScene::init( cstring filename, cstring path, Allocator* resident_alloca
             mesh.gpu_mesh_index = meshes.size;
 
             const sizet max_meshlets = meshopt_buildMeshletsBound( indices_accessor.count, max_vertices, max_triangles );
-            sizet temp_marker = temp_allocator->get_marker();
 
             Array<meshopt_Meshlet> local_meshlets;
             local_meshlets.init( temp_allocator, max_meshlets, max_meshlets );
@@ -576,6 +577,35 @@ void glTFScene::init( cstring filename, cstring path, Allocator* resident_alloca
 
             mesh_index++;
         }
+    }
+
+    geometries.init( resident_allocator, meshes.size );
+    build_range_infos.init( resident_allocator, geometries.size );
+
+    for ( u32 mesh_index = 0; mesh_index < meshes.size; ++mesh_index ) {
+        Mesh& mesh = meshes[ mesh_index ];
+
+        VkAccelerationStructureGeometryKHR geometry{ VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR };
+        geometry.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
+        geometry.flags =  mesh.is_transparent() ? 0 : VK_GEOMETRY_OPAQUE_BIT_KHR;
+
+        u32 vertex_count = mesh.primitive_count / 3;
+
+        geometry.geometry.triangles.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
+        geometry.geometry.triangles.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
+        geometry.geometry.triangles.vertexData.deviceAddress = renderer->gpu->get_buffer_device_address( mesh.position_buffer ) + mesh.position_offset;
+        geometry.geometry.triangles.vertexStride = sizeof( float ) * 3;
+        geometry.geometry.triangles.maxVertex = vertex_count;
+        geometry.geometry.triangles.indexType = mesh.index_type;
+        geometry.geometry.triangles.indexData.deviceAddress = renderer->gpu->get_buffer_device_address( mesh.index_buffer );
+
+        geometries.push( geometry );
+
+        VkAccelerationStructureBuildRangeInfoKHR build_range_info{ };
+        build_range_info.primitiveCount = vertex_count;
+        build_range_info.primitiveOffset = mesh.index_offset;
+
+        build_range_infos.push( build_range_info );
     }
 
     // Create meshlets index buffer, that will be used to emulate meshlets if mesh shaders are not present.
@@ -1264,9 +1294,40 @@ void glTFScene::prepare_draws( Renderer* renderer, StackAllocator* scratch_alloc
 
         buffer_creation.reset().set( VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, ResourceUsageType::Dynamic, sizeof( GpuLightingData ) ).set_name( "lighting_constants_cb" );
         lighting_constants_cb[ i ] = renderer->gpu->create_buffer( buffer_creation );
+
+        const u32 tile_x_count = ceilu32( renderer->width * 1.0f / k_tile_size );
+        const u32 tile_y_count = ceilu32( renderer->height * 1.0f / k_tile_size );
+        const u32 tiles_entry_count = tile_x_count * tile_y_count * k_num_words;
+        const u32 buffer_size = tiles_entry_count * sizeof( u32 );
+        buffer_creation.reset().set( VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, ResourceUsageType::Dynamic, buffer_size ).set_name( "light_tiles" );
+        lights_tiles_sb[ i ] = renderer->gpu->create_buffer( buffer_creation );
     }
 
     debug_renderer.init( *this, resident_allocator, scratch_allocator );
+
+    if ( use_meshlets ) {
+        GpuTechnique* transparent_technique = renderer->resource_cache.techniques.get( hash_calculate( "meshlet" ) );
+        u32 meshlet_technique_index = transparent_technique->get_pass_index( "transparent_no_cull" );
+        GpuTechniquePass& transparent_pass = transparent_technique->passes[ meshlet_technique_index ];
+
+        DescriptorSetLayoutHandle transparent_layout = renderer->gpu->get_descriptor_set_layout( transparent_pass.pipeline, k_material_descriptor_set_index );
+        DescriptorSetCreation ds_creation;
+
+        for ( u32 i = 0; i < k_max_frames; ++i ) {
+
+            renderer->gpu->destroy_descriptor_set( mesh_shader_transparent_descriptor_set[ i ] );
+
+            ds_creation.reset().buffer( mesh_task_indirect_early_commands_sb[ i ], 6 ).buffer( mesh_task_indirect_count_early_sb[ i ], 7 ).set_layout( transparent_layout );
+            ds_creation.buffer( lights_lut_sb[ i ], 20 ).buffer( lights_list_sb, 21 ).buffer( lights_tiles_sb[ i ], 22 ).buffer( lighting_constants_cb[ i ], 23 ).buffer( lights_indices_sb[ i ], 25 );
+
+            add_mesh_descriptors( ds_creation, transparent_pass );
+            add_scene_descriptors( ds_creation, transparent_pass );
+            add_meshlet_descriptors( ds_creation, transparent_pass );
+            //scene.add_lighting_descriptors( ds_creation, transparent_pass, i );
+
+            mesh_shader_transparent_descriptor_set[ i ] = renderer->gpu->create_descriptor_set( ds_creation );
+        }
+    }
 
 }
 

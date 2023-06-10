@@ -19,8 +19,10 @@
 ## 20230610
 
 - [x] variable rate shading (vrs)
+- [x] volumetric fog
 
 ![](screenshots/Snipaste_2023-06-10_00-03-42.png)
+![](screenshots/Snipaste_2023-06-10_19-53-16.png)
 
 ## 20230609
 

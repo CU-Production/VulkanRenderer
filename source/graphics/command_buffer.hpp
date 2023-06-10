@@ -53,6 +53,8 @@ struct CommandBuffer {
     void                            dispatch( u32 group_x, u32 group_y, u32 group_z );
     void                            dispatch_indirect( BufferHandle handle, u32 offset );
 
+    void                            trace_rays( PipelineHandle pipeline, u32 width, u32 height, u32 depth );
+
     void                            global_debug_barrier(); // Use only to debug barrier-related problems
     void                            buffer_barrier( BufferHandle buffer, ResourceState old_state, ResourceState new_state, QueueType::Enum source_queue_type, QueueType::Enum destination_queue_type );
 

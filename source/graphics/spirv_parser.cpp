@@ -633,6 +633,8 @@ void parse_binary( const u32* data, size_t data_size, StringBuffer& name_buffer,
                 {
                     if ( id.set == k_bindless_set_index && ( id.binding == k_bindless_texture_binding || id.binding == ( k_bindless_texture_binding + 1 ) ) ) {
                         // NOTE(marco): these are managed by the GPU device
+                        parse_result->set_count = max( parse_result->set_count, ( id.set + 1 ) );
+
                         continue;
                     }
 

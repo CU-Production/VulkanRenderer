@@ -56,10 +56,14 @@ struct CommandBuffer {
     void                            trace_rays( PipelineHandle pipeline, u32 width, u32 height, u32 depth );
 
     void                            global_debug_barrier(); // Use only to debug barrier-related problems
-    void                            buffer_barrier( BufferHandle buffer, ResourceState old_state, ResourceState new_state, QueueType::Enum source_queue_type, QueueType::Enum destination_queue_type );
+    // Issue instant barriers
+    void                            issue_buffer_barrier( BufferHandle buffer, ResourceState old_state, ResourceState new_state, QueueType::Enum source_queue_type, QueueType::Enum destination_queue_type );
+    void                            issue_texture_barrier( TextureHandle texture, ResourceState new_state, u32 mip_level, u32 mip_count );
 
-    void                            barrier( const ExecutionBarrier& barrier );
+    // TODO: add batched barriers
+    //void                            barrier( const ExecutionBarrier& barrier );
 
+    void                            clear_color_image( TextureHandle texture, VkClearColorValue clear_color );
     void                            fill_buffer( BufferHandle buffer, u32 offset, u32 size, u32 data );
 
     void                            push_marker( const char* name );

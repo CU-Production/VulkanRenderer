@@ -995,6 +995,9 @@ void util_add_image_barrier( GpuDevice* gpu, VkCommandBuffer command_buffer, VkI
 void util_add_image_barrier( GpuDevice* gpu, VkCommandBuffer command_buffer, Texture* texture, ResourceState new_state, u32 base_mip_level, u32 mip_count, bool is_depth ) {
 
     //rprint( "Transitioning Texture %s from %s to %s\n", texture->name, ResourceStateName( texture->state ), ResourceStateName( new_state ) );
+    if ( strcmp("motion_vectors", texture->name ) == 0 ) {
+        //rprint( "Transitioning Texture %s from %s to %s\n", texture->name, ResourceStateName( texture->state ), ResourceStateName( new_state ) );
+    }
     util_add_image_barrier( gpu, command_buffer, texture->vk_image, texture->state, new_state, base_mip_level, mip_count, is_depth );
     texture->state = new_state;
 }

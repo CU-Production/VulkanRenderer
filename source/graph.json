@@ -68,7 +68,7 @@
                     "format": "VK_FORMAT_R16G16_SFLOAT",
                     "resolution_scale": [ 1.0, 1.0 ],
                     "load_operation": "clear",
-                    "clear_color":[0.3, 0.3, 0.3, 1]
+                    "clear_color":[0.0, 0.0, 0.0, 0.0]
                 },
                 {
                     "type": "attachment",
@@ -76,7 +76,7 @@
                     "format": "VK_FORMAT_B8G8R8A8_UNORM",
                     "resolution_scale": [ 1.0, 1.0 ],
                     "load_operation": "clear",
-                    "clear_color":[0.3, 0.3, 0.3, 1]
+                    "clear_color":[0.0, 0.0, 0.0, 0.0]
                 },
                 {
                     "type": "attachment",
@@ -84,7 +84,7 @@
                     "format": "VK_FORMAT_R16G16B16A16_SFLOAT",
                     "resolution_scale": [ 1.0, 1.0 ],
                     "load_operation": "clear",
-                    "clear_color":[0.0, 0.0, 0.0, 1]
+                    "clear_color":[0.0, 0.0, 0.0, 0.0]
                 },
                 {
                     "type": "attachment",
@@ -328,6 +328,65 @@
                     "type": "texture",
                     "external": true,
                     "name": "volumetric_fog_texture"
+                }
+            ]
+        },
+        {
+            "name": "temporal_anti_aliasing_pass",
+            "inputs":
+            [
+                {
+                    "type": "texture",
+                    "name": "final"
+                },
+                {
+                    "type": "texture",
+                    "name": "depth"
+                },
+                {
+                    "type": "texture",
+                    "name": "motion_vectors"
+                }
+            ],
+            "enabled": true,
+            "type": "compute",
+            "outputs":
+            [
+                {
+                    "type": "texture",
+                    "external": true,
+                    "name": "taa_output"
+                }
+            ]
+        },
+        {
+            "name": "motion_vector_pass",
+            "inputs":
+            [
+                {
+                    "type": "texture",
+                    "name": "depth"
+                }
+            ],
+            "enabled": true,
+            "type": "compute",
+            "outputs":
+            [
+                {
+                    "type": "attachment",
+                    "name": "motion_vectors",
+                    "format": "VK_FORMAT_R16G16_SFLOAT",
+                    "resolution_scale": [ 1.0, 1.0 ],
+                    "load_operation": "clear",
+                    "clear_color":[0.0, 0.0, 0.0, 0.0]
+                },
+                {
+                    "type": "attachment",
+                    "name": "visibility_motion_vectors",
+                    "format": "VK_FORMAT_R16G16_SFLOAT",
+                    "resolution_scale": [ 1.0, 1.0 ],
+                    "load_operation": "clear",
+                    "clear_color":[0.0, 0.0, 0.0, 0.0]
                 }
             ]
         }

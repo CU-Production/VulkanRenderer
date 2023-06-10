@@ -2,7 +2,7 @@
 	"name" : "ray_tracing",
 	"pipelines" : [
 		{
-			"name" : "main",
+			"name" : "test",
 			"render_pass": "ray_tracing_pass",
 			"shaders" : [
 				{

@@ -22,7 +22,7 @@
 	],
 	"pipelines" : [
 		{
-			"name" : "main",
+			"name" : "deferred_lighting_pixel",
 			"vertex_input" : "tri",
 			"render_pass" : "lighting_pass",
 			"flags": "shading_rate_image",
@@ -44,7 +44,7 @@
 			]
 		},
 		{
-			"name" : "compute",
+			"name" : "deferred_lighting_compute",
 			"render_pass" : "lighting_pass",
 			"shaders" : [
 				{
@@ -62,6 +62,39 @@
 					"stage" : "compute",
 					"shader" : "pbr.glsl",
 					"includes" : ["platform.h", "scene.h"]
+				}
+			]
+		},
+		{
+			"name" : "shadow_visibility_variance",
+			"render_pass" : "shadow_visibility_pass",
+			"shaders" : [
+				{
+					"stage" : "compute",
+					"shader" : "pbr.glsl",
+					"includes" : ["platform.h", "scene.h", "lighting.h"]
+				}
+			]
+		},
+		{
+			"name" : "shadow_visibility",
+			"render_pass" : "shadow_visibility_pass",
+			"shaders" : [
+				{
+					"stage" : "compute",
+					"shader" : "pbr.glsl",
+					"includes" : ["platform.h", "scene.h", "lighting.h"]
+				}
+			]
+		},
+		{
+			"name" : "shadow_visibility_filtering",
+			"render_pass" : "shadow_visibility_pass",
+			"shaders" : [
+				{
+					"stage" : "compute",
+					"shader" : "pbr.glsl",
+					"includes" : ["platform.h", "scene.h", "lighting.h"]
 				}
 			]
 		}

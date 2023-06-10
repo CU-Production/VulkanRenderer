@@ -163,6 +163,7 @@ struct GpuDevice : public Service {
     // Update/Reload resources ///////////////////////////////////////////
     void                            resize_output_textures( FramebufferHandle render_pass, u32 width, u32 height );
     void                            resize_texture( TextureHandle texture, u32 width, u32 height );
+    void                            resize_texture_3d( TextureHandle texture, u32 width, u32 height, u32 depth );
 
     PagePoolHandle                  allocate_texture_pool( TextureHandle texture_handle, u32 pool_size );
     void                            destroy_page_pool( PagePoolHandle pool_handle );
@@ -419,6 +420,7 @@ struct GpuDevice : public Service {
     bool                            multiview_extension_present     = false;
     bool                            fragment_shading_rate_present   = false;
     bool                            ray_tracing_present             = false;
+    bool                            ray_query_present               = false;
 
     sizet                           ubo_alignment                   = 256;
     sizet                           ssbo_alignemnt                  = 256;
@@ -426,6 +428,7 @@ struct GpuDevice : public Service {
     u32                             max_framebuffer_layers          = 1;
     VkExtent2D                      min_fragment_shading_rate_texel_size;
     VkPhysicalDeviceRayTracingPipelineFeaturesKHR   ray_tracing_pipeline_features;
+    VkPhysicalDeviceRayQueryFeaturesKHR             ray_query_features;
     VkPhysicalDeviceRayTracingPipelinePropertiesKHR ray_tracing_pipeline_properties;
     VkPhysicalDeviceAccelerationStructureFeaturesKHR acceleration_structure_features;
 

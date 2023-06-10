@@ -551,6 +551,18 @@ static void perform_geometric_tests( bool enable_aabb_cubemap_test, raptor::Rend
     }
 }
 
+// Enums
+namespace JitterType {
+    enum Enum {
+        Halton = 0,
+        R2,
+        Hammersley,
+        InterleavedGradients
+    };
+
+    cstring names[] = { "Halton", "Martin Robert R2", "Hammersley", "Interleaved Gradients"};
+} // namespace JitterType
+
 //
 //
 int main( int argc, char** argv ) {
@@ -727,6 +739,17 @@ int main( int argc, char** argv ) {
             if ( render_pass ) {
                 render_pass->output.reset().depth( VK_FORMAT_D16_UNORM, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL );
             }
+        }
+
+        // Cache frame graph resources in scene
+        FrameGraphResource* resource = frame_graph.get_resource( "motion_vectors" );
+        if ( resource ) {
+            scene->motion_vector_texture = resource->resource_info.texture.handle;
+        }
+
+        resource = frame_graph.get_resource( "visibility_motion_vectors" );
+        if ( resource ) {
+            scene->visibility_motion_vector_texture = resource->resource_info.texture.handle;
         }
 
         render_resources_loader.init( &renderer, &scratch_allocator, &frame_graph );
@@ -1008,6 +1031,47 @@ int main( int argc, char** argv ) {
         static bool shadow_meshlets_cubemap_face_cull = true;
         static u32 lighting_debug_modes = 0;
         static u32 light_to_debug = 0;
+        static vec2s last_clicked_position = vec2s{ 1280 / 2.0f, 800 / 2.0f };
+
+        // Jittering update
+        static u32 jitter_index = 0;
+        static JitterType::Enum jitter_type = JitterType::Halton;
+        static u32 jitter_period = 2;
+        vec2s jitter_values = vec2s{ 0.0f, 0.0f };
+
+        switch ( jitter_type ) {
+            case JitterType::Halton:
+                jitter_values = halton23_sequence( jitter_index );
+                break;
+
+            case JitterType::R2:
+                jitter_values = m_robert_r2_sequence( jitter_index );
+                break;
+
+            case JitterType::InterleavedGradients:
+                jitter_values = interleaved_gradient_sequence( jitter_index );
+                break;
+
+            case JitterType::Hammersley:
+                jitter_values = hammersley_sequence( jitter_index, jitter_period );
+                break;
+        }
+        jitter_index = ( jitter_index + 1 ) % jitter_period;
+
+        vec2s jitter_offsets = vec2s{ jitter_values.x * 2 - 1.0f, jitter_values.y * 2 - 1.0f };
+        static f32 jitter_scale = 1.f;
+
+        jitter_offsets.x *= jitter_scale;
+        jitter_offsets.y *= jitter_scale;
+
+        // Update also projection matrix of the camera.
+        if ( scene->taa_enabled && scene->taa_jittering_enabled ) {
+            game_camera.apply_jittering( jitter_offsets.x / gpu.swapchain_width, jitter_offsets.y / gpu.swapchain_height );
+        }
+        else {
+            game_camera.camera.set_zoom( 1.0f );
+            game_camera.camera.update();
+        }
 
         {
             ZoneScopedN( "ImGui Recording" );
@@ -1017,6 +1081,8 @@ int main( int argc, char** argv ) {
                 ImGui::InputFloat3( "Camera position", game_camera.camera.position.raw );
                 ImGui::InputFloat3( "Camera target movement", game_camera.target_movement.raw );
                 ImGui::Separator();
+                ImGui::SliderFloat( "Force Roughness", &scene->forced_roughness, -1, 1 );
+                ImGui::SliderFloat( "Force Metalness", &scene->forced_metalness, -1, 1 );
                 if ( ImGui::CollapsingHeader( "Physics" ) ) {
                     ImGui::InputFloat3( "Wind direction", wind_direction.raw );
                     ImGui::InputFloat( "Air density", &air_density );
@@ -1094,18 +1160,21 @@ int main( int argc, char** argv ) {
                     ImGui::SliderFloat( "Fog Scattering Factor", &scene->volumetric_fog_scattering_factor, 0.0f, 1.0f );
                     ImGui::SliderFloat( "Height Fog Density", &scene->volumetric_fog_height_fog_density, 0.0f, 10.0f );
                     ImGui::SliderFloat( "Height Fog Falloff", &scene->volumetric_fog_height_fog_falloff, 0.0f, 10.0f );
-                    ImGui::SliderFloat( "Fog Anisotropy", &scene->volumetric_fog_phase_anisotropy_01, 0.0f, 1.0f );
+                    ImGui::SliderUint( "Phase Function Type", &scene->volumetric_fog_phase_function_type, 0, 3 );
+                    ImGui::SliderFloat( "Phase Anisotropy", &scene->volumetric_fog_phase_anisotropy_01, 0.0f, 1.0f );
                     ImGui::SliderFloat( "Fog Noise Scale", &scene->volumetric_fog_noise_scale, 0.0f, 1.0f );
-                    ImGui::SliderFloat( "Fog Integration Noise Scale", &scene->volumetric_fog_integration_noise_scale, 0.0f, 1.0f );
+                    ImGui::SliderFloat( "Lighting Noise Scale", &scene->volumetric_fog_lighting_noise_scale, 0.0f, 1.0f );
                     ImGui::SliderUint( "Fog Noise Type", &scene->volumetric_fog_noise_type, 0, 2 );
                     ImGui::SliderFloat( "Temporal Reprojection Percentage", &scene->volumetric_fog_temporal_reprojection_percentage, 0.0f, 1.0f );
                     ImGui::SliderFloat( "Temporal Reprojection Jittering Scale", &scene->volumetric_fog_temporal_reprojection_jittering_scale, 0.0f, 10.0f );
                     ImGui::Checkbox( "Use Temporal Reprojection", &scene->volumetric_fog_use_temporal_reprojection );
                     ImGui::Checkbox( "Use Spatial Filtering", &scene->volumetric_fog_use_spatial_filtering);
-                    ImGui::SliderUint( "Phase Function Type", &scene->volumetric_fog_phase_function_type, 0, 3 );
+                    ImGui::SliderFloat( "Fog Application Scale", &scene->volumetric_fog_application_dithering_scale, 0.0f, 1.0f );
                     ImGui::Checkbox( "Fog Application Opacity AA", &scene->volumetric_fog_application_apply_opacity_anti_aliasing );
+                    ImGui::Checkbox( "Fog Application Tricubic", &scene->volumetric_fog_application_apply_tricubic_filtering );
                     ImGui::SliderFloat( "Fog Volumetric Noise Position Scale", &scene->volumetric_fog_noise_position_scale, 0.0f, 1.0f );
                     ImGui::SliderFloat( "Fog Volumetric Noise Speed Scale", &scene->volumetric_fog_noise_speed_scale, 0.0f, 1.0f );
+
                     ImGui::SliderFloat3( "Box position", scene->volumetric_fog_box_position.raw, -10.f, 10.f, "%2.3f" );
                     ImGui::SliderFloat3( "Box size", scene->volumetric_fog_box_size.raw, -4.f, 4.f, "%1.3f" );
                     ImGui::SliderFloat( "Box density", &scene->volumetric_fog_box_density, 0.0f, 10.0f );
@@ -1118,6 +1187,45 @@ int main( int argc, char** argv ) {
 
                         scene->volumetric_fog_box_color = box_color.abgr;
                     }
+                }
+                if ( ImGui::CollapsingHeader( "Temporal Anti-Aliasing" ) ) {
+                    ImGui::Checkbox( "Enable", &scene->taa_enabled );
+                    ImGui::Checkbox( "Jittering Enable", &scene->taa_jittering_enabled );
+
+                    static i32 current_jitter_type = ( i32 )jitter_type;
+                    ImGui::Combo( "Jitter Type", &current_jitter_type, JitterType::names, ArraySize( JitterType::names ) );
+                    jitter_type = ( JitterType::Enum )current_jitter_type;
+
+                    ImGui::SliderUint( "Jittering Period", &jitter_period, 1, 16 );
+                    ImGui::SliderFloat( "Jitter Scale", &jitter_scale, 0.0f, 4.0f );
+
+                    static cstring taa_mode_names[] = {"OnlyReprojection", "Full"};
+                    ImGui::Combo( "Modes", &scene->taa_mode, taa_mode_names, ArraySize(taa_mode_names) );
+
+                    static cstring taa_velocity_mode_names[] = { "None", "3x3 Neighborhood"};
+                    ImGui::Combo( "Velocity sampling modes", &scene->taa_velocity_sampling_mode, taa_velocity_mode_names, ArraySize( taa_velocity_mode_names ) );
+
+                    static cstring taa_history_sampling_names[] = { "None", "CatmullRom" };
+                    ImGui::Combo( "History sampling filter", &scene->taa_history_sampling_filter, taa_history_sampling_names, ArraySize( taa_history_sampling_names ) );
+
+                    static cstring taa_history_constraint_names[] = { "None", "Clamp", "Clip", "Variance Clip", "Variance Clip with Color Clamping"};
+                    ImGui::Combo( "History constraint mode", &scene->taa_history_constraint_mode, taa_history_constraint_names, ArraySize( taa_history_constraint_names ) );
+
+                    static cstring taa_current_color_filter_names[] = { "None", "Mitchell-Netravali", "Blackman-Harris", "Catmull-Rom"};
+                    ImGui::Combo( "Current color filter", &scene->taa_current_color_filter, taa_current_color_filter_names, ArraySize( taa_current_color_filter_names ) );
+
+                    ImGui::Checkbox( "Inverse Luminance Filtering", &scene->taa_use_inverse_luminance_filtering);
+                    ImGui::Checkbox( "Temporal Filtering", &scene->taa_use_temporal_filtering );
+                    ImGui::Checkbox( "Luminance Difference Filtering", &scene->taa_use_luminance_difference_filtering );
+                    ImGui::Checkbox( "Use YCoCg color space", &scene->taa_use_ycocg );
+                }
+                if ( ImGui::CollapsingHeader( "Post-Process" ) ) {
+                    static cstring tonemap_names[] = { "None", "ACES" };
+                    ImGui::Combo( "Tonemap", &scene->post_tonemap_mode, tonemap_names, ArraySize( tonemap_names ) );
+                    ImGui::SliderFloat( "Exposure", &scene->post_exposure, -4.0f, 4.0f );
+                    ImGui::SliderFloat( "Sharpening amount", &scene->post_sharpening_amount, 0.0f, 4.0f );
+                    ImGui::Checkbox( "Enable Magnifying Zoom", &scene->post_enable_zoom );
+                    ImGui::SliderUint( "Magnifying Zoom Scale", &scene->post_zoom_scale, 2, 4 );
                 }
                 ImGui::Separator();
 
@@ -1183,7 +1291,10 @@ int main( int argc, char** argv ) {
             }
             ImGui::End();
 
-            if ( ImGui::Begin( "Textures Debug" ) ) {
+            if ( ImGui::Begin( "Frame Graph Debug" ) ) {
+
+                frame_graph.debug_ui();
+
                 static u32 texture_to_debug = 40;
                 ImVec2 window_size = ImGui::GetWindowSize();
                 window_size.y += 50;
@@ -1225,8 +1336,25 @@ int main( int argc, char** argv ) {
             ZoneScopedN( "Gpu Buffers Update" );
 
             GpuSceneData& scene_data = scene->scene_data;
-            scene_data.previous_view_projection = scene_data.view_projection;   // Cache previous view projection
+
+            scene_data.halton_x = jitter_offsets.x;
+            scene_data.halton_y = jitter_offsets.y;
+
+            // Cache previous view projection
+            scene_data.previous_view_projection = scene_data.view_projection;
+            // Frame 0 jittering or disable jittering as option.
+            if ( gpu.absolute_frame == 0 || (scene->taa_jittering_enabled == false) ) {
+                scene_data.jitter_xy = vec2s{ 0.0f, 0.0f };
+            }
+            // Cache previous jitter and calculate new one
+            scene_data.previous_jitter_xy = scene_data.jitter_xy;
+
+            if ( scene->taa_jittering_enabled && scene->taa_enabled ) {
+                scene_data.jitter_xy = vec2s{ ( scene_data.halton_x ) / gpu.swapchain_width, ( scene_data.halton_y ) / gpu.swapchain_height };
+            }
+
             scene_data.view_projection = game_camera.camera.view_projection;
+
             scene_data.inverse_view_projection = glms_mat4_inv( game_camera.camera.view_projection );
             scene_data.inverse_projection = glms_mat4_inv( game_camera.camera.projection );
             scene_data.inverse_view = glms_mat4_inv( game_camera.camera.view );
@@ -1234,7 +1362,16 @@ int main( int argc, char** argv ) {
             scene_data.camera_position = vec4s{ game_camera.camera.position.x, game_camera.camera.position.y, game_camera.camera.position.z, 1.0f };
             scene_data.camera_direction = game_camera.camera.direction;
             scene_data.dither_texture_index = dither_texture ? dither_texture->handle.index : 0;
+            scene_data.current_frame = ( u32 )gpu.absolute_frame;
+            scene_data.forced_metalness = scene->forced_metalness;
+            scene_data.forced_roughness = scene->forced_roughness;
 
+            FrameGraphResource* depth_resource = ( FrameGraphResource* )frame_graph.get_resource( "depth" );
+            if ( depth_resource ) {
+                scene_data.depth_texture_index = depth_resource->resource_info.texture.handle.index;
+            }
+
+            scene_data.blue_noise_128_rg_texture_index = blue_noise_128_rg_texture->handle.index;
             scene_data.use_tetrahedron_shadows = scene->use_tetrahedron_shadows;
             scene_data.active_lights = scene->active_lights;
             scene_data.z_near = game_camera.camera.near_plane;
@@ -1256,7 +1393,9 @@ int main( int argc, char** argv ) {
             scene_data.resolution_y = gpu.swapchain_height * 1.f;
             scene_data.aspect_ratio = gpu.swapchain_width * 1.f / gpu.swapchain_height;
             scene_data.num_mesh_instances = scene->mesh_instances.size;
-            scene_data.volumetric_fog_opacity_anti_aliasing = scene->volumetric_fog_application_apply_opacity_anti_aliasing ? 1 : 0;
+            scene_data.volumetric_fog_application_dithering_scale = scene->volumetric_fog_application_dithering_scale;
+            scene_data.volumetric_fog_application_options = ( scene->volumetric_fog_application_apply_opacity_anti_aliasing ? 1 : 0 )
+                                                          | ( scene->volumetric_fog_application_apply_tricubic_filtering ? 2 : 0 );
 
             // Frustum computations
             if ( !freeze_occlusion_camera ) {
@@ -1265,13 +1404,6 @@ int main( int argc, char** argv ) {
                 scene_data.view_projection_debug = scene_data.view_projection;
                 projection_transpose = glms_mat4_transpose( game_camera.camera.projection );
             }
-
-            static i32 jitter_index = 0;
-
-            scene_data.halton_x = 2.0f * halton( jitter_index + 1, 2 ) - 1.0f;
-            scene_data.halton_y = 2.0f * halton( jitter_index + 1, 3 ) - 1.0f;
-
-            jitter_index = ( jitter_index + 1 ) % 8;
 
             scene_data.frustum_planes[ 0 ] = normalize_plane( glms_vec4_add( projection_transpose.col[ 3 ], projection_transpose.col[ 0 ] ) ); // x + w  < 0;
             scene_data.frustum_planes[ 1 ] = normalize_plane( glms_vec4_sub( projection_transpose.col[ 3 ], projection_transpose.col[ 0 ] ) ); // x - w  < 0;
@@ -1301,6 +1433,11 @@ int main( int argc, char** argv ) {
                 gpu_lighting_data->debug_modes = (u32)lighting_debug_modes;
                 gpu_lighting_data->debug_texture_index = scene->lighting_debug_texture_index;
 
+                FrameGraphResource* resource = frame_graph.get_resource( "shadow_visibility" );
+                if ( resource ) {
+                    gpu_lighting_data->shadow_visibility_texture_index = resource->resource_info.texture.handle.index;
+                }
+
                 // Volumetric fog data
                 // TODO: parametrize it
                 gpu_lighting_data->volumetric_fog_texture_index = scene->volumetric_fog_texture_index;
@@ -1322,12 +1459,18 @@ int main( int argc, char** argv ) {
                 //place_lights( scene->lights, true );
             }
 
+            // Update mouse clicked position
+            if ( ( input.is_mouse_clicked( MOUSE_BUTTONS_LEFT ) || input.is_mouse_dragging( MOUSE_BUTTONS_LEFT ) ) && !ImGui::IsAnyItemHovered() ) {
+                last_clicked_position = vec2s{ input.mouse_position.x, input.mouse_position.y };
+            }
+
             UploadGpuDataContext upload_context{ game_camera, &scratch_allocator};
             upload_context.enable_camera_inside = enable_camera_inside;
             upload_context.force_fullscreen_light_aabb = force_fullscreen_light_aabb;
             upload_context.skip_invisible_lights = skip_invisible_lights;
             upload_context.use_mcguire_method = use_mcguire_method;
             upload_context.use_view_aabb = use_view_aabb;
+            upload_context.last_clicked_position_left_button = last_clicked_position;
             frame_renderer.upload_gpu_data( upload_context );
 
             // Place light AABB with a smaller aabb to indicate the center.

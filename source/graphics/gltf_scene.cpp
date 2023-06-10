@@ -1250,7 +1250,7 @@ void glTFScene::prepare_draws( Renderer* renderer, StackAllocator* scratch_alloc
         for ( u32 i = 1; i < k_num_lights; ++i ) {
 
             const f32 x = ( i % lights_per_side ) - lights_per_side * .7f;
-            const f32 y = 0.05f;
+            const f32 y = 0.1f;
             const f32 z = ( i / lights_per_side ) - lights_per_side * .7f;
 
             /*float x = get_random_value( mesh_aabb[ 0 ].x * scale, mesh_aabb[ 1 ].x * scale );
@@ -1323,7 +1323,7 @@ void glTFScene::prepare_draws( Renderer* renderer, StackAllocator* scratch_alloc
             add_mesh_descriptors( ds_creation, transparent_pass );
             add_scene_descriptors( ds_creation, transparent_pass );
             add_meshlet_descriptors( ds_creation, transparent_pass );
-            //scene.add_lighting_descriptors( ds_creation, transparent_pass, i );
+            add_lighting_descriptors( ds_creation, transparent_pass, i );
 
             mesh_shader_transparent_descriptor_set[ i ] = renderer->gpu->create_descriptor_set( ds_creation );
         }

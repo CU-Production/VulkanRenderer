@@ -10,6 +10,7 @@
 #include "graphics/render_scene.hpp"
 
 #include "external/json.hpp"
+#include "external/imgui/imgui.h"
 
 #include <string>
 
@@ -176,7 +177,7 @@ void FrameGraph::parse( cstring file_path, StackAllocator* temp_allocator ) {
                     RASSERT( !load_op.empty() );
 
                     output_creation.resource_info.texture.load_op = string_to_render_pass_operation( load_op.c_str() );
-                    
+
                     json resolution = pass_output[ "resolution" ];
                     json scaling = pass_output[ "resolution_scale" ];
 
@@ -846,6 +847,31 @@ void FrameGraph::on_resize( GpuDevice& gpu, u32 new_width, u32 new_height ) {
     }
 }
 
+void FrameGraph::debug_ui() {
+
+    if ( ImGui::CollapsingHeader( "Nodes" ) ) {
+        for ( u32 n = 0; n < nodes.size; ++n ) {
+            FrameGraphNode* node = builder->access_node( nodes[ n ] );
+
+            ImGui::Separator();
+            ImGui::Text( "Pass: %s", node->name );
+
+            ImGui::Text( "\tInputs" );
+            for ( u32 i = 0; i < node->inputs.size; ++i ) {
+                FrameGraphResource* resource = builder->access_resource( node->inputs[ i ] );
+                ImGui::Text( "\t\t%s", resource->name );
+            }
+
+
+            ImGui::Text( "\tOutputs" );
+            for ( u32 o = 0; o < node->outputs.size; ++o ) {
+                FrameGraphResource* resource = builder->access_resource( node->outputs[ o ] );
+                ImGui::Text( "\t\t%s", resource->name );
+            }
+        }
+    }
+}
+
 void FrameGraph::add_node( FrameGraphNodeCreation& creation ) {
     FrameGraphNodeHandle handle = builder->create_node( creation );
     all_nodes.push( handle );
@@ -1144,6 +1170,20 @@ FrameGraphResourceInfo& FrameGraphResourceInfo::set_external_texture_2d( u32 wid
     texture.width = width;
     texture.height = height;
     texture.depth = 1;
+    texture.format = format;
+    texture.flags = flags;
+    texture.handle = handle;
+
+    external = true;
+
+    return *this;
+}
+
+FrameGraphResourceInfo& FrameGraphResourceInfo::set_external_texture_3d( u32 width, u32 height, u32 depth, VkFormat format, VkImageUsageFlags flags, TextureHandle handle ) {
+
+    texture.width = width;
+    texture.height = height;
+    texture.depth = depth;
     texture.format = format;
     texture.flags = flags;
     texture.handle = handle;

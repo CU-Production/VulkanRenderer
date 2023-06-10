@@ -81,7 +81,7 @@ static PagePoolHandle               k_invalid_page_pool     { k_invalid_index };
 static const u8                     k_max_image_outputs = 8;                // Maximum number of images/render_targets/fbo attachments usable.
 static const u8                     k_max_descriptor_set_layouts = 8;       // Maximum number of layouts in the pipeline.
 static const u8                     k_max_shader_stages = 5;                // Maximum simultaneous shader stages. Applicable to all different type of pipelines.
-static const u8                     k_max_descriptors_per_set = 16;         // Maximum list elements for both descriptor set layout and descriptor sets.
+static const u8                     k_max_descriptors_per_set = 24;         // Maximum list elements for both descriptor set layout and descriptor sets.
 static const u8                     k_max_vertex_streams = 16;
 static const u8                     k_max_vertex_attributes = 16;
 

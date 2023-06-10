@@ -7,6 +7,15 @@
 
 #define DEBUG_OPTIONS
 #define ENABLE_OPTIMIZATION 1
+//#define RAYTRACED_SHADOWS 1
+#define FRAME_HISTORY_COUNT 4
+#define USE_SHADOW_VISIBILITY 1 // TODO(marco): make into scene option
+#define MAX_SHADOW_VISIBILITY_SAMPLE_COUNT 5 // TODO(marco): make into scene option
+
+#if RAYTRACED_SHADOWS
+#extension GL_EXT_ray_tracing : enable
+#extension GL_EXT_ray_query : enable
+#endif
 
 struct Light {
     vec3            world_position;
@@ -43,7 +52,7 @@ layout ( std140, set = MATERIAL_SET, binding = 23 ) uniform LightConstants {
     uint        disable_shadows;
     uint        debug_modes;
     uint        debug_texture_index;
-    uint        padding002;
+    uint        shadow_visibility_texture_index;
 
     uint        volumetric_fog_texture_index;
     int         volumetric_fog_num_slices;
@@ -60,6 +69,10 @@ layout( set = MATERIAL_SET, binding = 25 ) readonly buffer LightIndices {
     uint light_indices[];
 };
 
+#if RAYTRACED_SHADOWS
+layout( set = MATERIAL_SET, binding = 26 ) uniform accelerationStructureEXT as;
+#endif
+
 uint hash(uint a)
 {
    a = (a+0x7ed55d16) + (a<<12);
@@ -72,10 +85,28 @@ uint hash(uint a)
 }
 
 // BRDF //////////////////////////////////////////////////////////////////
+
+vec3 f_schlick(const vec3 f0, float VoH) {
+    float f = pow(1.0 - VoH, 5.0);
+    return f + f0 * (1.0 - f);
+}
+
+float f_schlick_f90(float u, float f0, float f90) {
+    return f0 + (f90 - f0) * pow(1.0 - u, 5.0);
+}
+
+// Diffuse functions
 float fd_lambert() {
     return 1.0 / PI;
 }
+float fd_burley(float NoV, float NoL, float LoH, float roughness) {
+    float f90 = 0.5 + 2.0 * roughness * LoH * LoH;
+    float lightScatter = f_schlick_f90(NoL, 1.0, f90);
+    float viewScatter = f_schlick_f90(NoV, 1.0, f90);
+    return lightScatter * viewScatter * (1.0 / PI);
+}
 
+// Specular functions
 float d_ggx(float roughness, float NoH, const vec3 h) {
     // Walter et al. 2007, "Microfacet Models for Refraction through Rough Surfaces"
     float oneMinusNoHSquared = 1.0 - NoH * NoH;
@@ -90,11 +121,6 @@ float v_smith_ggx_correlated_fast(float roughness, float NoV, float NoL) {
     // Hammon 2017, "PBR Diffuse Lighting for GGX+Smith Microsurfaces"
     float v = 0.5 / mix(2.0 * NoL * NoV, NoL + NoV, roughness);
     return v;
-}
-
-vec3 f_schlick(const vec3 f0, float VoH) {
-    float f = pow(1.0 - VoH, 5.0);
-    return f + f0 * (1.0 - f);
 }
 
 vec3 compute_diffuse_color(const vec4 base_color, float metallic) {
@@ -138,8 +164,83 @@ vec2 vogel_disk_offset(uint sample_index, uint samples_count, float phi) {
     return vec2(r * cosine, r * sine);
 }
 
+// NOTE(marco): thanks to https://github.com/bartwronski/PoissonSamplingGenerator
+#define SAMPLE_NUM 32
+vec2 POISSON_SAMPLES[SAMPLE_NUM] =
+{
+    vec2( 0.39963964752463255f, 0.8910925368990373f ),
+    vec2( -0.4940572704167889f, -0.8620650241721987f ),
+    vec2( 0.8075570857119035f, -0.5440713505497983f ),
+    vec2( -0.9116635046112362f, 0.2639502616182513f ),
+    vec2( 0.05343036802745114f, 0.021474316209819044f ),
+    vec2( 0.8499579311323042f, 0.27318537130618137f ),
+    vec2( -0.3403992818902896f, 0.7063573920801801f ),
+    vec2( 0.2101073022086032f, -0.8129909357248446f ),
+    vec2( -0.9005900483859263f, -0.391550837884129f ),
+    vec2( -0.19587476659917602f, -0.3981303634779107f ),
+    vec2( -0.4648065562502342f, 0.02105911800771148f ),
+    vec2( 0.35934411533835076f, 0.4121051098766807f ),
+    vec2( 0.5065318505687553f, -0.10705978878497402f ),
+    vec2( -0.7602340603847367f, 0.6493924352633489f ),
+    vec2( -0.019782992429490595f, 0.8925406666774142f ),
+    vec2( 0.3983473193951535f, -0.4801357934668924f ),
+    vec2( 0.9869656537989692f, -0.09638640479894947f ),
+    vec2( -0.25015603010828763f, 0.2972338092340553f ),
+    vec2( -0.13317277640560815f, -0.9143508644248124f ),
+    vec2( 0.6996155560882538f, 0.6876222716775685f ),
+    vec2( -0.6345508708611187f, -0.24002497065722314f ),
+    vec2( 0.07481225966233056f, 0.6194024571949546f ),
+    vec2( -0.5795518698024703f, 0.35706998381720817f ),
+    vec2( 0.10538818335743431f, -0.5072259616736443f ),
+    vec2( 0.5901520300517671f, -0.8055715970062381f ),
+    vec2( 0.4997349661429248f, 0.18391430091175387f ),
+    vec2( -0.8936441537563113f, -0.09018813624787847f ),
+    vec2( -0.49099986787705147f, -0.5534594920185129f ),
+    vec2( 0.7883035678609505f, -0.2850303445322458f ),
+    vec2( 0.20190051133128753f, -0.2287805625191621f ),
+    vec2( 0.10095624109822983f, 0.356329397671627f ),
+    vec2( 0.5999403247649068f, 0.4733652413019988f ),
+};
 
-vec3 calculate_point_light_contribution(vec4 albedo, vec3 orm, vec3 normal, vec3 emissive, vec3 world_position, vec3 v, vec3 F0, float NoV, Light light, uint shadow_light_index) {
+float get_light_visibility( uint light_index, uint sample_count, vec3 world_position, vec3 normal, uint frame_index ) {
+    Light light = lights[ light_index ];
+
+    const vec3 position_to_light = light.world_position - world_position;
+    const vec3 l = normalize( position_to_light );
+    const float NoL = clamp(dot(normal, l), 0.0, 1.0);
+    float d = sqrt( dot( position_to_light, position_to_light ) );
+
+    float visiblity = 0.0;
+
+    if ( NoL > 0.0001f && d <= light.radius ) {
+        for ( uint s = 0; s < sample_count; ++s ) {
+            vec2 poisson_sample = POISSON_SAMPLES[ s * FRAME_HISTORY_COUNT + frame_index ];
+            vec3 random_dir = normalize( vec3( l.x + poisson_sample.x, l.y + poisson_sample.y, l.z ) );
+
+#if RAYTRACED_SHADOWS
+            rayQueryEXT rayQuery;
+            rayQueryInitializeEXT(rayQuery,
+                                  as,
+                                  gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,
+                                  0xff,
+                                  world_position,
+                                  0.001,
+                                  random_dir,
+                                  d);
+            rayQueryProceedEXT( rayQuery );
+
+            if ( rayQueryGetIntersectionTypeEXT( rayQuery, true ) == gl_RayQueryCommittedIntersectionNoneEXT ) {
+                visiblity += 1.0;
+            }
+#endif
+        }
+    }
+
+    return visiblity / float( sample_count );
+}
+
+vec3 calculate_point_light_contribution(vec4 albedo, vec3 orm, vec3 normal, vec3 emissive, vec3 world_position, vec3 v, vec3 F0, float NoV, uvec2 screen_uv, uint shadow_light_index) {
+    Light light = lights[ shadow_light_index ];
 
     const vec3 position_to_light = light.world_position - world_position;
     const vec3 l = normalize( position_to_light );
@@ -151,7 +252,32 @@ vec3 calculate_point_light_contribution(vec4 albedo, vec3 orm, vec3 normal, vec3
     const float current_depth = vector_to_depth_value(shadow_position_to_light, light.radius, light.rcp_n_minus_f);
     const float bias = 0.0001f;
 
-#if 1
+#if RAYTRACED_SHADOWS
+
+#if USE_SHADOW_VISIBILITY
+    float shadow = texelFetch( global_textures_3d[ shadow_visibility_texture_index ], ivec3( screen_uv, shadow_light_index ), 0 ).r;
+#else
+    float shadow = 0;
+
+    float d = sqrt( dot( position_to_light, position_to_light ) );
+
+    rayQueryEXT rayQuery;
+    rayQueryInitializeEXT(rayQuery,
+                          as,
+                          gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,
+                          0xff,
+                          world_position,
+                          0.001,
+                          l,
+                          d);
+
+    rayQueryProceedEXT( rayQuery );
+    if ( rayQueryGetIntersectionTypeEXT( rayQuery, true ) == gl_RayQueryCommittedIntersectionNoneEXT ) {
+        shadow = 1.0;
+    }
+#endif // USE_SHADOW_VISIBILITY
+
+#elif 1
     const uint samples = 4;
     float shadow = 0;
     for(uint i = 0; i < samples; ++i) {
@@ -183,10 +309,13 @@ vec3 calculate_point_light_contribution(vec4 albedo, vec3 orm, vec3 normal, vec3
         const float NoH = saturate(dot(normal, h));
         const float LoH = saturate(dot(l, h));
 
-        const vec3 diffuse = fd_lambert() * albedo.rgb;
-        const float D = d_ggx( orm.g, NoH, h );
+        // roughness = perceived roughness ^ 2
+        const float roughness = forced_roughness < 0.0f ? orm.g * orm.g : forced_roughness;
 
-        float V = v_smith_ggx_correlated_fast( orm.g, NoV, NoL );
+        const vec3 diffuse = fd_burley(NoV, NoL, LoH, roughness) * albedo.rgb;
+        const float D = d_ggx( roughness, NoH, h );
+
+        float V = v_smith_ggx_correlated_fast( roughness, NoV, NoL );
 
         const float VoH = saturate(dot(v, h));
         vec3 F = f_schlick(F0, VoH);
@@ -210,7 +339,23 @@ vec3 apply_volumetric_fog( vec2 screen_uv, float raw_depth, vec3 color ) {
     // Exponential
     float depth_uv = linear_depth_to_uv( near, far, linear_depth, volumetric_fog_num_slices );
     vec3 froxel_uvw = vec3(screen_uv.xy, depth_uv);
-    vec4 scattering_transmittance = texture(global_textures_3d[nonuniformEXT(volumetric_fog_texture_index)], froxel_uvw);
+    vec4 scattering_transmittance = vec4(0,0,0,0);
+
+    if ( enable_volumetric_fog_opacity_tricubic_filtering() ) {
+        scattering_transmittance = tricubic_filtering(volumetric_fog_texture_index, froxel_uvw, vec3(volumetric_fog_num_slices));
+    }
+    else {
+        scattering_transmittance = texture(global_textures_3d[nonuniformEXT(volumetric_fog_texture_index)], froxel_uvw);
+    }
+
+    // Add animated noise to transmittance to remove banding.
+    vec2 blue_noise = texture(global_textures[nonuniformEXT(blue_noise_128_rg_texture_index)], screen_uv ).rg;
+    const float k_golden_ratio_conjugate = 0.61803398875;
+    float blue_noise0 = fract(ToLinear1(blue_noise.r) + float(current_frame % 256) * k_golden_ratio_conjugate);
+    float blue_noise1 = fract(ToLinear1(blue_noise.g) + float(current_frame % 256) * k_golden_ratio_conjugate);
+
+    float noise_modifier = triangular_noise(blue_noise0, blue_noise1) * volumetric_fog_application_dithering_scale;
+    scattering_transmittance.a += noise_modifier;
 
     const float scattering_modifier = enable_volumetric_fog_opacity_anti_aliasing() ? max( 1 - scattering_transmittance.a, 0.00000001f ) : 1.0f;
 
@@ -244,10 +389,10 @@ vec4 calculate_lighting(vec4 base_colour, vec3 orm, vec3 normal, vec3 emissive, 
     vec3 V = normalize( camera_position.xyz - world_position );
     const float NoV = saturate(dot(normal, V));
 
-    vec4 albedo = vec4(compute_diffuse_color(base_colour, orm.b), base_colour.a);
+    const float metallic = forced_metalness < 0.0f ? orm.b : forced_metalness;
+    vec4 albedo = vec4(compute_diffuse_color(base_colour, metallic), base_colour.a);
 
     // TODO: missing IOR for F0 calculations. Get default value.
-    const float metallic = orm.b;
     vec3 F0 = mix(vec3(0.04), albedo.rgb, metallic);
 
     vec4 final_color = vec4( 0 );
@@ -314,8 +459,8 @@ vec4 calculate_lighting(vec4 base_colour, vec3 orm, vec3 normal, vec3 emissive, 
             merged_mask ^= ( 1 << bit_index );
 
             uint global_light_index = light_indices[ light_index ];
-            Light point_light = lights[ global_light_index ];
-            final_color.rgb += calculate_point_light_contribution( albedo, orm, normal, emissive, world_position, V, F0, NoV, point_light, global_light_index );
+
+            final_color.rgb += calculate_point_light_contribution( albedo, orm, normal, emissive, world_position, V, F0, NoV, position, global_light_index );
         }
     }
 #else
@@ -326,9 +471,8 @@ vec4 calculate_lighting(vec4 base_colour, vec3 orm, vec3 normal, vec3 emissive, 
 
             if ( ( tiles[ address + word_id ] & ( 1 << bit_id ) ) != 0 ) {
                 uint global_light_index = light_indices[ light_id ];
-                Light point_light = lights[ global_light_index ];
 
-                final_color.rgb += calculate_point_light_contribution( albedo, orm, normal, emissive, world_position, V, F0, NoV, point_light, global_light_index );
+                final_color.rgb += calculate_point_light_contribution( albedo, orm, normal, emissive, world_position, V, F0, NoV, position, global_light_index );
             }
         }
     }

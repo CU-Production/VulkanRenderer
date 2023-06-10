@@ -20,9 +20,12 @@
 
 - [x] variable rate shading (vrs)
 - [x] volumetric fog
+- [x] TAA
 
 ![](screenshots/Snipaste_2023-06-10_00-03-42.png)
 ![](screenshots/Snipaste_2023-06-10_19-53-16.png)
+![](screenshots/Snipaste_2023-06-10_23-16-09.png)
+![](screenshots/Snipaste_2023-06-10_23-16-18.png)
 
 ## 20230609
 

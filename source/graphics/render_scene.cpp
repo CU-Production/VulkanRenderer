@@ -393,13 +393,13 @@ void GBufferPass::pre_render( u32 current_frame_index, CommandBuffer* gpu_comman
         // Generate index buffer
         BufferHandle meshlet_index_buffer = render_scene->meshlets_index_buffer_sb[ current_frame_index ];
 
-        gpu_commands->buffer_barrier( meshlet_index_buffer, RESOURCE_STATE_INDEX_BUFFER, RESOURCE_STATE_UNORDERED_ACCESS, QueueType::Graphics, QueueType::Compute );
+        gpu_commands->issue_buffer_barrier( meshlet_index_buffer, RESOURCE_STATE_INDEX_BUFFER, RESOURCE_STATE_UNORDERED_ACCESS, QueueType::Graphics, QueueType::Compute );
 
         gpu_commands->bind_pipeline( generate_meshlet_index_buffer_pipeline );
         gpu_commands->bind_descriptor_set( &generate_meshlet_index_buffer_descriptor_set[ current_frame_index ], 1, nullptr, 0 );
         gpu_commands->dispatch_indirect( generate_meshlet_dispatch_indirect_buffer[ current_frame_index ], offsetof( GpuMeshDrawCounts, dispatch_task_x ) );
 
-        gpu_commands->buffer_barrier( meshlet_index_buffer, RESOURCE_STATE_UNORDERED_ACCESS, RESOURCE_STATE_INDEX_BUFFER, QueueType::Compute, QueueType::Graphics );
+        gpu_commands->issue_buffer_barrier( meshlet_index_buffer, RESOURCE_STATE_UNORDERED_ACCESS, RESOURCE_STATE_INDEX_BUFFER, QueueType::Compute, QueueType::Graphics );
 
         gpu_commands->global_debug_barrier();
     }
@@ -689,7 +689,7 @@ void LightPass::on_resize( GpuDevice& gpu, FrameGraph* frame_graph, u32 new_widt
 
 void LightPass::post_render( u32 current_frame_index, CommandBuffer* gpu_commands, FrameGraph* frame_graph, RenderScene* render_scene ) {
 
-    if ( gpu_commands->gpu_device->fragment_shading_rate_present ) {
+    if ( gpu_commands->gpu_device->fragment_shading_rate_present && !use_compute ) {
         Texture* attachment_texture = renderer->gpu->access_texture( output_texture->resource_info.texture.handle );
         Texture* frs_texture = renderer->gpu->access_texture( render_scene->fragment_shading_rate_image );
 
@@ -768,10 +768,10 @@ void LightPass::prepare_draws( RenderScene& scene, FrameGraph* frame_graph, Allo
         fragment_rate_texture_index[ f ].index = k_invalid_index;
     }
 
-    if ( renderer->gpu->fragment_shading_rate_present ) {
+    if ( renderer->gpu->fragment_shading_rate_present && !use_compute ) {
         Texture* colour_texture = renderer->gpu->access_texture( color_texture->resource_info.texture.handle );
 
-        u32 frs_pass_index = 2;
+        u32 frs_pass_index = main_technique->get_pass_index( "edge_detection" );
         GpuTechniquePass& pass = main_technique->passes[ frs_pass_index ];
 
         BufferCreation buffer_creation{ };
@@ -799,7 +799,7 @@ void LightPass::prepare_draws( RenderScene& scene, FrameGraph* frame_graph, Allo
     {
         scene.renderer->gpu->destroy_descriptor_set( mesh.pbr_material.descriptor_set_transparent );
 
-        const u32 pass_index = use_compute ? 1 : 0;
+        const u32 pass_index = use_compute ? main_technique->get_pass_index("deferred_lighting_compute") : main_technique->get_pass_index( "deferred_lighting_pixel");
         DescriptorSetCreation ds_creation{};
         GpuTechniquePass& pass = main_technique->passes[ pass_index ];
         DescriptorSetLayoutHandle layout = renderer->gpu->get_descriptor_set_layout( pass.pipeline, k_material_descriptor_set_index );
@@ -1799,7 +1799,9 @@ void RayTracingTestPass::on_resize( GpuDevice& gpu, FrameGraph* frame_graph, u32
         return;
     }
 
-    gpu.resize_texture( render_target, new_width, new_height );
+    if ( owns_render_target ) {
+        gpu.resize_texture( render_target, new_width, new_height );
+    }
 }
 
 void RayTracingTestPass::prepare_draws( RenderScene& scene, FrameGraph* frame_graph, Allocator* resident_allocator, StackAllocator* scratch_allocator ) {
@@ -1821,15 +1823,23 @@ void RayTracingTestPass::prepare_draws( RenderScene& scene, FrameGraph* frame_gr
 
     cstring rt_render_target = "final";
 
-    TextureCreation texture_creation{ };
-    texture_creation.set_flags( TextureFlags::Compute_mask ).set_name( rt_render_target ).set_format_type( VK_FORMAT_R8G8B8A8_UNORM, TextureType::Texture2D ).set_size( gpu.swapchain_width, gpu.swapchain_height, 1 ).set_mips( 1 ).set_layers( 1 );
-
-    render_target = gpu.create_texture( texture_creation );
-
     FrameGraphResource* texture = frame_graph->get_resource( rt_render_target );
     RASSERT( texture != nullptr );
 
-    texture->resource_info.set_external_texture_2d( gpu.swapchain_width, gpu.swapchain_height, VK_FORMAT_R8_UINT, 0, render_target );
+    if ( texture->resource_info.texture.handle.index == k_invalid_index ) {
+        TextureCreation texture_creation{ };
+        texture_creation.set_flags( TextureFlags::Compute_mask ).set_name( rt_render_target ).set_format_type( VK_FORMAT_R8G8B8A8_UNORM, TextureType::Texture2D ).set_size( gpu.swapchain_width, gpu.swapchain_height, 1 ).set_mips( 1 ).set_layers( 1 );
+
+        render_target = gpu.create_texture( texture_creation );
+
+        texture->resource_info.set_external_texture_2d( gpu.swapchain_width, gpu.swapchain_height, VK_FORMAT_R8_UINT, 0, render_target );
+
+        owns_render_target = true;
+    } else {
+        render_target = texture->resource_info.texture.handle;
+
+        owns_render_target = false;
+    }
 
     DescriptorSetLayoutHandle layout = gpu.get_descriptor_set_layout( pipeline, k_material_descriptor_set_index );
 
@@ -1881,6 +1891,222 @@ void RayTracingTestPass::free_gpu_resources( GpuDevice& gpu ) {
     }
 }
 
+// ShadowVisbilityPass ///////////////////////////////////////////////////
+void ShadowVisbilityPass::render( u32 current_frame_index, CommandBuffer* gpu_commands, RenderScene* render_scene ) {
+    if ( !enabled ) {
+        return;
+    }
+
+    if ( render_scene->active_lights != last_active_lights_count ) {
+        GpuDevice& gpu = *renderer->gpu;
+        recreate_textures( gpu, render_scene->active_lights );
+
+        FrameGraphResourceInfo resource_info{ };
+        resource_info.set_external_texture_3d( gpu.swapchain_width, gpu.swapchain_height, render_scene->active_lights, VK_FORMAT_R16_SFLOAT, 0, filtered_visibility_texture );
+
+        shadow_visibility_resource->resource_info = resource_info;
+    }
+
+    if ( clear_resources ) {
+        VkClearColorValue clear_value{ };
+
+        gpu_commands->clear_color_image( visibility_cache_texture, clear_value );
+
+        gpu_commands->clear_color_image( variation_cache_texture, clear_value );
+
+        gpu_commands->clear_color_image( variation_texture, clear_value );
+
+        gpu_commands->clear_color_image( samples_count_cache_texture, clear_value );
+
+        gpu_commands->clear_color_image( filtered_visibility_texture, clear_value );
+
+        gpu_commands->clear_color_image( filtered_variation_texture, clear_value );
+
+        clear_resources = false;
+    }
+
+    gpu_commands->issue_texture_barrier( visibility_cache_texture, ResourceState::RESOURCE_STATE_GENERIC_READ, 0, 1 );
+    gpu_commands->issue_texture_barrier( variation_texture, ResourceState::RESOURCE_STATE_UNORDERED_ACCESS, 0, 1 );
+
+    // NOTE(marco): variance pass
+    gpu_commands->bind_pipeline( variance_pipeline );
+
+    gpu_commands->bind_descriptor_set( descriptor_set + current_frame_index, 1, 0, 0 );
+
+    u32 x = ( gpu_commands->gpu_device->swapchain_width + 7 ) / 8;
+    u32 y = ( gpu_commands->gpu_device->swapchain_height + 7 ) / 8;
+    gpu_commands->dispatch( x, y, render_scene->active_lights );
+
+    gpu_commands->issue_texture_barrier( variation_cache_texture, ResourceState::RESOURCE_STATE_UNORDERED_ACCESS, 0, 1 );
+    gpu_commands->issue_texture_barrier( samples_count_cache_texture, ResourceState::RESOURCE_STATE_UNORDERED_ACCESS, 0, 1 );
+    gpu_commands->issue_texture_barrier( filtered_variation_texture, ResourceState::RESOURCE_STATE_UNORDERED_ACCESS, 0, 1 );
+    gpu_commands->issue_texture_barrier( variation_texture, ResourceState::RESOURCE_STATE_GENERIC_READ, 0, 1 );
+
+    // NOTE(marco): visiblity pass
+    gpu_commands->bind_pipeline( visibility_pipeline );
+
+    gpu_commands->dispatch( x, y, render_scene->active_lights );
+
+    gpu_commands->issue_texture_barrier( visibility_cache_texture, ResourceState::RESOURCE_STATE_GENERIC_READ, 0, 1 );
+    gpu_commands->issue_texture_barrier( filtered_variation_texture, ResourceState::RESOURCE_STATE_GENERIC_READ, 0, 1 );
+    gpu_commands->issue_texture_barrier( filtered_visibility_texture, ResourceState::RESOURCE_STATE_UNORDERED_ACCESS, 0, 1 );
+
+    // NOTE(marco): visiblity filtering pass
+    gpu_commands->bind_pipeline( visibility_filtering_pipeline );
+
+    gpu_commands->dispatch( x, y, render_scene->active_lights );
+}
+
+void ShadowVisbilityPass::on_resize( GpuDevice& gpu, FrameGraph* frame_graph, u32 new_width, u32 new_height ) {
+    if ( !enabled ) {
+        return;
+    }
+
+    gpu.resize_texture_3d( visibility_cache_texture, new_width, new_height, last_active_lights_count );
+    gpu.resize_texture_3d( variation_cache_texture, new_width, new_height, last_active_lights_count );
+    gpu.resize_texture_3d( variation_texture, new_width, new_height, last_active_lights_count );
+    gpu.resize_texture_3d( filtered_visibility_texture, new_width, new_height, last_active_lights_count );
+    gpu.resize_texture_3d( filtered_variation_texture, new_width, new_height, last_active_lights_count );
+    gpu.resize_texture_3d( samples_count_cache_texture, new_width, new_height, last_active_lights_count );
+
+    clear_resources = true;
+}
+
+void ShadowVisbilityPass::recreate_textures( GpuDevice& gpu, u32 lights_count ) {
+    if ( last_active_lights_count != 0 ) {
+        gpu.destroy_texture( visibility_cache_texture );
+        gpu.destroy_texture( variation_cache_texture );
+        gpu.destroy_texture( variation_texture );
+        gpu.destroy_texture( samples_count_cache_texture );
+        gpu.destroy_texture( filtered_visibility_texture );
+        gpu.destroy_texture( filtered_variation_texture );
+    }
+
+    TextureCreation texture_creation{ };
+    texture_creation.set_flags( TextureFlags::Compute_mask ).set_name( "visibility_cache" ).set_format_type( VK_FORMAT_R16G16B16A16_SFLOAT, TextureType::Texture3D ).set_size( gpu.swapchain_width, gpu.swapchain_height, lights_count ).set_mips( 1 ).set_layers( 1 );
+
+    // NOTE(marco): last 4 frames visibility values per light
+    visibility_cache_texture = gpu.create_texture( texture_creation);
+
+    // NOTE(marco): last 4 frames visibility variation per light
+    texture_creation.set_name( "variation_cache" );
+    variation_cache_texture = gpu.create_texture( texture_creation );
+
+    // NOTE(marco): visibility delta
+    texture_creation.set_name( "variation" ).set_format_type( VK_FORMAT_R16_SFLOAT, TextureType::Texture3D );
+    variation_texture = gpu.create_texture( texture_creation );
+
+    texture_creation.set_name( "filtered_visibility" );
+    filtered_visibility_texture = gpu.create_texture( texture_creation );
+
+    texture_creation.set_name( "filtered_variation" );
+    filtered_variation_texture = gpu.create_texture( texture_creation );
+
+    // NOTE(marco): last 4 frames samples count per light
+    texture_creation.set_name( "samples_count_cache" ).set_format_type( VK_FORMAT_R8G8B8A8_UINT, TextureType::Texture3D );
+    samples_count_cache_texture = gpu.create_texture( texture_creation );
+
+    clear_resources = true;
+    last_active_lights_count = lights_count;
+}
+
+void ShadowVisbilityPass::prepare_draws( RenderScene& scene, FrameGraph* frame_graph, Allocator* resident_allocator, StackAllocator* scratch_allocator ) {
+    FrameGraphNode* node = frame_graph->get_node( "shadow_visibility_pass" );
+    if ( node == nullptr ) {
+        enabled = false;
+
+        return;
+    }
+
+    enabled = node->enabled;
+
+    renderer = scene.renderer;
+
+    GpuDevice& gpu = *renderer->gpu;
+
+    recreate_textures( gpu, scene.active_lights );
+
+    cstring shadow_visibility_resource_name = "shadow_visibility";
+    FrameGraphResourceInfo resource_info{ };
+    resource_info.set_external_texture_3d( gpu.swapchain_width, gpu.swapchain_height, scene.active_lights, VK_FORMAT_R16_SFLOAT, 0, filtered_visibility_texture );
+
+    shadow_visibility_resource = frame_graph->get_resource( shadow_visibility_resource_name );
+    RASSERT( shadow_visibility_resource != nullptr );
+    shadow_visibility_resource->resource_info = resource_info;
+
+    BufferCreation buffer_creation{ };
+    buffer_creation.set_name( "shadow_visiblity_constants" ).set( VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, ResourceUsageType::Dynamic, sizeof( GpuShadowVisibilityConstants ) );
+
+    gpu_pass_constants = gpu.create_buffer( buffer_creation );
+
+    GpuTechnique* technique = renderer->resource_cache.techniques.get( hash_calculate( "pbr_lighting" ) );
+
+    u32 pass_index = technique->get_pass_index( "shadow_visibility_variance" );
+    GpuTechniquePass& variance_pass = technique->passes[ pass_index ];
+    variance_pipeline = variance_pass.pipeline;
+
+    pass_index = technique->get_pass_index( "shadow_visibility" );
+    GpuTechniquePass& visiblity_pass = technique->passes[ pass_index ];
+    visibility_pipeline = visiblity_pass.pipeline;
+
+    pass_index = technique->get_pass_index( "shadow_visibility_filtering" );
+    GpuTechniquePass& visiblity_filtering_pass = technique->passes[ pass_index ];
+    visibility_filtering_pipeline = visiblity_filtering_pass.pipeline;
+
+    for ( u32 i = 0; i < k_max_frames; ++i ) {
+        DescriptorSetCreation ds_creation{ };
+
+        scene.add_scene_descriptors( ds_creation, variance_pass );
+        scene.add_lighting_descriptors( ds_creation, variance_pass, i );
+        ds_creation.buffer( gpu_pass_constants, 30 );
+
+        ds_creation.set_layout( renderer->gpu->get_descriptor_set_layout( variance_pipeline, k_material_descriptor_set_index) );
+
+        descriptor_set[ i ] = renderer->gpu->create_descriptor_set( ds_creation );
+    }
+
+    FrameGraphResource* resource = frame_graph->get_resource( "gbuffer_normals" );
+    RASSERT( resource != nullptr );
+    normals_texture = resource->resource_info.texture.handle;
+}
+
+void ShadowVisbilityPass::upload_gpu_data( RenderScene& scene ) {
+    if ( !enabled ) {
+        return;
+    }
+
+    MapBufferParameters mb{ gpu_pass_constants, 0, 0 };
+    GpuShadowVisibilityConstants* constants = ( GpuShadowVisibilityConstants* )renderer->gpu->map_buffer( mb );
+    if ( constants != nullptr ) {
+        constants->visibility_cache_texture_index = visibility_cache_texture.index;
+        constants->variation_texture_index  = variation_texture.index;
+        constants->variation_cache_texture_index  = variation_cache_texture.index;
+        constants->samples_count_cache_texture_index = samples_count_cache_texture.index;
+        constants->motion_vectors_texture_index = scene.visibility_motion_vector_texture.index;
+        constants->normals_texture_index = normals_texture.index;
+        constants->filtered_visibility_texture = filtered_visibility_texture.index;
+        constants->filetered_variation_texture = filtered_variation_texture.index;
+        constants->frame_index = renderer->gpu->absolute_frame % 4;
+
+        renderer->gpu->unmap_buffer( mb );
+    }
+}
+
+void ShadowVisbilityPass::free_gpu_resources( GpuDevice& gpu ) {
+    if ( !enabled ) {
+        return;
+    }
+
+    gpu.destroy_texture( visibility_cache_texture );
+    gpu.destroy_texture( variation_cache_texture );
+    gpu.destroy_texture( variation_texture );
+    gpu.destroy_texture( samples_count_cache_texture );
+    gpu.destroy_texture( filtered_visibility_texture );
+    gpu.destroy_texture( filtered_variation_texture );
+
+    gpu.destroy_buffer( gpu_pass_constants );
+}
+
 // PointlightShadowPass ///////////////////////////////////////////////////
 void PointlightShadowPass::pre_render( u32 current_frame_index, CommandBuffer* gpu_commands, FrameGraph* frame_graph, RenderScene* render_scene ) {
 
@@ -1927,7 +2153,7 @@ void PointlightShadowPass::pre_render( u32 current_frame_index, CommandBuffer* g
 
     gpu_commands->push_constants( shadow_resolution_pipeline, 0, 16, &render_scene->mesh_draw_counts.depth_pyramid_texture_index );
 
-    gpu_commands->buffer_barrier( shadow_resolutions[ current_frame_index ], ResourceState::RESOURCE_STATE_COPY_SOURCE, ResourceState::RESOURCE_STATE_UNORDERED_ACCESS, QueueType::Graphics, QueueType::Graphics );
+    gpu_commands->issue_buffer_barrier( shadow_resolutions[ current_frame_index ], ResourceState::RESOURCE_STATE_COPY_SOURCE, ResourceState::RESOURCE_STATE_UNORDERED_ACCESS, QueueType::Graphics, QueueType::Graphics );
 
     gpu_commands->fill_buffer( shadow_resolutions[ current_frame_index ], 0, sizeof( u32 ) * render_scene->active_lights, 0 );
     // 8 is the group size on both x and y for this shader.
@@ -1936,7 +2162,7 @@ void PointlightShadowPass::pre_render( u32 current_frame_index, CommandBuffer* g
     const u32 tile_y_count = raptor::ceilu32(render_scene->scene_data.resolution_y / tile_size );
     gpu_commands->dispatch( tile_x_count, tile_y_count, 1 );
 
-    gpu_commands->buffer_barrier( shadow_resolutions[ current_frame_index ], ResourceState::RESOURCE_STATE_UNORDERED_ACCESS, ResourceState::RESOURCE_STATE_COPY_SOURCE, QueueType::Graphics, QueueType::Graphics );
+    gpu_commands->issue_buffer_barrier( shadow_resolutions[ current_frame_index ], ResourceState::RESOURCE_STATE_UNORDERED_ACCESS, ResourceState::RESOURCE_STATE_COPY_SOURCE, QueueType::Graphics, QueueType::Graphics );
 
     gpu_commands->copy_buffer( shadow_resolutions[ current_frame_index ], 0, shadow_resolutions_readback[ current_frame_index ], 0, sizeof( u32 ) * k_num_lights );
 }
@@ -2675,33 +2901,26 @@ void VolumetricFogPass::pre_render( u32 current_frame_index, CommandBuffer* gpu_
 
     Renderer* renderer = render_scene->renderer;
 
-    static i32 times = 5;
-    //if ( !has_baked_noise )
+    static i32 times = 3;
     if ( times >= 0 ) {
         --times;
         has_baked_noise = true;
 
-        Texture* volumetric_noise_texture_ = renderer->gpu->access_texture( volumetric_noise_texture );
-        util_add_image_barrier( renderer->gpu, gpu_commands->vk_command_buffer, volumetric_noise_texture_, RESOURCE_STATE_UNORDERED_ACCESS, 0, 1, false );
+        gpu_commands->issue_texture_barrier( volumetric_noise_texture, RESOURCE_STATE_UNORDERED_ACCESS, 0, 1 );
 
         gpu_commands->bind_pipeline( volumetric_noise_baking );
         gpu_commands->bind_descriptor_set( &fog_descriptor_set, 1, nullptr, 0 );
         gpu_commands->push_constants( volumetric_noise_baking, 0, 4, &volumetric_noise_texture.index );
         gpu_commands->dispatch( 64 / 8, 64 / 8, 64 );
 
-        util_add_image_barrier( renderer->gpu, gpu_commands->vk_command_buffer, volumetric_noise_texture_, RESOURCE_STATE_SHADER_RESOURCE, 0, 1, false );
+        gpu_commands->issue_texture_barrier( volumetric_noise_texture, RESOURCE_STATE_SHADER_RESOURCE, 0, 1 );
     }
 
     previous_light_scattering_texture_index = current_light_scattering_texture_index;
     current_light_scattering_texture_index = ( current_light_scattering_texture_index + 1 ) % 2;
 
-    Texture* integrated_light_scattering_texture_ = renderer->gpu->access_texture( integrated_light_scattering_texture );
-    Texture* froxel_data_texture_ = renderer->gpu->access_texture( froxel_data_texture_0 );
-    Texture* light_scattering_texture_ = renderer->gpu->access_texture( light_scattering_texture[ current_light_scattering_texture_index ] );
-    Texture* previous_light_scattering_texture_ = renderer->gpu->access_texture( light_scattering_texture[ previous_light_scattering_texture_index ] );
-
     // Inject data
-    util_add_image_barrier( renderer->gpu, gpu_commands->vk_command_buffer, froxel_data_texture_, RESOURCE_STATE_UNORDERED_ACCESS, 0, 1, false );
+    gpu_commands->issue_texture_barrier( froxel_data_texture_0, RESOURCE_STATE_UNORDERED_ACCESS, 0, 1 );
 
     gpu_commands->bind_pipeline( inject_data_pipeline );
     gpu_commands->bind_descriptor_set( &fog_descriptor_set, 1, nullptr, 0 );
@@ -2710,40 +2929,42 @@ void VolumetricFogPass::pre_render( u32 current_frame_index, CommandBuffer* gpu_
     const u32 dispatch_group_y = ceilu32( render_scene->volumetric_fog_tile_count_y / 8.0f );
     gpu_commands->dispatch( dispatch_group_x, dispatch_group_y, render_scene->volumetric_fog_slices );
 
-    util_add_image_barrier( renderer->gpu, gpu_commands->vk_command_buffer, froxel_data_texture_, RESOURCE_STATE_SHADER_RESOURCE, 0, 1, false );
+    gpu_commands->issue_texture_barrier( froxel_data_texture_0, RESOURCE_STATE_SHADER_RESOURCE, 0, 1 );
 
     gpu_commands->global_debug_barrier();
 
+    TextureHandle current_light_scattering_texture = light_scattering_texture[ current_light_scattering_texture_index ];
+
     // Light scattering
-    util_add_image_barrier( renderer->gpu, gpu_commands->vk_command_buffer, previous_light_scattering_texture_, RESOURCE_STATE_SHADER_RESOURCE, 0, 1, false );
-    util_add_image_barrier( renderer->gpu, gpu_commands->vk_command_buffer, light_scattering_texture_, RESOURCE_STATE_UNORDERED_ACCESS, 0, 1, false );
-    util_add_image_barrier( renderer->gpu, gpu_commands->vk_command_buffer, integrated_light_scattering_texture_, RESOURCE_STATE_UNORDERED_ACCESS, 0, 1, false );
+    gpu_commands->issue_texture_barrier( light_scattering_texture[ previous_light_scattering_texture_index ], RESOURCE_STATE_SHADER_RESOURCE, 0, 1 );
+    gpu_commands->issue_texture_barrier( current_light_scattering_texture, RESOURCE_STATE_UNORDERED_ACCESS, 0, 1 );
+    gpu_commands->issue_texture_barrier( integrated_light_scattering_texture, RESOURCE_STATE_UNORDERED_ACCESS, 0, 1 );
 
     gpu_commands->bind_pipeline( light_scattering_pipeline );
     gpu_commands->bind_descriptor_set( &light_scattering_descriptor_set[ current_frame_index ], 1, nullptr, 0 );
     gpu_commands->dispatch( dispatch_group_x, dispatch_group_y, render_scene->volumetric_fog_slices );
 
-    util_add_image_barrier( renderer->gpu, gpu_commands->vk_command_buffer, light_scattering_texture_, RESOURCE_STATE_SHADER_RESOURCE, 0, 1, false );
+    gpu_commands->issue_texture_barrier( current_light_scattering_texture, RESOURCE_STATE_SHADER_RESOURCE, 0, 1 );
 
     gpu_commands->global_debug_barrier();
 
     // Spatial filtering
-    util_add_image_barrier( renderer->gpu, gpu_commands->vk_command_buffer, froxel_data_texture_, RESOURCE_STATE_UNORDERED_ACCESS, 0, 1, false );
+    gpu_commands->issue_texture_barrier( froxel_data_texture_0, RESOURCE_STATE_UNORDERED_ACCESS, 0, 1 );
 
     // Reads light scattering texture and writes froxel_data_0
     gpu_commands->bind_pipeline( spatial_filtering_pipeline );
     gpu_commands->bind_descriptor_set( &fog_descriptor_set, 1, nullptr, 0 );
     gpu_commands->dispatch( dispatch_group_x, dispatch_group_y, render_scene->volumetric_fog_slices );
 
-    util_add_image_barrier( renderer->gpu, gpu_commands->vk_command_buffer, light_scattering_texture_, RESOURCE_STATE_UNORDERED_ACCESS, 0, 1, false );
-    util_add_image_barrier( renderer->gpu, gpu_commands->vk_command_buffer, froxel_data_texture_, RESOURCE_STATE_SHADER_RESOURCE, 0, 1, false );
+    gpu_commands->issue_texture_barrier( current_light_scattering_texture, RESOURCE_STATE_UNORDERED_ACCESS, 0, 1 );
+    gpu_commands->issue_texture_barrier( froxel_data_texture_0, RESOURCE_STATE_SHADER_RESOURCE, 0, 1 );
 
     // Temporal filtering
     // Reads froxel_data_0 and writes light scattering texture
     gpu_commands->bind_pipeline( temporal_filtering_pipeline );
     gpu_commands->dispatch( dispatch_group_x, dispatch_group_y, render_scene->volumetric_fog_slices );
 
-    util_add_image_barrier( renderer->gpu, gpu_commands->vk_command_buffer, light_scattering_texture_, RESOURCE_STATE_SHADER_RESOURCE, 0, 1, false );
+    gpu_commands->issue_texture_barrier( current_light_scattering_texture, RESOURCE_STATE_SHADER_RESOURCE, 0, 1 );
 
     // Light integration
     gpu_commands->bind_pipeline( light_integration_pipeline );
@@ -2754,7 +2975,7 @@ void VolumetricFogPass::pre_render( u32 current_frame_index, CommandBuffer* gpu_
 
     gpu_commands->global_debug_barrier();
 
-    util_add_image_barrier( renderer->gpu, gpu_commands->vk_command_buffer, integrated_light_scattering_texture_, RESOURCE_STATE_SHADER_RESOURCE, 0, 1, false );
+    gpu_commands->issue_texture_barrier( integrated_light_scattering_texture, RESOURCE_STATE_SHADER_RESOURCE, 0, 1 );
 }
 
 void VolumetricFogPass::render( u32 current_frame_index, CommandBuffer* gpu_commands, RenderScene* render_scene ) {
@@ -2918,11 +3139,9 @@ void VolumetricFogPass::upload_gpu_data( RenderScene& scene ) {
 
         gpu_constants->height_fog_density = scene.volumetric_fog_height_fog_density;
         gpu_constants->height_fog_falloff = scene.volumetric_fog_height_fog_falloff;
-        gpu_constants->current_frame = ( u32 )gpu.absolute_frame;
         gpu_constants->noise_scale = scene.volumetric_fog_noise_scale;
-        gpu_constants->integration_noise_scale = scene.volumetric_fog_integration_noise_scale;
+        gpu_constants->lighting_noise_scale = scene.volumetric_fog_lighting_noise_scale;
         gpu_constants->noise_type = scene.volumetric_fog_noise_type;
-        gpu_constants->blue_noise_128_rg_texture_index = scene.blue_noise_128_rg_texture_index;
         gpu_constants->use_spatial_filtering = scene.volumetric_fog_use_spatial_filtering;
         gpu_constants->temporal_reprojection_jitter_scale = scene.volumetric_fog_temporal_reprojection_jittering_scale;
 
@@ -2943,8 +3162,8 @@ void VolumetricFogPass::upload_gpu_data( RenderScene& scene ) {
 void VolumetricFogPass::free_gpu_resources( GpuDevice& gpu ) {
 
     gpu.destroy_texture( froxel_data_texture_0 );
-    gpu.destroy_texture( light_scattering_texture[ 0 ]);
-    gpu.destroy_texture( light_scattering_texture[ 1 ]);
+    gpu.destroy_texture( light_scattering_texture[ 0 ] );
+    gpu.destroy_texture( light_scattering_texture[ 1 ] );
     gpu.destroy_texture( integrated_light_scattering_texture );
 
     for ( u32 i = 0; i < k_max_frames; ++i ) {
@@ -2983,7 +3202,227 @@ void VolumetricFogPass::update_dependent_resources( GpuDevice& gpu, FrameGraph* 
             light_scattering_descriptor_set[ i ] = gpu.create_descriptor_set( ds_creation );
         }
     }
+}
 
+// TemporalAntiAliasingPass ///////////////////////////////////////////////
+static TextureHandle temp_taa_output;
+static TextureHandle current_color_texture;
+
+void TemporalAntiAliasingPass::pre_render( u32 current_frame_index, CommandBuffer* gpu_commands, FrameGraph* frame_graph, RenderScene* render_scene ) {
+
+    previous_history_texture_index = current_history_texture_index;
+    current_history_texture_index = ( current_history_texture_index + 1 ) % 2;
+
+    // TODO: fix.
+    temp_taa_output = history_textures[ current_history_texture_index ];
+
+    FrameGraphResource* resource = frame_graph->get_resource( "final" );
+    if ( resource ) {
+        current_color_texture = resource->resource_info.texture.handle;
+    }
+
+    gpu_commands->issue_texture_barrier( history_textures[ current_history_texture_index ], RESOURCE_STATE_UNORDERED_ACCESS, 0, 1 );
+
+    gpu_commands->bind_pipeline( taa_pipeline );
+    gpu_commands->bind_descriptor_set( &taa_descriptor_set, 1, nullptr, 0 );
+    gpu_commands->dispatch( raptor::ceilu32( renderer->width / 8.0f ), raptor::ceilu32( renderer->height / 8.0f ), 1 );
+
+    gpu_commands->issue_texture_barrier( history_textures[ current_history_texture_index ], RESOURCE_STATE_SHADER_RESOURCE, 0, 1 );
+}
+
+void TemporalAntiAliasingPass::render( u32 current_frame_index, CommandBuffer* gpu_commands, RenderScene* render_scene ) {
+}
+
+void TemporalAntiAliasingPass::on_resize( GpuDevice& gpu, FrameGraph* frame_graph, u32 new_width, u32 new_height ) {
+
+    gpu.resize_texture( history_textures[ 0 ], new_width, new_height );
+    gpu.resize_texture( history_textures[ 1 ], new_width, new_height );
+}
+
+void TemporalAntiAliasingPass::prepare_draws( RenderScene& scene, FrameGraph* frame_graph, Allocator* resident_allocator, StackAllocator* scratch_allocator ) {
+
+    renderer = scene.renderer;
+
+    FrameGraphNode* node = frame_graph->get_node( "temporal_anti_aliasing_pass" );
+    if ( node == nullptr ) {
+        enabled = false;
+
+        return;
+    }
+
+    enabled = node->enabled;
+
+    GpuDevice& gpu = *renderer->gpu;
+
+    TextureCreation texture_creation;
+    texture_creation.reset().set_name( "history_texture_0" ).set_size( gpu.swapchain_width, gpu.swapchain_height, 1 )
+        .set_flags( TextureFlags::Compute_mask ).set_format_type( VK_FORMAT_R16G16B16A16_SFLOAT, TextureType::Texture2D );
+    history_textures[ 0 ] = gpu.create_texture( texture_creation );
+
+    texture_creation.set_name( "history_texture_1" );
+    history_textures[ 1 ] = gpu.create_texture( texture_creation );
+
+    BufferCreation buffer_creation;
+    buffer_creation.reset().set( VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, ResourceUsageType::Dynamic, sizeof( GpuTaaConstants ) ).set_name("taa_constants");
+    taa_constants = gpu.create_buffer( buffer_creation );
+
+    GpuTechnique* technique = renderer->resource_cache.techniques.get( hash_calculate( "fullscreen" ) );
+    if ( technique ) {
+        u32 pass_index = technique->get_pass_index( "temporal_aa" );
+        GpuTechniquePass& pass = technique->passes[ pass_index ];
+
+        taa_pipeline = pass.pipeline;
+
+        DescriptorSetLayoutHandle common_layout = gpu.get_descriptor_set_layout( taa_pipeline, k_material_descriptor_set_index );
+
+        DescriptorSetCreation ds_creation{};
+        ds_creation.reset().set_layout( common_layout );
+        ds_creation.buffer( taa_constants, 50 );
+        scene.add_scene_descriptors( ds_creation, pass );
+        taa_descriptor_set = gpu.create_descriptor_set( ds_creation );
+    }
+}
+
+void TemporalAntiAliasingPass::upload_gpu_data( RenderScene& scene ) {
+
+    if ( !enabled )
+        return;
+
+    GpuDevice& gpu = *renderer->gpu;
+
+    // Update per mesh material buffer
+    // TODO: update only changed stuff, this is now dynamic so it can't be done.
+    MapBufferParameters cb_map = { taa_constants, 0, 0 };
+    GpuTaaConstants* gpu_constants = ( GpuTaaConstants* )gpu.map_buffer( cb_map );
+    if ( gpu_constants ) {
+
+        gpu_constants->history_color_texture_index = history_textures[ previous_history_texture_index ].index;
+        gpu_constants->taa_output_texture_index = history_textures[ current_history_texture_index ].index;
+        gpu_constants->velocity_texture_index = scene.motion_vector_texture.index;
+        gpu_constants->current_color_texture_index = current_color_texture.index;
+
+        gpu_constants->taa_modes = scene.taa_mode;
+        gpu_constants->options = ( ( scene.taa_use_inverse_luminance_filtering ? 1 : 0) ) |
+                                 ( ( scene.taa_use_temporal_filtering ? 1 : 0) << 1 ) |
+                                 ( ( scene.taa_use_luminance_difference_filtering ? 1 : 0 ) << 2 ) |
+                                 ( ( scene.taa_use_ycocg? 1 : 0 ) << 3 );
+
+        gpu_constants->current_color_filter = scene.taa_current_color_filter;
+        gpu_constants->history_sampling_filter = scene.taa_history_sampling_filter;
+        gpu_constants->history_constraint_mode = scene.taa_history_constraint_mode;
+        gpu_constants->velocity_sampling_mode = scene.taa_velocity_sampling_mode;
+
+        gpu.unmap_buffer( cb_map );
+    }
+}
+
+void TemporalAntiAliasingPass::free_gpu_resources( GpuDevice& gpu ) {
+
+    gpu.destroy_buffer( taa_constants );
+    gpu.destroy_descriptor_set( taa_descriptor_set );
+    gpu.destroy_texture( history_textures[ 0 ] );
+    gpu.destroy_texture( history_textures[ 1 ] );
+}
+
+void TemporalAntiAliasingPass::update_dependent_resources( GpuDevice& gpu, FrameGraph* frame_graph, RenderScene* render_scene ) {
+}
+
+
+// MotionVectorPass ///////////////////////////////////////////////////////
+void MotionVectorPass::pre_render( u32 current_frame_index, CommandBuffer* gpu_commands, FrameGraph* frame_graph, RenderScene* render_scene ) {
+    if ( !enabled )
+        return;
+
+    //gpu_commands->issue_texture_barrier( render_scene->motion_vector_texture, RESOURCE_STATE_UNORDERED_ACCESS, 0, 1 );
+
+    gpu_commands->bind_pipeline( camera_composite_pipeline );
+    gpu_commands->bind_descriptor_set( &camera_composite_descriptor_set, 1, nullptr, 0 );
+    gpu_commands->dispatch( raptor::ceilu32( renderer->width / 8.0f ), raptor::ceilu32( renderer->height / 8.0f ), 1 );
+
+    //gpu_commands->issue_texture_barrier( render_scene->motion_vector_texture, RESOURCE_STATE_SHADER_RESOURCE, 0, 1 );
+}
+
+void MotionVectorPass::render( u32 current_frame_index, CommandBuffer* gpu_commands, RenderScene* render_scene ) {
+    if ( !enabled )
+        return;
+}
+
+void MotionVectorPass::on_resize( GpuDevice& gpu, FrameGraph* frame_graph, u32 new_width, u32 new_height ) {
+    if ( !enabled )
+        return;
+}
+
+void MotionVectorPass::prepare_draws( RenderScene& scene, FrameGraph* frame_graph, Allocator* resident_allocator, StackAllocator* scratch_allocator ) {
+    renderer = scene.renderer;
+
+    FrameGraphNode* node = frame_graph->get_node( "motion_vector_pass" );
+    if ( node == nullptr ) {
+        enabled = false;
+
+        return;
+    }
+
+    enabled = node->enabled;
+
+    GpuDevice& gpu = *renderer->gpu;
+
+    GpuTechnique* technique = renderer->resource_cache.techniques.get( hash_calculate( "fullscreen" ) );
+    if ( technique ) {
+        FrameGraphResource* gubffer_normals_resource = frame_graph->get_resource( "gbuffer_normals" );
+        RASSERT( gubffer_normals_resource != nullptr );
+
+        u32 pass_index = technique->get_pass_index( "composite_camera_motion" );
+        GpuTechniquePass& pass = technique->passes[ pass_index ];
+
+        camera_composite_pipeline = pass.pipeline;
+
+        DescriptorSetLayoutHandle common_layout = gpu.get_descriptor_set_layout( camera_composite_pipeline, k_material_descriptor_set_index );
+
+        DescriptorSetCreation ds_creation{};
+        ds_creation.reset().set_layout( common_layout );
+        ds_creation.texture( scene.motion_vector_texture, 51 );
+        ds_creation.texture( scene.visibility_motion_vector_texture, 52 );
+        ds_creation.texture( gubffer_normals_resource->resource_info.texture.handle, 53 );
+        scene.add_scene_descriptors( ds_creation, pass );
+        camera_composite_descriptor_set = gpu.create_descriptor_set( ds_creation );
+    }
+}
+
+void MotionVectorPass::upload_gpu_data( RenderScene& scene ) {
+    if ( !enabled )
+        return;
+}
+
+void MotionVectorPass::free_gpu_resources( GpuDevice& gpu ) {
+    if ( !enabled )
+        return;
+
+    gpu.destroy_descriptor_set( camera_composite_descriptor_set );
+}
+
+void MotionVectorPass::update_dependent_resources( GpuDevice& gpu, FrameGraph* frame_graph, RenderScene* render_scene ) {
+    if ( !enabled )
+        return;
+
+    gpu.destroy_descriptor_set( camera_composite_descriptor_set );
+
+    GpuTechnique* technique = renderer->resource_cache.techniques.get( hash_calculate( "fullscreen" ) );
+    if ( technique ) {
+        FrameGraphResource* gubffer_normals_resource = frame_graph->get_resource( "gbuffer_normals" );
+        RASSERT( gubffer_normals_resource != nullptr );
+
+        u32 pass_index = technique->get_pass_index( "composite_camera_motion" );
+        GpuTechniquePass& pass = technique->passes[ pass_index ];
+
+        DescriptorSetLayoutHandle common_layout = gpu.get_descriptor_set_layout( camera_composite_pipeline, k_material_descriptor_set_index );
+        DescriptorSetCreation ds_creation{};
+        ds_creation.reset().set_layout( common_layout );
+        ds_creation.texture( render_scene->motion_vector_texture, 51 );
+        ds_creation.texture( render_scene->visibility_motion_vector_texture, 52 );
+        ds_creation.texture( gubffer_normals_resource->resource_info.texture.handle, 53 );
+        render_scene->add_scene_descriptors( ds_creation, pass );
+        camera_composite_descriptor_set = gpu.create_descriptor_set( ds_creation );
+    }
 }
 
 // RenderScene ////////////////////////////////////////////////////////////
@@ -3805,8 +4244,6 @@ void RenderScene::on_resize( GpuDevice& gpu, FrameGraph* frame_graph, u32 new_wi
         lights_tiles_sb[ i ] = renderer->gpu->create_buffer( buffer_creation );
     }
 
-
-    // TODO(marco): this shouldn't be created here
     if ( use_meshlets ) {
         GpuTechnique* transparent_technique = renderer->resource_cache.techniques.get( hash_calculate( "meshlet" ) );
         u32 meshlet_technique_index = transparent_technique->get_pass_index( "transparent_no_cull" );
@@ -3825,7 +4262,7 @@ void RenderScene::on_resize( GpuDevice& gpu, FrameGraph* frame_graph, u32 new_wi
             add_mesh_descriptors( ds_creation, transparent_pass );
             add_scene_descriptors( ds_creation, transparent_pass );
             add_meshlet_descriptors( ds_creation, transparent_pass );
-            //scene.add_lighting_descriptors( ds_creation, transparent_pass, i );
+            add_lighting_descriptors( ds_creation, transparent_pass, i );
 
             mesh_shader_transparent_descriptor_set[ i ] = renderer->gpu->create_descriptor_set( ds_creation );
         }
@@ -3936,6 +4373,11 @@ void RenderScene::add_lighting_descriptors( DescriptorSetCreation& descriptor_se
     if ( binding != u16_max ) {
         descriptor_set_creation.buffer( lighting_constants_cb[ frame_index ], binding );
     }
+
+    binding = pass.get_binding_index( "as" );
+    if ( binding != u16_max ) {
+        descriptor_set_creation.set_as( tlas, binding );
+    }
 }
 
 // DrawTask ///////////////////////////////////////////////////////////////
@@ -3978,10 +4420,15 @@ void DrawTask::ExecuteRange( enki::TaskSetPartition range_, uint32_t threadnum_ 
     // Apply fullscreen material
     FrameGraphResource* texture = frame_graph->get_resource( "final" );
     RASSERT( texture != nullptr );
+    // TODO: proper handling.
+    TextureHandle output_texture = texture->resource_info.texture.handle;
+    if ( scene->taa_enabled ) {
+        output_texture = temp_taa_output;
+    }
 
-    gpu_commands->bind_pipeline( frame_renderer->fullscreen_tech->passes[ 0 ].pipeline );
+    gpu_commands->bind_pipeline( frame_renderer->main_post_pipeline );
     gpu_commands->bind_descriptor_set( &frame_renderer->fullscreen_ds, 1, nullptr, 0 );
-    gpu_commands->draw( TopologyType::Triangle, 0, 3, texture->resource_info.texture.handle.index, 1 );
+    gpu_commands->draw( TopologyType::Triangle, 0, 3, output_texture.index, 1 );
 
     imgui->render( *gpu_commands, false );
 
@@ -3995,6 +4442,18 @@ void DrawTask::ExecuteRange( enki::TaskSetPartition range_, uint32_t threadnum_ 
 }
 
 // FrameRenderer //////////////////////////////////////////////////////////
+struct alignas( 16 ) GpuPostConstants {
+
+    u32             tonemap_type;
+    f32             exposure;
+    f32             sharpening_amount;
+    f32             pad;
+
+    vec2s           mouse_uv;
+    f32             zoom_scale;
+    u32             enable_zoom;
+};
+
 void FrameRenderer::init( Allocator* resident_allocator_, Renderer* renderer_,
                           FrameGraph* frame_graph_, SceneGraph* scene_graph_,
                           RenderScene* scene_ ) {
@@ -4023,7 +4482,10 @@ void FrameRenderer::init( Allocator* resident_allocator_, Renderer* renderer_,
     add_render_pass( "depth_pyramid_pass", &depth_pyramid_pass );
     add_render_pass( "point_shadows_pass", &pointlight_shadow_pass );
     add_render_pass( "volumetric_fog_pass", &volumetric_fog_pass );
+    add_render_pass( "temporal_anti_aliasing_pass", &temporal_anti_aliasing_pass );
+    add_render_pass( "motion_vector_pass", &motion_vector_pass );
     add_render_pass( "ray_tracing_test", &ray_tracing_test_pass );
+    add_render_pass( "shadow_visibility_pass", &shadow_visiblity_pass );
 }
 
 void FrameRenderer::shutdown() {
@@ -4033,6 +4495,7 @@ void FrameRenderer::shutdown() {
     }
 
     renderer->gpu->destroy_descriptor_set( fullscreen_ds );
+    renderer->gpu->destroy_buffer( post_uniforms_buffer );
 
     render_passes.shutdown();
 }
@@ -4047,6 +4510,26 @@ void FrameRenderer::upload_gpu_data( UploadGpuDataContext& context ) {
     // TODO: move this
     mesh_occlusion_early_pass.depth_pyramid_texture_index = depth_pyramid_pass.depth_pyramid.index;
     mesh_occlusion_late_pass.depth_pyramid_texture_index = depth_pyramid_pass.depth_pyramid.index;
+
+    GpuDevice& gpu = *renderer->gpu;
+
+    // Update per mesh material buffer
+    // TODO: update only changed stuff, this is now dynamic so it can't be done.
+    MapBufferParameters cb_map = { post_uniforms_buffer, 0, 0 };
+    GpuPostConstants* gpu_constants = ( GpuPostConstants* )gpu.map_buffer( cb_map );
+    if ( gpu_constants ) {
+
+        gpu_constants->tonemap_type = scene->post_tonemap_mode;
+        gpu_constants->exposure = scene->post_exposure;
+        gpu_constants->sharpening_amount = scene->post_sharpening_amount;
+
+        gpu_constants->enable_zoom = scene->post_enable_zoom ? 1 : 0;
+        gpu_constants->zoom_scale = scene->post_zoom_scale;
+        gpu_constants->mouse_uv = vec2s{ context.last_clicked_position_left_button.x / gpu.swapchain_width,
+                                         context.last_clicked_position_left_button.y / gpu.swapchain_height };
+
+        gpu.unmap_buffer( cb_map );
+    }
 }
 
 void FrameRenderer::render( CommandBuffer* gpu_commands, RenderScene* render_scene ) {
@@ -4063,10 +4546,23 @@ void FrameRenderer::prepare_draws( StackAllocator* scratch_allocator ) {
     // Handle fullscreen pass.
     fullscreen_tech = renderer->resource_cache.techniques.get( hash_calculate( "fullscreen" ) );
 
+    u32 pass_index = fullscreen_tech->get_pass_index( "main_triangle" );
+    GpuTechniquePass& pass = fullscreen_tech->passes[ pass_index ];
+    passthrough_pipeline = pass.pipeline;
+
+    BufferCreation buffer_creation;
+    buffer_creation.reset().set( VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, ResourceUsageType::Dynamic, sizeof( GpuPostConstants ) );
+    post_uniforms_buffer = renderer->gpu->create_buffer( buffer_creation );
+
+    pass_index = fullscreen_tech->get_pass_index( "main_post" );
+    GpuTechniquePass& post_pass = fullscreen_tech->passes[ pass_index ];
+    main_post_pipeline = post_pass.pipeline;
+
     DescriptorSetCreation dsc;
-    DescriptorSetLayoutHandle descriptor_set_layout = renderer->gpu->get_descriptor_set_layout( fullscreen_tech->passes[ 0 ].pipeline, k_material_descriptor_set_index );
-    dsc.reset().buffer( scene->scene_cb, 0 ).set_layout( descriptor_set_layout );
+    DescriptorSetLayoutHandle descriptor_set_layout = renderer->gpu->get_descriptor_set_layout( main_post_pipeline, k_material_descriptor_set_index );
+    dsc.reset().buffer( scene->scene_cb, 0 ).buffer( post_uniforms_buffer, 11 ).set_layout( descriptor_set_layout );
     fullscreen_ds = renderer->gpu->create_descriptor_set( dsc );
+
 }
 
 void FrameRenderer::update_dependent_resources() {
@@ -4211,6 +4707,7 @@ void project_aabb_cubemap_negative_z( const vec3s aabb[ 2 ], f32& s_min, f32& s_
     t_max = glm_max( -aabb[ 0 ].y * rd_min, -aabb[ 0 ].y * rd_max );
 }
 
+// Numerical sequences ////////////////////////////////////////////////////
 f32 halton( i32 i, i32 b ) {
     // Creates a halton sequence of values between 0 and 1.
     // https://en.wikipedia.org/wiki/Halton_sequence
@@ -4223,6 +4720,47 @@ f32 halton( i32 i, i32 b ) {
         i = i / b;
     }
     return r;
+}
+
+// https://blog.demofox.org/2017/10/31/animating-noise-for-integration-over-time/
+f32 interleaved_gradient_noise( vec2s pixel, i32 index ) {
+    pixel = glms_vec2_adds( pixel, f32( index ) * 5.588238f );
+    const f32 noise = fmodf( 52.9829189f * fmodf( 0.06711056f * pixel.x + 0.00583715f * pixel.y, 1.0f ), 1.0f );
+    return noise;
+}
+
+vec2s halton23_sequence( i32 index ) {
+    return vec2s{ halton( index, 2 ), halton( index, 3 ) };
+}
+
+// http://extremelearning.com.au/unreasonable-effectiveness-of-quasirandom-sequences/
+vec2s m_robert_r2_sequence( i32 index ) {
+    const f32 g = 1.32471795724474602596f;
+    const f32 a1 = 1.0f / g;
+    const f32 a2 = 1.0f / (g * g);
+
+    const f32 x = fmod( 0.5f + a1 * index, 1.0f );
+    const f32 y = fmod( 0.5f + a2 * index, 1.0f );
+    return vec2s{ x, y };
+}
+
+vec2s interleaved_gradient_sequence( i32 index ) {
+    return vec2s{ interleaved_gradient_noise( {1.f, 1.f}, index ), interleaved_gradient_noise( {1.f, 2.f}, index ) };
+}
+
+// Computes a radical inverse with base 2 using crazy bit-twiddling from "Hacker's Delight"
+inline f32 radical_inverse_base2( u32 bits ) {
+    bits = ( bits << 16u ) | ( bits >> 16u );
+    bits = ( ( bits & 0x55555555u ) << 1u ) | ( ( bits & 0xAAAAAAAAu ) >> 1u );
+    bits = ( ( bits & 0x33333333u ) << 2u ) | ( ( bits & 0xCCCCCCCCu ) >> 2u );
+    bits = ( ( bits & 0x0F0F0F0Fu ) << 4u ) | ( ( bits & 0xF0F0F0F0u ) >> 4u );
+    bits = ( ( bits & 0x00FF00FFu ) << 8u ) | ( ( bits & 0xFF00FF00u ) >> 8u );
+    return f32( bits ) * 2.3283064365386963e-10f; // / 0x100000000
+}
+
+// Returns a single 2D point in a Hammersley sequence of length "numSamples", using base 1 and base 2
+vec2s hammersley_sequence( i32 index, i32 num_samples ) {
+    return vec2s{ index * 1.f / num_samples, radical_inverse_base2( u32( index ) ) };
 }
 
 // DebugRenderer //////////////////////////////////////////////////////////

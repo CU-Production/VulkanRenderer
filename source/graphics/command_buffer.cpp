@@ -597,77 +597,99 @@ void CommandBuffer::global_debug_barrier() {
     gpu_device->cmd_pipeline_barrier2( vk_command_buffer, &dependency_info );
 }
 
-void CommandBuffer::buffer_barrier( BufferHandle buffer_handle, ResourceState old_state, ResourceState new_state, QueueType::Enum source_queue_type, QueueType::Enum destination_queue_type ) {
+void CommandBuffer::issue_buffer_barrier( BufferHandle buffer_handle, ResourceState old_state, ResourceState new_state, QueueType::Enum source_queue_type, QueueType::Enum destination_queue_type ) {
 
     Buffer* buffer = gpu_device->access_buffer( buffer_handle );
     util_add_buffer_barrier_ext( gpu_device, vk_command_buffer, buffer->vk_buffer, RESOURCE_STATE_UNORDERED_ACCESS, RESOURCE_STATE_UNORDERED_ACCESS, buffer->size,
                                  VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED, source_queue_type, destination_queue_type );
 }
 
-void CommandBuffer::barrier( const ExecutionBarrier& barrier ) {
+void CommandBuffer::issue_texture_barrier( TextureHandle texture_handle, ResourceState new_state, u32 mip_level, u32 mip_count ) {
+    Texture* texture = gpu_device->access_texture( texture_handle );
+    util_add_image_barrier( gpu_device, vk_command_buffer, texture, new_state, mip_level, mip_count, TextureFormat::has_depth( texture->vk_format ) );
+}
+//
+//void CommandBuffer::barrier( const ExecutionBarrier& barrier ) {
+//
+//    if ( current_render_pass ) {
+//        vkCmdEndRenderPass( vk_command_buffer );
+//
+//        current_render_pass = nullptr;
+//        current_framebuffer = nullptr;
+//    }
+//
+//    if ( gpu_device->synchronization2_extension_present ) {
+//
+//        VkImageMemoryBarrier2KHR image_barriers[ 8 ];
+//
+//        for ( u32 i = 0; i < barrier.num_image_barriers; ++i ) {
+//            const ImageBarrier& source_barrier = barrier.image_barriers[ i ];
+//            Texture* texture = gpu_device->access_texture( source_barrier.texture );
+//
+//            VkImageMemoryBarrier2KHR& barrier = image_barriers[ i ];
+//            barrier = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2_KHR };
+//            barrier.srcAccessMask = util_to_vk_access_flags2( texture->state );
+//            barrier.srcStageMask = util_determine_pipeline_stage_flags2( barrier.srcAccessMask, QueueType::Graphics );
+//            barrier.dstAccessMask = util_to_vk_access_flags2( source_barrier.destination_state );
+//            barrier.dstStageMask = util_determine_pipeline_stage_flags2( barrier.dstAccessMask, QueueType::Graphics );
+//            barrier.oldLayout = util_to_vk_image_layout2( texture->state );
+//            barrier.newLayout = util_to_vk_image_layout2( source_barrier.destination_state );
+//            barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+//            barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+//            barrier.image = texture->vk_image;
+//            barrier.subresourceRange.aspectMask = TextureFormat::has_depth_or_stencil( texture->vk_format ) ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
+//            barrier.subresourceRange.baseArrayLayer = source_barrier.array_base_layer;
+//            barrier.subresourceRange.layerCount = source_barrier.array_layer_count;
+//            barrier.subresourceRange.baseMipLevel = source_barrier.mip_base_level;
+//            barrier.subresourceRange.levelCount = source_barrier.mip_level_count;
+//        }
+//
+//        VkBufferMemoryBarrier2KHR buffer_barriers[ 8 ];
+//
+//        for ( u32 i = 0; i < barrier.num_buffer_barriers; ++i ) {
+//            const BufferBarrier& source_barrier = barrier.buffer_barriers[ i ];
+//            Buffer* buffer = gpu_device->access_buffer( source_barrier.buffer );
+//
+//            VkBufferMemoryBarrier2KHR& barrier = buffer_barriers[ i ];
+//            barrier = { VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2_KHR };
+//            barrier.srcAccessMask = util_to_vk_access_flags2( source_barrier.source_state );
+//            barrier.srcStageMask = util_determine_pipeline_stage_flags2( barrier.srcAccessMask, QueueType::Graphics );
+//            barrier.dstAccessMask = util_to_vk_access_flags2( source_barrier.destination_state );
+//            barrier.dstStageMask = util_determine_pipeline_stage_flags2( barrier.dstAccessMask, QueueType::Graphics );
+//            barrier.buffer = buffer->vk_buffer;
+//            barrier.offset = source_barrier.offset;
+//            barrier.size = source_barrier.offset > 0 ? source_barrier.offset : buffer->size;
+//        }
+//
+//        VkDependencyInfoKHR dependency_info{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO_KHR };
+//        dependency_info.imageMemoryBarrierCount = barrier.num_image_barriers;
+//        dependency_info.pImageMemoryBarriers = image_barriers;
+//        dependency_info.pBufferMemoryBarriers = buffer_barriers;
+//        dependency_info.bufferMemoryBarrierCount = barrier.num_buffer_barriers;
+//
+//        gpu_device->vkCmdPipelineBarrier2KHR( vk_command_buffer, &dependency_info );
+//    }
+//    else {
+//        // TODO: implement
+//        RASSERT( false );
+//    }
+//}
 
-    if ( current_render_pass ) {
-        vkCmdEndRenderPass( vk_command_buffer );
+void CommandBuffer::clear_color_image( TextureHandle texture, VkClearColorValue clear_color ) {
+    Texture* vk_texture = gpu_device->access_texture( texture );
 
-        current_render_pass = nullptr;
-        current_framebuffer = nullptr;
-    }
+    VkImageSubresourceRange range{ };
+    range.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    range.baseArrayLayer= 0;
+    range.layerCount = VK_REMAINING_ARRAY_LAYERS;
+    range.baseMipLevel = 0;
+    range.levelCount = VK_REMAINING_MIP_LEVELS;
 
-    if ( gpu_device->synchronization2_extension_present ) {
+    ResourceState old_state = vk_texture->state;
 
-        VkImageMemoryBarrier2 image_barriers[ 8 ];
+    util_add_image_barrier( gpu_device, vk_command_buffer, vk_texture, ResourceState::RESOURCE_STATE_COPY_DEST, 0, VK_REMAINING_MIP_LEVELS, false );
 
-        for ( u32 i = 0; i < barrier.num_image_barriers; ++i ) {
-            const ImageBarrier& source_barrier = barrier.image_barriers[ i ];
-            Texture* texture = gpu_device->access_texture( source_barrier.texture );
-
-            VkImageMemoryBarrier2& barrier = image_barriers[ i ];
-            barrier = { VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2 };
-            barrier.srcAccessMask = util_to_vk_access_flags2( texture->state );
-            barrier.srcStageMask = util_determine_pipeline_stage_flags2( barrier.srcAccessMask, QueueType::Graphics );
-            barrier.dstAccessMask = util_to_vk_access_flags2( source_barrier.destination_state );
-            barrier.dstStageMask = util_determine_pipeline_stage_flags2( barrier.dstAccessMask, QueueType::Graphics );
-            barrier.oldLayout = util_to_vk_image_layout2( texture->state );
-            barrier.newLayout = util_to_vk_image_layout2( source_barrier.destination_state );
-            barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-            barrier.image = texture->vk_image;
-            barrier.subresourceRange.aspectMask = TextureFormat::has_depth_or_stencil( texture->vk_format ) ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
-            barrier.subresourceRange.baseArrayLayer = source_barrier.array_base_layer;
-            barrier.subresourceRange.layerCount = source_barrier.array_layer_count;
-            barrier.subresourceRange.baseMipLevel = source_barrier.mip_base_level;
-            barrier.subresourceRange.levelCount = source_barrier.mip_level_count;
-        }
-
-        VkBufferMemoryBarrier2 buffer_barriers[ 8 ];
-
-        for ( u32 i = 0; i < barrier.num_buffer_barriers; ++i ) {
-            const BufferBarrier& source_barrier = barrier.buffer_barriers[ i ];
-            Buffer* buffer = gpu_device->access_buffer( source_barrier.buffer );
-
-            VkBufferMemoryBarrier2& barrier = buffer_barriers[ i ];
-            barrier = { VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2 };
-            barrier.srcAccessMask = util_to_vk_access_flags2( source_barrier.source_state );
-            barrier.srcStageMask = util_determine_pipeline_stage_flags2( barrier.srcAccessMask, QueueType::Graphics );
-            barrier.dstAccessMask = util_to_vk_access_flags2( source_barrier.destination_state );
-            barrier.dstStageMask = util_determine_pipeline_stage_flags2( barrier.dstAccessMask, QueueType::Graphics );
-            barrier.buffer = buffer->vk_buffer;
-            barrier.offset = source_barrier.offset;
-            barrier.size = source_barrier.offset > 0 ? source_barrier.offset : buffer->size;
-        }
-
-        VkDependencyInfoKHR dependency_info{ VK_STRUCTURE_TYPE_DEPENDENCY_INFO_KHR };
-        dependency_info.imageMemoryBarrierCount = barrier.num_image_barriers;
-        dependency_info.pImageMemoryBarriers = image_barriers;
-        dependency_info.pBufferMemoryBarriers = buffer_barriers;
-        dependency_info.bufferMemoryBarrierCount = barrier.num_buffer_barriers;
-
-        gpu_device->cmd_pipeline_barrier2( vk_command_buffer, &dependency_info );
-    }
-    else {
-        // TODO: implement
-        RASSERT( false );
-    }
+    vkCmdClearColorImage( vk_command_buffer, vk_texture->vk_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clear_color, 1, &range );
 }
 
 void CommandBuffer::fill_buffer( BufferHandle buffer, u32 offset, u32 size, u32 data ) {

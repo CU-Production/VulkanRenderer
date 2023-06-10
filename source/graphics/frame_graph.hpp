@@ -69,6 +69,7 @@ struct FrameGraphResourceInfo {
     FrameGraphResourceInfo&                 set_buffer( sizet size, VkBufferUsageFlags flags, BufferHandle handle );
 
     FrameGraphResourceInfo&                 set_external_texture_2d( u32 width, u32 height, VkFormat format, VkImageUsageFlags flags, TextureHandle handle );
+    FrameGraphResourceInfo&                 set_external_texture_3d( u32 width, u32 height, u32 depth, VkFormat format, VkImageUsageFlags flags, TextureHandle handle );
 
 }; // struct FrameGraphResourceInfo
 
@@ -233,6 +234,8 @@ struct FrameGraph {
     void                            add_ui();
     void                            render( u32 current_frame_index, CommandBuffer* gpu_commands, RenderScene* render_scene );
     void                            on_resize( GpuDevice& gpu, u32 new_width, u32 new_height );
+
+    void                            debug_ui();
 
     void                            add_node( FrameGraphNodeCreation& creation );
     FrameGraphNode*                 get_node( cstring name );

@@ -16,7 +16,7 @@ layout ( std140, set = MATERIAL_SET, binding = 0 ) uniform SceneConstants {
     vec4        camera_position;
     vec4        camera_position_debug;
     vec3        camera_direction;
-    float       pad_sc_000;
+    int         current_frame;
 
     uint        active_lights;
     uint        use_tetrahedron_shadows;
@@ -33,17 +33,29 @@ layout ( std140, set = MATERIAL_SET, binding = 0 ) uniform SceneConstants {
     uint        num_mesh_instances;
 
     vec2        halton_xy;
-    uint        volumetric_fog_opacity_anti_aliasing;
-    float       pad_sc_002;
+    uint        depth_texture_index;
+    uint        blue_noise_128_rg_texture_index;
+
+    vec2        jitter_xy;
+    vec2        previous_jitter_xy;
+
+    float       forced_metalness;
+    float       forced_roughness;
+    float       volumetric_fog_application_dithering_scale;
+    uint        volumetric_fog_application_options;
 
     vec4        frustum_planes[6];
 };
 
 bool enable_volumetric_fog_opacity_anti_aliasing() {
-    return volumetric_fog_opacity_anti_aliasing > 0;
+    return (volumetric_fog_application_options & 1) == 1;
 }
 
+bool enable_volumetric_fog_opacity_tricubic_filtering() {
+    return (volumetric_fog_application_options & 2) == 2;
+}
 
+// Options ///////////////////////////////////////////////////////////////
 bool disable_frustum_cull_meshes() {
     return (culling_options & 1) != 1;
 }

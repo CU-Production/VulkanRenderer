@@ -74,7 +74,7 @@ namespace raptor {
         vec4s                   camera_position;
         vec4s                   camera_position_debug;
         vec3s                   camera_direction;
-        f32                     pad0_;
+        i32                     current_frame;
 
         u32                     active_lights;
         u32                     use_tetrahedron_shadows;
@@ -93,8 +93,16 @@ namespace raptor {
 
         f32                     halton_x;
         f32                     halton_y;
-        u32                     volumetric_fog_opacity_anti_aliasing;
-        f32                     pad2_;
+        u32                     depth_texture_index;
+        u32                     blue_noise_128_rg_texture_index;
+
+        vec2s                   jitter_xy;
+        vec2s                   previous_jitter_xy;
+
+        f32                     forced_metalness;
+        f32                     forced_roughness;
+        f32                     volumetric_fog_application_dithering_scale;
+        u32                     volumetric_fog_application_options;
 
         vec4s                   frustum_planes[ 6 ];
 
@@ -132,7 +140,7 @@ namespace raptor {
         u32                     disable_shadows;
         u32                     debug_modes;
         u32                     debug_texture_index;
-        u32                     padding0;
+        u32                     shadow_visibility_texture_index;
 
         u32                     volumetric_fog_texture_index;
         u32                     volumetric_fog_num_slices;
@@ -547,6 +555,8 @@ namespace raptor {
         GameCamera&             game_camera;
         StackAllocator*         scratch_allocator;
 
+        vec2s                   last_clicked_position_left_button;
+
         u8                      skip_invisible_lights       : 1;
         u8                      use_mcguire_method          : 1;
         u8                      use_view_aabb               : 1;
@@ -583,12 +593,12 @@ namespace raptor {
 
         f32                     height_fog_density;
         f32                     height_fog_falloff;
-        i32                     current_frame;
+        f32                     pad1;
         f32                     noise_scale;
 
-        f32                     integration_noise_scale;
+        f32                     lighting_noise_scale;
         u32                     noise_type;
-        u32                     blue_noise_128_rg_texture_index;
+        u32                     pad0;
         u32                     use_spatial_filtering;
 
         u32                     volumetric_noise_texture_index;
@@ -603,6 +613,26 @@ namespace raptor {
         u32                     box_color;
 
     }; // struct GpuVolumetricFogConstants
+
+    //
+    struct alignas( 16 ) GpuTaaConstants {
+
+        u32                     history_color_texture_index;
+        u32                     taa_output_texture_index;
+        u32                     velocity_texture_index;
+        u32                     current_color_texture_index;
+
+        u32                     taa_modes;
+        u32                     options;
+        u32                     pad0;
+        u32                     pad1;
+
+        u32                     velocity_sampling_mode;
+        u32                     history_sampling_filter;
+        u32                     history_constraint_mode;
+        u32                     current_color_filter;
+
+    }; // struct GpuTaaConstants
 
     // Render Passes //////////////////////////////////////////////////////
 
@@ -833,6 +863,54 @@ namespace raptor {
 
     //
     //
+    struct TemporalAntiAliasingPass : public FrameGraphRenderPass {
+
+        void                    pre_render( u32 current_frame_index, CommandBuffer* gpu_commands, FrameGraph* frame_graph, RenderScene* render_scene ) override;
+        void                    render( u32 current_frame_index, CommandBuffer* gpu_commands, RenderScene* render_scene ) override;
+
+        void                    on_resize( GpuDevice& gpu, FrameGraph* frame_graph, u32 new_width, u32 new_height ) override;
+
+        void                    prepare_draws( RenderScene& scene, FrameGraph* frame_graph, Allocator* resident_allocator, StackAllocator* scratch_allocator ) override;
+        void                    upload_gpu_data( RenderScene& scene ) override;
+        void                    free_gpu_resources( GpuDevice& gpu ) override;
+
+        void                    update_dependent_resources( GpuDevice& gpu, FrameGraph* frame_graph, RenderScene* render_scene ) override;
+
+        PipelineHandle          taa_pipeline;
+        TextureHandle           history_textures[ 2 ];
+        DescriptorSetHandle     taa_descriptor_set;
+        BufferHandle            taa_constants;
+
+        u32                     current_history_texture_index = 1;
+        u32                     previous_history_texture_index = 0;
+
+        Renderer*               renderer;
+
+    }; // struct TemporalAntiAliasingPass
+
+    //
+    //
+    struct MotionVectorPass : public FrameGraphRenderPass {
+
+        void                    pre_render( u32 current_frame_index, CommandBuffer* gpu_commands, FrameGraph* frame_graph, RenderScene* render_scene ) override;
+        void                    render( u32 current_frame_index, CommandBuffer* gpu_commands, RenderScene* render_scene ) override;
+
+        void                    on_resize( GpuDevice& gpu, FrameGraph* frame_graph, u32 new_width, u32 new_height ) override;
+
+        void                    prepare_draws( RenderScene& scene, FrameGraph* frame_graph, Allocator* resident_allocator, StackAllocator* scratch_allocator ) override;
+        void                    upload_gpu_data( RenderScene& scene ) override;
+        void                    free_gpu_resources( GpuDevice& gpu ) override;
+
+        void                    update_dependent_resources( GpuDevice& gpu, FrameGraph* frame_graph, RenderScene* render_scene ) override;
+
+        PipelineHandle          camera_composite_pipeline;
+        DescriptorSetHandle     camera_composite_descriptor_set;
+        Renderer*               renderer;
+
+    }; // struct MotionVectorPass
+
+    //
+    //
     struct DebugPass : public FrameGraphRenderPass {
         void                    render( u32 current_frame_index, CommandBuffer* gpu_commands, RenderScene* render_scene ) override;
         void                    pre_render( u32 current_frame_index, CommandBuffer* gpu_commands, FrameGraph* frame_graph, RenderScene* render_scene ) override;
@@ -966,7 +1044,60 @@ namespace raptor {
         PipelineHandle          pipeline;
         DescriptorSetHandle     descriptor_set[ k_max_frames ];
         TextureHandle           render_target;
+        bool                    owns_render_target;
         BufferHandle            uniform_buffer[ k_max_frames ];
+
+    }; // struct RayTracingTestPass
+
+    //
+    //
+    struct ShadowVisbilityPass : public FrameGraphRenderPass {
+        struct GpuShadowVisibilityConstants {
+            u32 visibility_cache_texture_index;
+            u32 variation_texture_index;
+            u32 variation_cache_texture_index;
+            u32 samples_count_cache_texture_index;
+
+            u32 motion_vectors_texture_index;
+            u32 normals_texture_index;
+            u32 filtered_visibility_texture;
+            u32 filetered_variation_texture;
+
+            u32 frame_index;
+        };
+
+        void                    render( u32 current_frame_index, CommandBuffer* gpu_commands, RenderScene* render_scene ) override;
+        void                    on_resize( GpuDevice& gpu, FrameGraph* frame_graph, u32 new_width, u32 new_height ) override;
+
+        void                    prepare_draws( RenderScene& scene, FrameGraph* frame_graph, Allocator* resident_allocator, StackAllocator* scratch_allocator ) override;
+        void                    upload_gpu_data( RenderScene& scene ) override;
+        void                    free_gpu_resources( GpuDevice& gpu ) override;
+
+        void                    recreate_textures( GpuDevice& gpu, u32 lights_count );
+
+        Renderer*               renderer;
+
+        PipelineHandle          variance_pipeline;
+        PipelineHandle          visibility_pipeline;
+        PipelineHandle          visibility_filtering_pipeline;
+        DescriptorSetHandle     descriptor_set[ k_max_frames ];
+
+        TextureHandle           variation_texture;
+        TextureHandle           variation_cache_texture;
+        TextureHandle           visibility_cache_texture;
+        TextureHandle           samples_count_cache_texture;
+
+        TextureHandle           filtered_visibility_texture;
+        TextureHandle           filtered_variation_texture;
+
+        TextureHandle           normals_texture;
+
+        BufferHandle            gpu_pass_constants;
+
+        FrameGraphResource*     shadow_visibility_resource;
+
+        bool                    clear_resources;
+        u32                     last_active_lights_count = 0;
 
     }; // struct RayTracingTestPass
 
@@ -1097,6 +1228,8 @@ namespace raptor {
         BufferHandle            meshlet_instances_indirect_count_sb[ k_max_frames ];
 
         TextureHandle           fragment_shading_rate_image;
+        TextureHandle           motion_vector_texture;
+        TextureHandle           visibility_motion_vector_texture;
 
         Array<VkAccelerationStructureGeometryKHR> geometries;
         Array<VkAccelerationStructureBuildRangeInfoKHR> build_range_infos;
@@ -1125,6 +1258,10 @@ namespace raptor {
         bool                    cubemap_face_debug_enabled = false;
         u32                     blue_noise_128_rg_texture_index = 0;
 
+        // PBR
+        f32                     forced_metalness = -1.f;
+        f32                     forced_roughness = -1.f;
+
         // Volumetric Fog controls
         u32                     volumetric_fog_texture_index = 0;
         u32                     volumetric_fog_tile_size = 16;
@@ -1141,7 +1278,7 @@ namespace raptor {
         f32                     volumetric_fog_height_fog_density = 0.0f;
         f32                     volumetric_fog_height_fog_falloff = 1.0f;
         f32                     volumetric_fog_noise_scale = 0.5f;
-        f32                     volumetric_fog_integration_noise_scale = 0.25f;
+        f32                     volumetric_fog_lighting_noise_scale = 0.11f;
         u32                     volumetric_fog_noise_type = 0;
         f32                     volumetric_fog_noise_position_scale = 1.0f;
         f32                     volumetric_fog_noise_speed_scale = 0.2f;
@@ -1149,8 +1286,28 @@ namespace raptor {
         vec3s                   volumetric_fog_box_size = vec3s{ 1.f, 2.f, 0.5f };
         f32                     volumetric_fog_box_density = 3.0f;
         u32                     volumetric_fog_box_color = raptor::Color::green;
-        f32                     volumetric_fog_temporal_reprojection_jittering_scale = 1.6f;
-        bool                    volumetric_fog_application_apply_opacity_anti_aliasing = true;
+        f32                     volumetric_fog_temporal_reprojection_jittering_scale = 0.2f;
+        f32                     volumetric_fog_application_dithering_scale = 0.005f;
+        bool                    volumetric_fog_application_apply_opacity_anti_aliasing = false;
+        bool                    volumetric_fog_application_apply_tricubic_filtering = false;
+        // Temporal Anti-Aliasing
+        bool                    taa_enabled = true;
+        bool                    taa_jittering_enabled = true;
+        i32                     taa_mode = 1;
+        bool                    taa_use_inverse_luminance_filtering = true;
+        bool                    taa_use_temporal_filtering = true;
+        bool                    taa_use_luminance_difference_filtering = true;
+        bool                    taa_use_ycocg = false;
+        i32                     taa_velocity_sampling_mode = 1;
+        i32                     taa_history_sampling_filter = 1;
+        i32                     taa_history_constraint_mode = 4;
+        i32                     taa_current_color_filter = 1;
+        // Post process
+        i32                     post_tonemap_mode = 0;
+        f32                     post_exposure = 1.0f;
+        f32                     post_sharpening_amount = 0.1f;
+        u32                     post_zoom_scale = 2;
+        bool                    post_enable_zoom = false;
 
         bool                    use_meshlets = true;
         bool                    use_meshlets_emulation = false;
@@ -1203,11 +1360,17 @@ namespace raptor {
         DepthPyramidPass        depth_pyramid_pass;
         PointlightShadowPass    pointlight_shadow_pass;
         VolumetricFogPass       volumetric_fog_pass;
+        TemporalAntiAliasingPass temporal_anti_aliasing_pass;
+        MotionVectorPass        motion_vector_pass;
         RayTracingTestPass      ray_tracing_test_pass;
+        ShadowVisbilityPass     shadow_visiblity_pass;
 
         // Fullscreen data
         GpuTechnique*           fullscreen_tech = nullptr;
         DescriptorSetHandle     fullscreen_ds;
+        PipelineHandle          passthrough_pipeline;
+        PipelineHandle          main_post_pipeline;
+        BufferHandle            post_uniforms_buffer;
 
     }; // struct FrameRenderer
 
@@ -1250,6 +1413,13 @@ namespace raptor {
     void                        project_aabb_cubemap_positive_z( const vec3s aabb[ 2 ], f32& s_min, f32& s_max, f32& t_min, f32& t_max );
     void                        project_aabb_cubemap_negative_z( const vec3s aabb[ 2 ], f32& s_min, f32& s_max, f32& t_min, f32& t_max );
 
+    // Numerical sequences, used to calculate jittering values.
     f32                         halton( i32 i, i32 b );
+    f32                         interleaved_gradient_noise( vec2s pixel, i32 index );
+
+    vec2s                       halton23_sequence( i32 index );
+    vec2s                       m_robert_r2_sequence( i32 index );
+    vec2s                       interleaved_gradient_sequence( i32 index );
+    vec2s                       hammersley_sequence( i32 index, i32 num_samples );
 
 } // namespace raptor

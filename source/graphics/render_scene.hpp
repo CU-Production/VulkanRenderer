@@ -399,6 +399,10 @@ namespace raptor {
         u32                     meshlet_index_count;
         u32                     padding1_;
 
+        VkDeviceAddress         position_buffer;
+        VkDeviceAddress         uv_buffer;
+        VkDeviceAddress         index_buffer;
+        uint64_t                padding2_;
     }; // struct GpuMaterialData
 
     //
@@ -1138,7 +1142,7 @@ namespace raptor {
     struct RenderScene {
         virtual                 ~RenderScene() { };
 
-        virtual void            init( cstring filename, cstring path, Allocator* resident_allocator, StackAllocator* temp_allocator, AsynchronousLoader* async_loader ) { };
+        virtual void            init( cstring filename, cstring path, SceneGraph* scene_graph, Allocator* resident_allocator, StackAllocator* temp_allocator, AsynchronousLoader* async_loader ) { };
         virtual void            shutdown( Renderer* renderer ) { };
 
         void                    on_resize( GpuDevice& gpu, FrameGraph* frame_graph, u32 new_width, u32 new_height );
@@ -1180,7 +1184,7 @@ namespace raptor {
         Array<Light>            lights;
         Array<u32>              lights_lut;
         vec3s                   mesh_aabb[2]; // 0 min, 1 max
-        u32                     active_lights   = 1;
+        u32                     active_lights   = 8;
         bool                    shadow_constants_cpu_update = true;
 
         StringBuffer            names_buffer;   // Buffer containing all names of nodes, resources, etc.
@@ -1226,6 +1230,8 @@ namespace raptor {
         BufferHandle            mesh_task_indirect_late_commands_sb[ k_max_frames ];
 
         BufferHandle            meshlet_instances_indirect_count_sb[ k_max_frames ];
+
+        BufferHandle            geometry_transform_buffer;
 
         TextureHandle           fragment_shading_rate_image;
         TextureHandle           motion_vector_texture;
@@ -1291,7 +1297,7 @@ namespace raptor {
         bool                    volumetric_fog_application_apply_opacity_anti_aliasing = false;
         bool                    volumetric_fog_application_apply_tricubic_filtering = false;
         // Temporal Anti-Aliasing
-        bool                    taa_enabled = true;
+        bool                    taa_enabled = false;
         bool                    taa_jittering_enabled = true;
         i32                     taa_mode = 1;
         bool                    taa_use_inverse_luminance_filtering = true;

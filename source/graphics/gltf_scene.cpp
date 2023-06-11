@@ -128,10 +128,11 @@ u16 glTFScene::get_material_texture( GpuDevice& gpu, i32 gltf_texture_index ) {
     }
 }
 
-void glTFScene::init( cstring filename, cstring path, Allocator* resident_allocator_, StackAllocator* temp_allocator, AsynchronousLoader* async_loader ) {
+void glTFScene::init( cstring filename, cstring path, SceneGraph* scene_graph_, Allocator* resident_allocator_, StackAllocator* temp_allocator, AsynchronousLoader* async_loader ) {
 
     resident_allocator = resident_allocator_;
     renderer = async_loader->renderer;
+    scene_graph = scene_graph_;
 
     enki::TaskScheduler* task_scheduler = async_loader->task_scheduler;
     sizet temp_allocator_initial_marker = temp_allocator->get_marker();
@@ -579,11 +580,173 @@ void glTFScene::init( cstring filename, cstring path, Allocator* resident_alloca
         }
     }
 
-    geometries.init( resident_allocator, meshes.size );
-    build_range_infos.init( resident_allocator, geometries.size );
+    // Init mesh instances with at least meshes count.
+    mesh_instances.init( resident_allocator_, meshes.size );
 
-    for ( u32 mesh_index = 0; mesh_index < meshes.size; ++mesh_index ) {
-        Mesh& mesh = meshes[ mesh_index ];
+    // Create material
+    const u64 hashed_name = hash_calculate( "main" );
+    GpuTechnique* main_technique = renderer->resource_cache.techniques.get( hashed_name );
+
+    MaterialCreation material_creation;
+    material_creation.set_name( "material_no_cull_opaque" ).set_technique( main_technique ).set_render_index( 0 );
+
+    Material* pbr_material = renderer->create_material( material_creation );
+
+    glTF::Scene& root_gltf_scene = gltf_scene.scenes[ gltf_scene.scene ];
+
+    //
+    Array<i32> nodes_to_visit;
+    nodes_to_visit.init( temp_allocator, 4 );
+
+    // Calculate total node count: add first the root nodes.
+    u32 total_node_count = root_gltf_scene.nodes_count;
+
+    // Add initial nodes
+    for ( u32 node_index = 0; node_index < root_gltf_scene.nodes_count; ++node_index ) {
+        const i32 node = root_gltf_scene.nodes[ node_index ];
+        nodes_to_visit.push( node );
+    }
+    // Visit nodes
+    while ( nodes_to_visit.size ) {
+        i32 node_index = nodes_to_visit.front();
+        nodes_to_visit.delete_swap( 0 );
+
+        glTF::Node& node = gltf_scene.nodes[ node_index ];
+        for ( u32 ch = 0; ch < node.children_count; ++ch ) {
+            const i32 children_index = node.children[ ch ];
+            nodes_to_visit.push( children_index );
+        }
+
+        // Add only children nodes to the count, as the current node is
+        // already calculated when inserting it.
+        total_node_count += node.children_count;
+    }
+
+    scene_graph->resize( total_node_count );
+
+    // Populate scene graph: visit again
+    nodes_to_visit.clear();
+    // Add initial nodes
+    for ( u32 node_index = 0; node_index < root_gltf_scene.nodes_count; ++node_index ) {
+        const i32 node = root_gltf_scene.nodes[ node_index ];
+        nodes_to_visit.push( node );
+    }
+
+    u32 total_meshlets = 0;
+
+    while ( nodes_to_visit.size ) {
+        i32 node_index = nodes_to_visit.front();
+        nodes_to_visit.delete_swap( 0 );
+
+        glTF::Node& node = gltf_scene.nodes[ node_index ];
+
+        // Compute local transform: read either raw matrix or individual Scale/Rotation/Translation components
+        if ( node.matrix_count ) {
+            // CGLM and glTF have the same matrix layout, just memcopy it
+            memcpy( &scene_graph->local_matrices[ node_index ], node.matrix, sizeof( mat4s ) );
+            scene_graph->updated_nodes.set_bit( node_index );
+        }
+        else {
+            // Handle individual transform components: SRT (scale, rotation, translation)
+            vec3s node_scale{ 1.0f, 1.0f, 1.0f };
+            if ( node.scale_count ) {
+                RASSERT( node.scale_count == 3 );
+                node_scale = vec3s{ node.scale[ 0 ], node.scale[ 1 ], node.scale[ 2 ] };
+            }
+
+            vec3s node_translation{ 0.f, 0.f, 0.f };
+            if ( node.translation_count ) {
+                RASSERT( node.translation_count == 3 );
+                node_translation = vec3s{ node.translation[ 0 ], node.translation[ 1 ], node.translation[ 2 ] };
+            }
+
+            // Rotation is written as a plain quaternion
+            versors node_rotation = glms_quat_identity();
+            if ( node.rotation_count ) {
+                RASSERT( node.rotation_count == 4 );
+                node_rotation = glms_quat_init( node.rotation[ 0 ], node.rotation[ 1 ], node.rotation[ 2 ], node.rotation[ 3 ] );
+            }
+
+            Transform transform;
+            transform.translation = node_translation;
+            transform.scale = node_scale;
+            transform.rotation = node_rotation;
+
+            // Final SRT composition
+            const mat4s local_matrix = transform.calculate_matrix();
+            scene_graph->set_local_matrix( node_index, local_matrix );
+        }
+
+        // Handle parent-relationship
+        if ( node.children_count ) {
+            const Hierarchy& node_hierarchy = scene_graph->nodes_hierarchy[ node_index ];
+
+            for ( u32 ch = 0; ch < node.children_count; ++ch) {
+                const i32 children_index = node.children[ ch ];
+                Hierarchy& children_hierarchy = scene_graph->nodes_hierarchy[ children_index ];
+                scene_graph->set_hierarchy( children_index, node_index, node_hierarchy.level + 1 );
+
+                nodes_to_visit.push( children_index );
+            }
+        }
+
+        // Cache node name
+        scene_graph->set_debug_data( node_index, node.name.data );
+
+        if ( node.mesh == glTF::INVALID_INT_VALUE ) {
+            continue;
+        }
+
+        // Start mesh part
+        glTF::Mesh& gltf_mesh = gltf_scene.meshes[ node.mesh ];
+        u32 gltf_mesh_offset = gltf_mesh_to_mesh_offset[ node.mesh ];
+
+        // Gltf primitives are conceptually submeshes.
+        for ( u32 primitive_index = 0; primitive_index < gltf_mesh.primitives_count; ++primitive_index ) {
+            MeshInstance mesh_instance{ };
+            // Assign scene graph node index
+            mesh_instance.scene_graph_node_index = node_index;
+
+            glTF::MeshPrimitive& mesh_primitive = gltf_mesh.primitives[ primitive_index ];
+
+            // Cache parent mesh and assign material
+            u32 mesh_primitive_index = gltf_mesh_offset + primitive_index;
+            mesh_instance.mesh = &meshes[ mesh_primitive_index ];
+            mesh_instance.mesh->pbr_material.material = pbr_material;
+            // Cache gpu mesh instance index, used to retrieve data on gpu.
+            mesh_instance.gpu_mesh_instance_index = mesh_instances.size;
+
+            // Found a skin index, cache it
+            mesh_instance.mesh->skin_index = i32_max;
+            if ( node.skin != glTF::INVALID_INT_VALUE ) {
+                RASSERT( node.skin < skins.size );
+
+                mesh_instance.mesh->skin_index = node.skin;
+            }
+
+            total_meshlets += mesh_instance.mesh->meshlet_count;
+
+            mesh_instances.push( mesh_instance );
+        }
+    }
+
+    rprint( "Total meshlet instances %u\n", total_meshlets );
+
+    sizet geometry_transform_buffer_size = sizeof( VkTransformMatrixKHR ) * meshes.size;
+    BufferCreation bc{};
+    bc.set( VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT_KHR, ResourceUsageType::Immutable, geometry_transform_buffer_size ).set_persistent( true ).set_name( "geometry_transform_buffer" );
+    geometry_transform_buffer = renderer->gpu->create_buffer( bc );
+
+    geometries.init( resident_allocator, mesh_instances.size );
+    build_range_infos.init( resident_allocator, mesh_instances.size );
+
+    Array<VkTransformMatrixKHR> geometry_transform;
+    geometry_transform.init( temp_allocator, mesh_instances.size, mesh_instances.size );
+
+    for ( u32 mesh_index = 0; mesh_index < mesh_instances.size; ++mesh_index ) {
+        MeshInstance& mesh_instance = mesh_instances[ mesh_index ];
+        RASSERT( mesh_instance.mesh != nullptr );
+        Mesh& mesh = *mesh_instance.mesh;
 
         VkAccelerationStructureGeometryKHR geometry{ VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR };
         geometry.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
@@ -597,20 +760,32 @@ void glTFScene::init( cstring filename, cstring path, Allocator* resident_alloca
         geometry.geometry.triangles.vertexStride = sizeof( float ) * 3;
         geometry.geometry.triangles.maxVertex = vertex_count;
         geometry.geometry.triangles.indexType = mesh.index_type;
-        geometry.geometry.triangles.indexData.deviceAddress = renderer->gpu->get_buffer_device_address( mesh.index_buffer );
+        geometry.geometry.triangles.indexData.deviceAddress = renderer->gpu->get_buffer_device_address( mesh.index_buffer ) + mesh.index_offset;
+        geometry.geometry.triangles.transformData.deviceAddress = renderer->gpu->get_buffer_device_address( geometry_transform_buffer );
 
         geometries.push( geometry );
 
         VkAccelerationStructureBuildRangeInfoKHR build_range_info{ };
         build_range_info.primitiveCount = vertex_count;
-        build_range_info.primitiveOffset = mesh.index_offset;
+        build_range_info.primitiveOffset = 0;
+        build_range_info.transformOffset = sizeof( VkTransformMatrixKHR ) * mesh_index;
 
         build_range_infos.push( build_range_info );
+
+        mat4s& local_transform = scene_graph->local_matrices[ mesh_instance.scene_graph_node_index ];
+        VkTransformMatrixKHR& transform = geometry_transform[ mesh_index ];
+        for ( int y = 0; y < 3; ++y ) {
+            for ( int x = 0; x < 4; ++x ) {
+                transform.matrix[ y ][ x ] = local_transform.raw[ y ][ x ];
+            }
+        }
     }
 
+    Buffer* gpu_geometry_transform_buffer = renderer->gpu->access_buffer( geometry_transform_buffer );
+    memcpy( gpu_geometry_transform_buffer->mapped_data, geometry_transform.data, geometry_transform.size * sizeof( VkTransformMatrixKHR ) );
+
     // Create meshlets index buffer, that will be used to emulate meshlets if mesh shaders are not present.
-    BufferCreation bc{};
-    bc.set( VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, ResourceUsageType::Stream, meshlets_index_count * sizeof( u32 ) * 8 ).set_name( "meshlets_index_buffer" );
+    bc.reset().set( VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, ResourceUsageType::Stream, meshlets_index_count * sizeof( u32 ) * 8 ).set_name( "meshlets_index_buffer" );
 
     for ( u32 i = 0; i < k_max_frames; ++i ) {
         meshlets_index_buffer_sb[ i ] = renderer->gpu->create_buffer( bc );
@@ -772,9 +947,6 @@ void glTFScene::init( cstring filename, cstring path, Allocator* resident_alloca
     //resource_name_buffer.shutdown();
     temp_allocator->free_marker( temp_allocator_initial_marker );
 
-    // Init mesh instances with at least meshes count.
-    mesh_instances.init( resident_allocator_, meshes.size );
-
     i64 end_loading = time_now();
 
     rprint( "Loaded scene %s in %f seconds.\nStats:\n\tReading GLTF file %f seconds\n\tTextures Creating %f seconds\n\tCreating Samplers %f seconds\n\tReading Buffers Data %f seconds\n\tCreating Buffers %f seconds\n", filename,
@@ -839,6 +1011,8 @@ void glTFScene::shutdown( Renderer* renderer ) {
     gpu.destroy_buffer( debug_line_count_sb );
     gpu.destroy_buffer( debug_line_commands_sb );
 
+    gpu.destroy_buffer( geometry_transform_buffer );
+
     for ( u32 i = 0; i < k_max_frames; ++i ) {
         gpu.destroy_buffer( meshlets_index_buffer_sb[ i ] );
         gpu.destroy_buffer( meshlets_instances_sb[ i ] );
@@ -900,8 +1074,6 @@ void glTFScene::shutdown( Renderer* renderer ) {
 
 void glTFScene::prepare_draws( Renderer* renderer, StackAllocator* scratch_allocator, SceneGraph* scene_graph_ ) {
 
-    scene_graph = scene_graph_;
-
     sizet cached_scratch_size = scratch_allocator->get_marker();
 
     // Scene constant buffer
@@ -917,155 +1089,6 @@ void glTFScene::prepare_draws( Renderer* renderer, StackAllocator* scratch_alloc
 
     buffer_creation.reset().set( VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, ResourceUsageType::Immutable, sizeof( GpuMeshletVertexData ) * meshlets_vertex_data.size ).set_name( "meshlet_vertex_sb" ).set_data( meshlets_vertex_data.data );
     meshlets_vertex_data_sb = renderer->gpu->create_buffer( buffer_creation );
-
-    // Create material
-    const u64 hashed_name = hash_calculate( "main" );
-    GpuTechnique* main_technique = renderer->resource_cache.techniques.get( hashed_name );
-
-    MaterialCreation material_creation;
-    material_creation.set_name( "material_no_cull_opaque" ).set_technique( main_technique ).set_render_index( 0 );
-
-    Material* pbr_material = renderer->create_material( material_creation );
-
-    glTF::Scene& root_gltf_scene = gltf_scene.scenes[ gltf_scene.scene ];
-
-    //
-    Array<i32> nodes_to_visit;
-    nodes_to_visit.init( scratch_allocator, 4 );
-
-    // Calculate total node count: add first the root nodes.
-    u32 total_node_count = root_gltf_scene.nodes_count;
-
-    // Add initial nodes
-    for ( u32 node_index = 0; node_index < root_gltf_scene.nodes_count; ++node_index ) {
-        const i32 node = root_gltf_scene.nodes[ node_index ];
-        nodes_to_visit.push( node );
-    }
-    // Visit nodes
-    while ( nodes_to_visit.size ) {
-        i32 node_index = nodes_to_visit.front();
-        nodes_to_visit.delete_swap( 0 );
-
-        glTF::Node& node = gltf_scene.nodes[ node_index ];
-        for ( u32 ch = 0; ch < node.children_count; ++ch ) {
-            const i32 children_index = node.children[ ch ];
-            nodes_to_visit.push( children_index );
-        }
-
-        // Add only children nodes to the count, as the current node is
-        // already calculated when inserting it.
-        total_node_count += node.children_count;
-    }
-
-    scene_graph->resize( total_node_count );
-
-    // Populate scene graph: visit again
-    nodes_to_visit.clear();
-    // Add initial nodes
-    for ( u32 node_index = 0; node_index < root_gltf_scene.nodes_count; ++node_index ) {
-        const i32 node = root_gltf_scene.nodes[ node_index ];
-        nodes_to_visit.push( node );
-    }
-
-    u32 total_meshlets = 0;
-
-    while ( nodes_to_visit.size ) {
-        i32 node_index = nodes_to_visit.front();
-        nodes_to_visit.delete_swap( 0 );
-
-        glTF::Node& node = gltf_scene.nodes[ node_index ];
-
-        // Compute local transform: read either raw matrix or individual Scale/Rotation/Translation components
-        if ( node.matrix_count ) {
-            // CGLM and glTF have the same matrix layout, just memcopy it
-            memcpy( &scene_graph->local_matrices[ node_index ], node.matrix, sizeof( mat4s ) );
-            scene_graph->updated_nodes.set_bit( node_index );
-        }
-        else {
-            // Handle individual transform components: SRT (scale, rotation, translation)
-            vec3s node_scale{ 1.0f, 1.0f, 1.0f };
-            if ( node.scale_count ) {
-                RASSERT( node.scale_count == 3 );
-                node_scale = vec3s{ node.scale[ 0 ], node.scale[ 1 ], node.scale[ 2 ] };
-            }
-
-            vec3s node_translation{ 0.f, 0.f, 0.f };
-            if ( node.translation_count ) {
-                RASSERT( node.translation_count == 3 );
-                node_translation = vec3s{ node.translation[ 0 ], node.translation[ 1 ], node.translation[ 2 ] };
-            }
-
-            // Rotation is written as a plain quaternion
-            versors node_rotation = glms_quat_identity();
-            if ( node.rotation_count ) {
-                RASSERT( node.rotation_count == 4 );
-                node_rotation = glms_quat_init( node.rotation[ 0 ], node.rotation[ 1 ], node.rotation[ 2 ], node.rotation[ 3 ] );
-            }
-
-            Transform transform;
-            transform.translation = node_translation;
-            transform.scale = node_scale;
-            transform.rotation = node_rotation;
-
-            // Final SRT composition
-            const mat4s local_matrix = transform.calculate_matrix();
-            scene_graph->set_local_matrix( node_index, local_matrix );
-        }
-
-        // Handle parent-relationship
-        if ( node.children_count ) {
-            const Hierarchy& node_hierarchy = scene_graph->nodes_hierarchy[ node_index ];
-
-            for ( u32 ch = 0; ch < node.children_count; ++ch) {
-                const i32 children_index = node.children[ ch ];
-                Hierarchy& children_hierarchy = scene_graph->nodes_hierarchy[ children_index ];
-                scene_graph->set_hierarchy( children_index, node_index, node_hierarchy.level + 1 );
-
-                nodes_to_visit.push( children_index );
-            }
-        }
-
-        // Cache node name
-        scene_graph->set_debug_data( node_index, node.name.data );
-
-        if ( node.mesh == glTF::INVALID_INT_VALUE ) {
-            continue;
-        }
-
-        // Start mesh part
-        glTF::Mesh& gltf_mesh = gltf_scene.meshes[ node.mesh ];
-        u32 gltf_mesh_offset = gltf_mesh_to_mesh_offset[ node.mesh ];
-
-        // Gltf primitives are conceptually submeshes.
-        for ( u32 primitive_index = 0; primitive_index < gltf_mesh.primitives_count; ++primitive_index ) {
-            MeshInstance mesh_instance{ };
-            // Assign scene graph node index
-            mesh_instance.scene_graph_node_index = node_index;
-
-            glTF::MeshPrimitive& mesh_primitive = gltf_mesh.primitives[ primitive_index ];
-
-            // Cache parent mesh and assign material
-            u32 mesh_primitive_index = gltf_mesh_offset + primitive_index;
-            mesh_instance.mesh = &meshes[ mesh_primitive_index ];
-            mesh_instance.mesh->pbr_material.material = pbr_material;
-            // Cache gpu mesh instance index, used to retrieve data on gpu.
-            mesh_instance.gpu_mesh_instance_index = mesh_instances.size;
-
-            // Found a skin index, cache it
-            mesh_instance.mesh->skin_index = i32_max;
-            if ( node.skin != glTF::INVALID_INT_VALUE ) {
-                RASSERT( node.skin < skins.size );
-
-                mesh_instance.mesh->skin_index = node.skin;
-            }
-
-            total_meshlets += mesh_instance.mesh->meshlet_count;
-
-            mesh_instances.push( mesh_instance );
-        }
-    }
-
-    rprint( "Total meshlet instances %u\n", total_meshlets );
 
     // Meshlets buffers
     buffer_creation.reset().set( VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, ResourceUsageType::Immutable, sizeof( GpuMeshlet ) * meshlets.size ).set_name( "meshlet_sb" ).set_data( meshlets.data );
@@ -1121,6 +1144,9 @@ void glTFScene::prepare_draws( Renderer* renderer, StackAllocator* scratch_alloc
     }
 
     // Create per mesh descriptor sets, using the mesh draw ssbo
+    const u64 hashed_name = hash_calculate( "main" );
+    GpuTechnique* main_technique = renderer->resource_cache.techniques.get( hashed_name );
+
     for ( u32 m = 0; m < meshes.size; ++m ) {
         Mesh& mesh = meshes[ m ];
 

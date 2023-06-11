@@ -2,6 +2,11 @@
 #ifndef RAPTOR_GLSL_MESH_H
 #define RAPTOR_GLSL_MESH_H
 
+#extension GL_EXT_buffer_reference : require
+#extension GL_EXT_buffer_reference2 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int16 : require
+#extension GL_EXT_shader_explicit_arithmetic_types_int64 : require
+
 uint DrawFlags_AlphaMask    = 1 << 0;
 uint DrawFlags_DoubleSided  = 1 << 1;
 uint DrawFlags_Transparent  = 1 << 2;
@@ -12,6 +17,18 @@ uint DrawFlags_HasTangents  = 1 << 6;
 uint DrawFlags_HasJoints    = 1 << 7;
 uint DrawFlags_HasWeights   = 1 << 8;
 uint DrawFlags_AlphaDither  = 1 << 9;
+
+layout(buffer_reference, std430, buffer_reference_align = 4) buffer float_array_type {
+    float v;
+};
+
+layout(buffer_reference, std430, buffer_reference_align = 4) buffer vec2_array_type {
+    vec2 v;
+};
+
+layout(buffer_reference, std430, buffer_reference_align = 2) buffer int_array_type {
+    uint16_t v;
+};
 
 struct MeshDraw {
 
@@ -31,6 +48,11 @@ struct MeshDraw {
     uint        meshlet_count;
     uint        meshlet_index_count;
     uint        pad001;
+
+    uint64_t    position_buffer;
+    uint64_t    uv_buffer;
+    uint64_t    index_buffer;
+    uint64_t    pad002;
 };
 
 struct MeshInstanceDraw {

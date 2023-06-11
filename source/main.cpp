@@ -573,6 +573,9 @@ int main( int argc, char** argv ) {
     }
 
     using namespace raptor;
+
+    time_service_init();
+
     // Init services
     MemoryServiceConfiguration memory_configuration;
     memory_configuration.maximum_dynamic_size = rgiga( 2ull );
@@ -642,8 +645,6 @@ int main( int argc, char** argv ) {
     //game_camera.camera.position = vec3s{0, 0, -1};
     game_camera.init( true, 20.f, 6.f, 0.1f );
 
-    time_service_init();
-
     RenderResourcesLoader render_resources_loader;
 
     sizet scratch_marker = scratch_allocator.get_marker();
@@ -696,7 +697,7 @@ int main( int argc, char** argv ) {
 
     scene->use_meshlets = gpu.mesh_shaders_extension_present;
     scene->use_meshlets_emulation = !scene->use_meshlets;
-    scene->init( file_name, file_base_path, allocator, &scratch_allocator, &async_loader );
+    scene->init( file_name, file_base_path, &scene_graph, allocator, &scratch_allocator, &async_loader );
 
     // NOTE(marco): restore working directory
     directory_change( cwd.path );
@@ -726,7 +727,7 @@ int main( int argc, char** argv ) {
     SamplerHandle repeat_sampler, repeat_nearest_sampler;
     // Load frame graph and parse gpu techniques
     {
-        cstring frame_graph_path = temporary_name_buffer.append_use_f( "%s/%s", RAPTOR_WORKING_FOLDER, "graph.json" );
+        cstring frame_graph_path = temporary_name_buffer.append_use_f( "%s/%s", RAPTOR_WORKING_FOLDER, "graph_ray_tracing.json" );
 
         frame_graph.parse( frame_graph_path, &scratch_allocator );
         frame_graph.compile();
@@ -734,7 +735,7 @@ int main( int argc, char** argv ) {
         // TODO: improve
         // Manually add point shadows texture format.
         FrameGraphNode* point_shadows_pass_node = frame_graph.get_node( "point_shadows_pass" );
-        if ( point_shadows_pass_node ) {
+        if ( point_shadows_pass_node) {
             RenderPass* render_pass = gpu.access_render_pass( point_shadows_pass_node->render_pass );
             if ( render_pass ) {
                 render_pass->output.reset().depth( VK_FORMAT_D16_UNORM, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL );
@@ -859,7 +860,7 @@ int main( int argc, char** argv ) {
         // NOTE(marco): identity matrix
         tlas_structure.transform.matrix[ 0 ][ 0 ] = 1.0f;
         tlas_structure.transform.matrix[ 1 ][ 1 ] = 1.0f;
-        tlas_structure.transform.matrix[ 2 ][ 2 ] = 1.0f;
+        tlas_structure.transform.matrix[ 2 ][ 2 ] = -1.0f;
         tlas_structure.mask = 0xff;
         tlas_structure.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
         tlas_structure.accelerationStructureReference = blas_address;

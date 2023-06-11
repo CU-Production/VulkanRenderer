@@ -16,6 +16,10 @@
 
 # Features
 
+## 20230611
+
+- [x] basic ray tracing
+
 ## 20230610
 
 - [x] variable rate shading (vrs)

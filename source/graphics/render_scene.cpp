@@ -48,7 +48,7 @@ static int mesh_material_compare( const void* a, const void* b ) {
 
 //
 //
-static void copy_gpu_material_data( GpuMaterialData& gpu_mesh_data, const Mesh& mesh ) {
+static void copy_gpu_material_data( GpuDevice& gpu, GpuMaterialData& gpu_mesh_data, const Mesh& mesh ) {
     gpu_mesh_data.textures[ 0 ] = mesh.pbr_material.diffuse_texture_index;
     gpu_mesh_data.textures[ 1 ] = mesh.pbr_material.roughness_texture_index;
     gpu_mesh_data.textures[ 2 ] = mesh.pbr_material.normal_texture_index;
@@ -68,6 +68,10 @@ static void copy_gpu_material_data( GpuMaterialData& gpu_mesh_data, const Mesh& 
     gpu_mesh_data.meshlet_offset = mesh.meshlet_offset;
     gpu_mesh_data.meshlet_count = mesh.meshlet_count;
     gpu_mesh_data.meshlet_index_count = mesh.meshlet_index_count;
+
+    gpu_mesh_data.position_buffer = gpu.get_buffer_device_address( mesh.position_buffer ) + mesh.position_offset;
+    gpu_mesh_data.uv_buffer = gpu.get_buffer_device_address( mesh.texcoord_buffer ) + mesh.texcoord_offset;
+    gpu_mesh_data.index_buffer = gpu.get_buffer_device_address( mesh.index_buffer ) + mesh.index_offset;
 }
 
 //
@@ -875,6 +879,8 @@ void LightPass::free_gpu_resources( GpuDevice& gpu ) {
 }
 
 void LightPass::update_dependent_resources( GpuDevice& gpu, FrameGraph* frame_graph, RenderScene* render_scene ) {
+    if (!enabled)
+        return;
 
     const u64 hashed_name = hash_calculate( "pbr_lighting" );
     GpuTechnique* main_technique = renderer->resource_cache.techniques.get( hashed_name );
@@ -1761,7 +1767,7 @@ void CullingLatePass::prepare_draws( RenderScene& scene, FrameGraph* frame_graph
             DescriptorSetCreation ds_creation{};
             ds_creation.buffer( scene.meshes_sb, 2 ).buffer( scene.mesh_instances_sb, 10 ).buffer( scene.scene_cb, 0 )
                 .buffer( scene.mesh_task_indirect_count_late_sb[ i ], 11 ).buffer( scene.mesh_task_indirect_count_early_sb[ i ], 13 ).buffer(scene.mesh_task_indirect_late_commands_sb[ i ], 1 ).buffer(scene.mesh_task_indirect_culled_commands_sb[ i ], 3 )
-                .buffer( scene.mesh_bounds_sb, 12 ).buffer( scene.mesh_bounds_sb, 12 ).buffer( scene.debug_line_sb, 20 ).buffer( scene.debug_line_count_sb, 21 ).buffer( scene.debug_line_commands_sb, 22 ).set_layout(layout);
+                .buffer( scene.mesh_bounds_sb, 12 ).buffer( scene.debug_line_sb, 20 ).buffer( scene.debug_line_count_sb, 21 ).buffer( scene.debug_line_commands_sb, 22 ).set_layout(layout);
 
             frustum_cull_descriptor_set[ i ] = gpu.create_descriptor_set(ds_creation);
         }
@@ -1851,7 +1857,7 @@ void RayTracingTestPass::prepare_draws( RenderScene& scene, FrameGraph* frame_gr
         uniform_buffer[ i ] = gpu.create_buffer( uniform_buffer_creation );
 
         DescriptorSetCreation ds_creation{};
-        ds_creation.buffer( scene.scene_cb, 0 ).set_as( scene.tlas, 1 ).buffer( uniform_buffer[ i ], 2 ).set_layout(layout);
+        ds_creation.buffer( scene.scene_cb, 0 ).set_as( scene.tlas, 1 ).buffer( scene.meshes_sb, 2 ).buffer( scene.mesh_instances_sb, 10 ).buffer( scene.mesh_bounds_sb, 12 ).buffer( uniform_buffer[ i ], 3 ).set_layout(layout);
 
         descriptor_set[ i ] = gpu.create_descriptor_set( ds_creation );
     }
@@ -2783,6 +2789,8 @@ void PointlightShadowPass::upload_gpu_data( RenderScene& scene ) {
 }
 
 void PointlightShadowPass::free_gpu_resources( GpuDevice& gpu ) {
+    if ( !enabled )
+        return;
 
     mesh_instance_draws.shutdown();
 
@@ -3784,7 +3792,7 @@ void RenderScene::upload_gpu_data( UploadGpuDataContext& context ) {
     GpuMaterialData* gpu_mesh_data = ( GpuMaterialData* )gpu.map_buffer( cb_map );
     if ( gpu_mesh_data ) {
         for ( u32 mesh_index = 0; mesh_index < meshes.size; ++mesh_index ) {
-            copy_gpu_material_data( gpu_mesh_data[ mesh_index ], meshes[ mesh_index ] );
+            copy_gpu_material_data( gpu, gpu_mesh_data[ mesh_index ], meshes[ mesh_index ] );
         }
         gpu.unmap_buffer( cb_map );
     }

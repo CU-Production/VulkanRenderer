@@ -1039,7 +1039,7 @@ void GpuDevice::init( const GpuDeviceCreation& creation ) {
 #if defined (RAPTOR_GPU_DEVICE_RESOURCE_TRACKING)
     resource_tracker.init( allocator );
     resource_tracker.tracked_resource_type = ResourceUpdateType::Texture;
-    resource_tracker.tracked_resource_index = 31;
+    resource_tracker.tracked_resource_index = 45;
     resource_tracker.track_resource = false;
     resource_tracker.track_all_indices_per_type = false;
 #endif // RAPTOR_GPU_DEVICE_RESOURCE_TRACKING

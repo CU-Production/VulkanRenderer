@@ -8,7 +8,7 @@
 				{
 					"stage" : "raygen",
 					"shader" : "ray_tracing.glsl",
-					"includes" : ["platform.h", "scene.h"]
+					"includes" : ["platform.h", "scene.h", "mesh.h"]
 				},
 				{
 					"stage" : "closest_hit",

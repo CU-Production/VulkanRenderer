@@ -10,7 +10,7 @@ namespace raptor {
     //
     struct glTFScene : public RenderScene {
 
-        void                    init( cstring filename, cstring path, Allocator* resident_allocator, StackAllocator* temp_allocator, AsynchronousLoader* async_loader ) override;
+        void                    init( cstring filename, cstring path, SceneGraph* scene_graph, Allocator* resident_allocator, StackAllocator* temp_allocator, AsynchronousLoader* async_loader ) override;
         void                    shutdown( Renderer* renderer ) override;
 
         void                    prepare_draws( Renderer* renderer, StackAllocator* scratch_allocator, SceneGraph* scene_graph ) override;

@@ -154,11 +154,15 @@ namespace raptor {
 
         u32                     bilateral_weights_texture_index;
         u32                     reflections_texture_index;
+
         u32                     raytraced_shadow_light_color_type;
         f32                     raytraced_shadow_light_radius;
 
         vec3s                   raytraced_shadow_light_position;
         f32                     raytraced_shadow_light_intensity;
+
+        u32                     brdf_lut_texture_index;
+        u32                     pad[3];
     }; // GpuLightingData
 
     struct glTFScene;
@@ -1141,7 +1145,7 @@ namespace raptor {
         void                    update_dependent_resources( GpuDevice& gpu, FrameGraph* frame_graph, RenderScene* render_scene ) override;
 
         u32                     get_total_probes()                  { return probe_count_x * probe_count_y * probe_count_z; }
-        u32                     get_total_rays()                    { return probe_rays * probe_count_x * probe_count_y * probe_count_z; }
+        u32                     get_total_rays()                    { return probe_rays * get_total_probes(); }
 
         Renderer*               renderer;
 
@@ -1211,6 +1215,7 @@ namespace raptor {
         void                    upload_gpu_data( RenderScene& scene ) override;
         void                    free_gpu_resources( GpuDevice& gpu ) override;
 
+        void                    reload_shaders( RenderScene& scene, FrameGraph* frame_graph, Allocator* resident_allocator, StackAllocator* scratch_allocator ) override;
         void                    update_dependent_resources( GpuDevice& gpu, FrameGraph* frame_graph, RenderScene* render_scene ) override;
 
         Renderer*               renderer;
@@ -1225,31 +1230,17 @@ namespace raptor {
         DescriptorSetHandle     reflections_descriptor_set;
         PipelineHandle          reflections_pipeline;
 
+        DescriptorSetHandle     brdf_lut_generation_descriptor_set;
+        PipelineHandle          brdf_lut_generation_pipeline;
+        TextureHandle           brdf_lut_texture;
+
+        f32                     texture_scale       = 1.f;
+
     }; // ReflectionsPass
 
     //
     //
     struct SVGFAccumulationPass : public FrameGraphRenderPass {
-        struct GpuConstants {
-            u32 motion_vectors_texture_index;
-            u32 mesh_id_texture_index;
-            u32 normals_texture_index;
-            u32 depth_normal_dd_texture_index;
-
-            u32 history_mesh_id_texture_index;
-            u32 history_normals_texture_index;
-            u32 history_depth_texture;
-            u32 reflections_texture_index;
-
-            u32 history_reflections_texture_index;
-            u32 history_moments_texture_index;
-            u32 integrated_color_texture_index;
-            u32 integrated_moments_texture_index;
-
-            u32 variance_texture_index;
-            u32 filtered_color_texture_index;
-            u32 updated_variance_texture_index;
-        };
 
         void                    pre_render( u32 current_frame_index, CommandBuffer* gpu_commands, FrameGraph* frame_graph, RenderScene* render_scene ) override;
         void                    render( u32 current_frame_index, CommandBuffer* gpu_commands, RenderScene* render_scene ) override;
@@ -1260,6 +1251,7 @@ namespace raptor {
         void                    upload_gpu_data( RenderScene& scene ) override;
         void                    free_gpu_resources( GpuDevice& gpu ) override;
 
+        void                    reload_shaders( RenderScene& scene, FrameGraph* frame_graph, Allocator* resident_allocator, StackAllocator* scratch_allocator ) override;
         void                    update_dependent_resources( GpuDevice& gpu, FrameGraph* frame_graph, RenderScene* render_scene ) override;
 
         Renderer*               renderer;
@@ -1271,12 +1263,13 @@ namespace raptor {
         TextureHandle           depth_texture;
         TextureHandle           normals_texture;
         TextureHandle           mesh_id_texture;
-        TextureHandle           depth_normal_dd_texture;
+        TextureHandle           depth_normal_fwidth_texture;
+        TextureHandle           linear_z_dd_texture;
         TextureHandle           integrated_color_texture;
         TextureHandle           integrated_moments_texture;
 
         TextureHandle           last_frame_normals_texture;
-        TextureHandle           last_frame_depth_texture;
+        TextureHandle           last_frame_linear_depth_texture;
         TextureHandle           last_frame_mesh_id_texture;
         TextureHandle           reflections_history_texture;
         TextureHandle           moments_history_texture;
@@ -1284,31 +1277,13 @@ namespace raptor {
         DescriptorSetHandle     descriptor_set;
         PipelineHandle          pipeline;
 
+        f32                     texture_scale       = 1.f;
+
     }; // SVGFAccumulationPass
 
     //
     //
     struct SVGFVariancePass : public FrameGraphRenderPass {
-        struct GpuConstants {
-            u32 motion_vectors_texture_index;
-            u32 mesh_id_texture_index;
-            u32 normals_texture_index;
-            u32 depth_normal_dd_texture_index;
-
-            u32 history_mesh_id_texture_index;
-            u32 history_normals_texture_index;
-            u32 history_depth_texture;
-            u32 reflections_texture_index;
-
-            u32 history_reflections_texture_index;
-            u32 history_moments_texture_index;
-            u32 integrated_color_texture_index;
-            u32 integrated_moments_texture_index;
-
-            u32 variance_texture_index;
-            u32 filtered_color_texture_index;
-            u32 updated_variance_texture_index;
-        };
 
         void                    pre_render( u32 current_frame_index, CommandBuffer* gpu_commands, FrameGraph* frame_graph, RenderScene* render_scene ) override;
         void                    render( u32 current_frame_index, CommandBuffer* gpu_commands, RenderScene* render_scene ) override;
@@ -1319,6 +1294,7 @@ namespace raptor {
         void                    upload_gpu_data( RenderScene& scene ) override;
         void                    free_gpu_resources( GpuDevice& gpu ) override;
 
+        void                    reload_shaders( RenderScene& scene, FrameGraph* frame_graph, Allocator* resident_allocator, StackAllocator* scratch_allocator ) override;
         void                    update_dependent_resources( GpuDevice& gpu, FrameGraph* frame_graph, RenderScene* render_scene ) override;
 
         Renderer*               renderer;
@@ -1331,18 +1307,24 @@ namespace raptor {
         TextureHandle           depth_texture;
         TextureHandle           normals_texture;
         TextureHandle           mesh_id_texture;
-        TextureHandle           depth_normal_dd_texture;
+        TextureHandle           depth_normal_fwidth_texture;
+        TextureHandle           linear_z_dd_texture;
         TextureHandle           integrated_color_texture;
         TextureHandle           integrated_moments_texture;
 
         TextureHandle           last_frame_normals_texture;
-        TextureHandle           last_frame_depth_texture;
+        TextureHandle           last_frame_linear_depth_texture;
         TextureHandle           last_frame_mesh_id_texture;
         TextureHandle           reflections_history_texture;
         TextureHandle           moments_history_texture;
 
         DescriptorSetHandle     descriptor_set;
         PipelineHandle          pipeline;
+
+        PipelineHandle          downsample_pipeline;
+        DescriptorSetHandle     downsample_descriptor_set;
+
+        f32                     texture_scale       = 1.f;
 
     }; // SVGFVariancePass
 
@@ -1351,27 +1333,6 @@ namespace raptor {
     struct SVGFWaveletPass : public FrameGraphRenderPass {
         static const u32 k_num_passes = 5;
 
-        struct GpuConstants {
-            u32 motion_vectors_texture_index;
-            u32 mesh_id_texture_index;
-            u32 normals_texture_index;
-            u32 depth_normal_dd_texture_index;
-
-            u32 history_mesh_id_texture_index;
-            u32 history_normals_texture_index;
-            u32 history_depth_texture;
-            u32 reflections_texture_index;
-
-            u32 history_reflections_texture_index;
-            u32 history_moments_texture_index;
-            u32 integrated_color_texture_index;
-            u32 integrated_moments_texture_index;
-
-            u32 variance_texture_index;
-            u32 filtered_color_texture_index;
-            u32 updated_variance_texture_index;
-        };
-
         void                    pre_render( u32 current_frame_index, CommandBuffer* gpu_commands, FrameGraph* frame_graph, RenderScene* render_scene ) override;
         void                    render( u32 current_frame_index, CommandBuffer* gpu_commands, RenderScene* render_scene ) override;
 
@@ -1381,6 +1342,7 @@ namespace raptor {
         void                    upload_gpu_data( RenderScene& scene ) override;
         void                    free_gpu_resources( GpuDevice& gpu ) override;
 
+        void                    reload_shaders( RenderScene& scene, FrameGraph* frame_graph, Allocator* resident_allocator, StackAllocator* scratch_allocator ) override;
         void                    update_dependent_resources( GpuDevice& gpu, FrameGraph* frame_graph, RenderScene* render_scene ) override;
 
         Renderer*               renderer;
@@ -1391,12 +1353,13 @@ namespace raptor {
         TextureHandle           depth_texture;
         TextureHandle           normals_texture;
         TextureHandle           mesh_id_texture;
-        TextureHandle           depth_normal_dd_texture;
+        TextureHandle           depth_normal_fwidth_texture;
+        TextureHandle           linear_z_dd_texture;
         TextureHandle           integrated_color_texture;
         TextureHandle           integrated_moments_texture;
 
         TextureHandle           last_frame_normals_texture;
-        TextureHandle           last_frame_depth_texture;
+        TextureHandle           last_frame_linear_depth_texture;
         TextureHandle           last_frame_mesh_id_texture;
         TextureHandle           reflections_history_texture;
         TextureHandle           moments_history_texture;
@@ -1410,6 +1373,8 @@ namespace raptor {
 
         DescriptorSetHandle     descriptor_set[ k_num_passes ];
         PipelineHandle          pipeline;
+
+        f32                     texture_scale       = 1.f;
 
     }; // SVGFWaveletPass
 
@@ -1546,6 +1511,7 @@ namespace raptor {
         TextureHandle           fragment_shading_rate_image;
         TextureHandle           motion_vector_texture;
         TextureHandle           visibility_motion_vector_texture;
+        TextureHandle           brdf_lut_texture;
 
         Array<VkAccelerationStructureGeometryKHR> geometries;
         Array<VkAccelerationStructureBuildRangeInfoKHR> build_range_infos;
@@ -1652,6 +1618,13 @@ namespace raptor {
         bool                    gi_use_infinite_bounces = true;
         f32                     gi_infinite_bounces_multiplier = 0.75f;
         i32                     gi_per_frame_probes_update = 1000;
+        // Reflections
+        f32                     rt_reflections_scale = 0.5f;
+        f32                     rt_temporal_depth_difference = 10.f;
+        f32                     rt_temporal_normal_difference = 16.f;
+        f32                     rt_wavelet_sigma_z = 1.f;
+        f32                     rt_wavelet_sigma_n = 128.f;
+        f32                     rt_wavelet_sigma_l = 4.f;
 
         bool                    use_meshlets = true;
         bool                    use_meshlets_emulation = false;

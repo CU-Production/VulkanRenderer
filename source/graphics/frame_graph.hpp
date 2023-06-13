@@ -130,6 +130,8 @@ struct FrameGraphRenderPass
     virtual void                            on_resize( GpuDevice& gpu, FrameGraph* frame_graph, u32 new_width, u32 new_height ) {}
     virtual void                            update_dependent_resources( GpuDevice& gpu, FrameGraph* frame_graph, RenderScene* render_scene ) {}
 
+    virtual void                            reload_shaders( RenderScene& scene, FrameGraph* frame_graph, Allocator* resident_allocator, StackAllocator* scratch_allocator ) {}
+
     bool                                    enabled = true;
 };
 
@@ -234,6 +236,7 @@ struct FrameGraph {
     void                            add_ui();
     void                            render( u32 current_frame_index, CommandBuffer* gpu_commands, RenderScene* render_scene );
     void                            on_resize( GpuDevice& gpu, u32 new_width, u32 new_height );
+    void                            reload_shaders( RenderScene& scene, Allocator* resident_allocator, StackAllocator* scratch_allocator );
 
     void                            debug_ui();
 

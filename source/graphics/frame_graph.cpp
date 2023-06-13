@@ -11,6 +11,7 @@
 
 #include "external/json.hpp"
 #include "external/imgui/imgui.h"
+#include "external/tracy/tracy/Tracy.hpp"
 
 #include <string>
 
@@ -629,6 +630,12 @@ void FrameGraph::compile() {
                                 continue;
                             }
 
+                            // NOTE(marco): this texture has already been aliased, get original image
+                            if ( alias_texture->alias_texture.index != k_invalid_index ) {
+                                alias_texture_handle = alias_texture->alias_texture;
+                                alias_texture = builder->device->access_texture( alias_texture_handle );
+                            }
+
                             TextureCreation texture_creation{ };
                             texture_creation.set_data( nullptr ).set_alias( alias_texture_handle ).set_name( resource->name ).set_format_type( info.texture.format, TextureType::Enum::Texture2D ).set_size( info.texture.width, info.texture.height, info.texture.depth ).set_flags( texture_creation_flags );
                             TextureHandle handle = builder->device->create_texture( texture_creation );
@@ -713,6 +720,8 @@ void FrameGraph::add_ui() {
 void FrameGraph::render( u32 current_frame_index, CommandBuffer* gpu_commands, RenderScene* render_scene )
 {
     for ( u32 n = 0; n < nodes.size; ++n ) {
+        ZoneScopedN("RenderPass");
+
         FrameGraphNode* node = builder->access_node( nodes[ n ] );
         RASSERT( node->enabled );
 
@@ -861,6 +870,16 @@ void FrameGraph::on_resize( GpuDevice& gpu, u32 new_width, u32 new_height ) {
     }
 }
 
+void FrameGraph::reload_shaders( RenderScene& scene, Allocator* resident_allocator, StackAllocator* scratch_allocator ) {
+
+    for ( u32 n = 0; n < nodes.size; ++n ) {
+        FrameGraphNode* node = builder->access_node( nodes[ n ] );
+        RASSERT( node->enabled );
+
+        node->graph_render_pass->reload_shaders( scene, this, resident_allocator, scratch_allocator );
+    }
+}
+
 void FrameGraph::debug_ui() {
 
     if ( ImGui::CollapsingHeader( "Nodes" ) ) {
@@ -873,14 +892,14 @@ void FrameGraph::debug_ui() {
             ImGui::Text( "\tInputs" );
             for ( u32 i = 0; i < node->inputs.size; ++i ) {
                 FrameGraphResource* resource = builder->access_resource( node->inputs[ i ] );
-                ImGui::Text( "\t\t%s", resource->name );
+                ImGui::Text( "\t\t%s %u %u", resource->name, resource->resource_info.texture.handle.index, resource->resource_info.buffer.handle.index  );
             }
 
 
             ImGui::Text( "\tOutputs" );
             for ( u32 o = 0; o < node->outputs.size; ++o ) {
                 FrameGraphResource* resource = builder->access_resource( node->outputs[ o ] );
-                ImGui::Text( "\t\t%s", resource->name );
+                ImGui::Text( "\t\t%s %u %u", resource->name, resource->resource_info.texture.handle.index, resource->resource_info.buffer.handle.index );
             }
         }
     }

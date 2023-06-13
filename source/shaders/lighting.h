@@ -71,6 +71,11 @@ layout ( std140, set = MATERIAL_SET, binding = 23 ) uniform LightConstants {
 
     vec3        raytraced_shadow_light_position;
     float       raytraced_shadow_light_intensity;
+
+    uint        brdf_lut_texture_index;
+    uint        pad001_lc;
+    uint        pad002_lc;
+    uint        pad003_lc;
 };
 
 layout( set = MATERIAL_SET, binding = 25 ) readonly buffer LightIndices {
@@ -679,6 +684,12 @@ vec4 calculate_lighting(vec4 base_colour, vec3 orm, vec3 normal, vec3 emissive, 
 
     const float ao = 1.0f;
     final_color.rgb += (kD * indirect_diffuse) * ao;
+
+    vec3 reflection_color = texture( global_textures[reflections_texture_index], screen_uv ).rgb;
+
+    vec2 envBRDF  = textureLod(global_textures[nonuniformEXT(brdf_lut_texture_index)], vec2(NoV, roughness), 0).rg;
+    vec3 indirect_specular = reflection_color * (F * envBRDF.x + envBRDF.y);
+    final_color.rgb += (indirect_specular) * ao;
 
 #if defined(DEBUG_OPTIONS)
 

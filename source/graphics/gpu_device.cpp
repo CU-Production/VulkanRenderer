@@ -1394,6 +1394,7 @@ static void vulkan_create_texture( GpuDevice& gpu, const TextureCreation& creati
     texture->parent_texture = k_invalid_texture;
     texture->handle = handle;
     texture->sparse = is_sparse_texture;
+    texture->alias_texture = k_invalid_texture;
 
     //// Create the image
     VkImageCreateInfo image_info = { VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO };
@@ -1434,6 +1435,7 @@ static void vulkan_create_texture( GpuDevice& gpu, const TextureCreation& creati
 
         texture->vma_allocation = 0;
         check( vmaCreateAliasingImage( gpu.vma_allocator, alias_texture->vma_allocation, &image_info, &texture->vk_image ) );
+        texture->alias_texture = creation.alias;
     }
 
     gpu.set_resource_name( VK_OBJECT_TYPE_IMAGE, ( u64 )texture->vk_image, creation.name );

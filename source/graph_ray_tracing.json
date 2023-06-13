@@ -309,6 +309,14 @@
                 {
                     "type": "shading_rate",
                     "name": "shading_rate_image"
+                },
+                {
+                    "type": "texture",
+                    "name": "indirect_lighting"
+                },
+                {
+                    "type": "texture",
+                    "name": "svgf_output"
                 }
             ],
             "name": "lighting_pass",
@@ -471,6 +479,34 @@
                 {
                     "type": "texture",
                     "name": "shadow_visibility",
+                    "external": true
+                }
+            ]
+        },
+        {
+            "name": "indirect_lighting_pass",
+            "inputs":
+            [
+                {
+                    "type": "texture",
+                    "name": "gbuffer_normals"
+                },
+                {
+                    "type": "texture",
+                    "name": "depth_pyramid"
+                },
+                {
+                    "type": "texture",
+                    "name": "depth"
+                }
+            ],
+            "type": "ray_tracing",
+            "enabled": true,
+            "outputs":
+            [
+                {
+                    "type": "texture",
+                    "name": "indirect_lighting",
                     "external": true
                 }
             ]

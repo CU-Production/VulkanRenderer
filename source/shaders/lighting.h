@@ -665,6 +665,20 @@ vec4 calculate_lighting(vec4 base_colour, vec3 orm, vec3 normal, vec3 emissive, 
             final_color.rgb += calculate_directional_light_contribution( albedo, roughness, normal, emissive, world_position, V, F0, NoV, position, raytraced_shadow_light_position );
         }
     }
+    
+    // Ambient term
+    vec3 F = fresnel_schlick_roughness(max(dot(normal, V), 0.0), F0, roughness);
+
+    vec3 kS = F;
+    vec3 kD = 1.0 - kS;
+    kD *= 1.0 - metallic;
+
+    vec2 upsampling_weights = textureLod(global_textures[nonuniformEXT(bilateral_weights_texture_index)], screen_uv, 0).rg;
+    vec3 indirect_irradiance = textureLod(global_textures[nonuniformEXT(indirect_lighting_texture_index)], screen_uv, 0).rgb;
+    vec3 indirect_diffuse = indirect_irradiance * gi_intensity * base_colour.rgb;
+
+    const float ao = 1.0f;
+    final_color.rgb += (kD * indirect_diffuse) * ao;
 
 #if defined(DEBUG_OPTIONS)
 

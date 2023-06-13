@@ -19,6 +19,11 @@
 ## 20230613
 
 - [x] ray tracing shadows
+- [x] ray tracing GI 
+  - Dynamic Diffuse Global Illumination
+
+![](screenshots/Snipaste_2023-06-13_20-46-51.png)
+![](screenshots/Snipaste_2023-06-13_20-46-57.png)
 
 ## 20230611
 

@@ -61,8 +61,16 @@ layout ( std140, set = MATERIAL_SET, binding = 23 ) uniform LightConstants {
 
     float       volumetric_fog_distribution_scale;
     float       volumetric_fog_distribution_bias;
-    float       padding_lc_000;
-    float       padding_lc_001;
+    float       gi_intensity;
+    uint        indirect_lighting_texture_index;
+
+    uint        bilateral_weights_texture_index;
+    uint        reflections_texture_index;
+    uint        raytraced_shadow_light_color_type;
+    float       raytraced_shadow_light_radius;
+
+    vec3        raytraced_shadow_light_position;
+    float       raytraced_shadow_light_intensity;
 };
 
 layout( set = MATERIAL_SET, binding = 25 ) readonly buffer LightIndices {
@@ -73,8 +81,11 @@ layout( set = MATERIAL_SET, binding = 25 ) readonly buffer LightIndices {
 layout( set = MATERIAL_SET, binding = 26 ) uniform accelerationStructureEXT as;
 #endif
 
-uint hash(uint a)
-{
+bool is_raytrace_shadow_point_light() {
+    return ((raytraced_shadow_light_color_type >> 24) & 1) == 0;
+}
+
+uint hash(uint a) {
    a = (a+0x7ed55d16) + (a<<12);
    a = (a^0xc761c23c) ^ (a>>19);
    a = (a+0x165667b1) + (a<<5);
@@ -93,6 +104,10 @@ vec3 f_schlick(const vec3 f0, float VoH) {
 
 float f_schlick_f90(float u, float f0, float f90) {
     return f0 + (f90 - f0) * pow(1.0 - u, 5.0);
+}
+
+vec3 fresnel_schlick_roughness(float cosTheta, vec3 F0, float roughness) {
+    return F0 + (max(vec3(1.0 - roughness), F0) - F0) * pow(max(1.0 - cosTheta, 0.0), 5.0);
 }
 
 // Diffuse functions
@@ -202,20 +217,57 @@ vec2 POISSON_SAMPLES[SAMPLE_NUM] =
     vec2( 0.5999403247649068f, 0.4733652413019988f ),
 };
 
-float get_light_visibility( uint light_index, uint sample_count, vec3 world_position, vec3 normal, uint frame_index ) {
-    Light light = lights[ light_index ];
+float get_directional_light_visibility( vec3 light_position, uint sample_count, vec3 world_position, vec3 normal, uint frame_index ) {
 
-    const vec3 position_to_light = light.world_position - world_position;
-    const vec3 l = normalize( position_to_light );
-    const float NoL = clamp(dot(normal, l), 0.0, 1.0);
-    float d = sqrt( dot( position_to_light, position_to_light ) );
+    const vec3 l = normalize( light_position );
+    const float NoL = dot(normal, l);
+
+#if 0
+    vec3 right = vec3( 1, 0, 0 );
+    vec3 x_axis = normalize( cross( l, right ) );
+    vec3 z_axis = normalize( cross( l, x_axis ) );
+    vec3 x_axis = vec3( 0 );
+    if ( abs( l.x ) > abs( l.y ) ) {
+        x_axis = normalize( vec3( l.z, 0, -l.x ) );
+    } else {
+        x_axis = normalize( vec3( 0, -l.z, l.y ) );
+    }
+    vec3 z_axis = normalize( cross( l, x_axis ) );
+
+    mat3 to_local_coord = mat3(
+        x_axis,
+        l,
+        z_axis
+    );
+#endif
+
+    vec3 x_axis =  l.y == 1.0f ? normalize(cross(l, vec3(0.0f, 0.0f, 1.0f))) : normalize(cross(l, vec3(0.0f, 1.0f, 0.0f)));
+    vec3 y_axis = normalize(cross(x_axis, l));
 
     float visiblity = 0.0;
 
-    if ( NoL > 0.0001f && d <= light.radius ) {
+    if ( NoL > 0.001f ) {
         for ( uint s = 0; s < sample_count; ++s ) {
+#if 0
             vec2 poisson_sample = POISSON_SAMPLES[ s * FRAME_HISTORY_COUNT + frame_index ];
-            vec3 random_dir = normalize( vec3( l.x + poisson_sample.x, l.y + poisson_sample.y, l.z ) );
+            vec3 random_dir = normalize( vec3( poisson_sample.x, 1.0, poisson_sample.y ) );
+            random_dir = normalize( to_local_coord * random_dir );
+
+            float NoR = dot ( random_dir, l );
+            if ( NoR <= 0.0001f ) {
+                continue;
+            }
+#endif
+
+
+#if 1
+            vec2 poisson_sample = POISSON_SAMPLES[ (s * FRAME_HISTORY_COUNT + frame_index) % SAMPLE_NUM ];
+            vec3 random_x = x_axis * poisson_sample.x * 0.01;
+            vec3 random_y = y_axis * poisson_sample.y * 0.01;
+            vec3 random_dir = normalize(l + random_x + random_y);
+#else
+            vec3 random_dir = l;
+#endif
 
 #if RAYTRACED_SHADOWS
             rayQueryEXT rayQuery;
@@ -224,13 +276,13 @@ float get_light_visibility( uint light_index, uint sample_count, vec3 world_posi
                                   gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,
                                   0xff,
                                   world_position,
-                                  0.001,
+                                  0.05,
                                   random_dir,
-                                  d);
+                                  100.0f);
             rayQueryProceedEXT( rayQuery );
 
-            if ( rayQueryGetIntersectionTypeEXT( rayQuery, true ) == gl_RayQueryCommittedIntersectionNoneEXT ) {
-                visiblity += 1.0;
+            if (rayQueryGetIntersectionTypeEXT(rayQuery, true) == gl_RayQueryCommittedIntersectionNoneEXT) {
+                visiblity += 1.0f;
             }
 #endif
         }
@@ -239,7 +291,167 @@ float get_light_visibility( uint light_index, uint sample_count, vec3 world_posi
     return visiblity / float( sample_count );
 }
 
-vec3 calculate_point_light_contribution(vec4 albedo, vec3 orm, vec3 normal, vec3 emissive, vec3 world_position, vec3 v, vec3 F0, float NoV, uvec2 screen_uv, uint shadow_light_index) {
+float get_point_light_visibility( uint light_index, uint sample_count, vec3 world_position, vec3 normal, uint frame_index ) {
+    const vec3 position_to_light = raytraced_shadow_light_position - world_position;
+    const vec3 l = normalize( position_to_light );
+    const float NoL = dot(normal, l);
+    float d = sqrt( dot( position_to_light, position_to_light ) );
+
+#if 0
+    vec3 right = vec3( 1, 0, 0 );
+    vec3 x_axis = normalize( cross( l, right ) );
+    vec3 z_axis = normalize( cross( l, x_axis ) );
+    vec3 x_axis = vec3( 0 );
+    if ( abs( l.x ) > abs( l.y ) ) {
+        x_axis = normalize( vec3( l.z, 0, -l.x ) );
+    } else {
+        x_axis = normalize( vec3( 0, -l.z, l.y ) );
+    }
+    vec3 z_axis = normalize( cross( l, x_axis ) );
+
+    mat3 to_local_coord = mat3(
+        x_axis,
+        l,
+        z_axis
+    );
+#endif
+
+    vec3 x_axis = normalize(cross(l, vec3(0.0f, 1.0f, 0.0f)));
+    vec3 y_axis = normalize(cross(x_axis, l));
+
+    float visiblity = 0.0;
+
+    const float r = raytraced_shadow_light_radius;
+    float attenuation = attenuation_square_falloff(position_to_light, 1.0f / r);
+
+    const float scaled_distance = r / d;
+    if ( (NoL > 0.001f) && (d <= r) && (attenuation > 0.001f) ) {
+        for ( uint s = 0; s < sample_count; ++s ) {
+#if 0
+            vec2 poisson_sample = POISSON_SAMPLES[ s * FRAME_HISTORY_COUNT + frame_index ];
+            vec3 random_dir = normalize( vec3( poisson_sample.x, 1.0, poisson_sample.y ) );
+            random_dir = normalize( to_local_coord * random_dir );
+
+            float NoR = dot ( random_dir, l );
+            if ( NoR <= 0.0001f ) {
+                continue;
+            }
+#endif
+
+
+#if 1
+            vec2 poisson_sample = POISSON_SAMPLES[ (s * FRAME_HISTORY_COUNT + frame_index) % SAMPLE_NUM ];
+            vec3 random_x = x_axis * poisson_sample.x * (scaled_distance) * 0.01;
+            vec3 random_y = y_axis * poisson_sample.y * (scaled_distance) * 0.01;
+            vec3 random_dir = normalize(l + random_x + random_y);
+#else
+            vec3 random_dir = l;
+#endif
+
+#if RAYTRACED_SHADOWS
+            rayQueryEXT rayQuery;
+            rayQueryInitializeEXT(rayQuery,
+                                  as,
+                                  gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,
+                                  0xff,
+                                  world_position,
+                                  0.05,
+                                  random_dir,
+                                  d);
+            rayQueryProceedEXT( rayQuery );
+
+            if (rayQueryGetIntersectionTypeEXT(rayQuery, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
+                visiblity += rayQueryGetIntersectionTEXT(rayQuery, true) < d ? 0.0f : 1.0f;
+            }
+            else {
+                visiblity += 1.0f;
+            }
+#endif
+        }
+    }
+
+    return visiblity / float( sample_count );
+}
+
+vec3 calculate_directional_light_contribution(vec4 albedo, float roughness, vec3 normal, vec3 emissive, vec3 world_position, vec3 v, vec3 F0, float NoV, uvec2 screen_uv, vec3 light_direction) {
+
+    const vec3 l = normalize( light_direction );
+    const float NoL = clamp(dot(normal, l), 0.0, 1.0);
+
+    vec3 pixel_luminance = vec3(0);
+
+    // TODO(marco): better upsampling
+    float shadow = texture( global_textures_3d[ shadow_visibility_texture_index ], vec3( screen_uv * ( 1 / resolution ), 0 ) ).r;
+
+    // TODO
+    if (disable_shadows > 0) {
+        shadow = 1;
+    }
+
+    if ( shadow >= 0.0f && NoL > 0.0001f ) {
+        float light_intensity = NoL * raytraced_shadow_light_intensity * shadow;
+
+        const vec3 h = normalize(v + l);
+        const float NoH = saturate(dot(normal, h));
+        const float LoH = saturate(dot(l, h));
+
+        const vec3 diffuse = fd_burley(NoV, NoL, LoH, roughness) * albedo.rgb;
+        const float D = d_ggx( roughness, NoH, h );
+
+        float V = v_smith_ggx_correlated_fast( roughness, NoV, NoL );
+
+        const float VoH = saturate(dot(v, h));
+        vec3 F = f_schlick(F0, VoH);
+
+        vec3 specular = (D * V) * F;
+
+        pixel_luminance = (diffuse + specular) * light_intensity * unpack_color_rgba(raytraced_shadow_light_color_type).rgb;
+    }
+
+    return pixel_luminance;
+}
+
+vec3 calculate_raytraced_point_light_contribution(vec4 albedo, float roughness, vec3 normal, vec3 emissive, vec3 world_position, vec3 v, vec3 F0, float NoV, uvec2 screen_pixels) {
+
+    const vec3 position_to_light = raytraced_shadow_light_position - world_position;
+    const vec3 l = normalize( position_to_light );
+    const float NoL = clamp(dot(normal, l), 0.0, 1.0);
+
+    vec3 pixel_luminance = vec3(0);
+
+    float shadow = texelFetch( global_textures_3d[ shadow_visibility_texture_index ], ivec3( screen_pixels * 0.5f, 0 ), 0 ).r;
+
+    if (disable_shadows > 0) {
+        shadow = 1;
+    }
+
+    const float light_radius = raytraced_shadow_light_radius;
+    float attenuation = attenuation_square_falloff(position_to_light, 1.0f / light_radius) * shadow;
+    if ( attenuation > 0.0001f && NoL > 0.0001f ) {
+
+        float light_intensity = NoL * raytraced_shadow_light_intensity * attenuation;
+
+        const vec3 h = normalize(v + l);
+        const float NoH = saturate(dot(normal, h));
+        const float LoH = saturate(dot(l, h));
+
+        const vec3 diffuse = fd_burley(NoV, NoL, LoH, roughness) * albedo.rgb;
+        const float D = d_ggx( roughness, NoH, h );
+
+        float V = v_smith_ggx_correlated_fast( roughness, NoV, NoL );
+
+        const float VoH = saturate(dot(v, h));
+        vec3 F = f_schlick(F0, VoH);
+
+        vec3 specular = (D * V) * F;
+
+        pixel_luminance = (diffuse + specular) * light_intensity * unpack_color_rgba(raytraced_shadow_light_color_type).rgb;
+    }
+    
+    return pixel_luminance;
+}
+
+vec3 calculate_point_light_contribution(vec4 albedo, float roughness, vec3 normal, vec3 emissive, vec3 world_position, vec3 v, vec3 F0, float NoV, uvec2 screen_uv, uint shadow_light_index) {
     Light light = lights[ shadow_light_index ];
 
     const vec3 position_to_light = light.world_position - world_position;
@@ -252,32 +464,7 @@ vec3 calculate_point_light_contribution(vec4 albedo, vec3 orm, vec3 normal, vec3
     const float current_depth = vector_to_depth_value(shadow_position_to_light, light.radius, light.rcp_n_minus_f);
     const float bias = 0.0001f;
 
-#if RAYTRACED_SHADOWS
-
-#if USE_SHADOW_VISIBILITY
-    float shadow = texelFetch( global_textures_3d[ shadow_visibility_texture_index ], ivec3( screen_uv, shadow_light_index ), 0 ).r;
-#else
-    float shadow = 0;
-
-    float d = sqrt( dot( position_to_light, position_to_light ) );
-
-    rayQueryEXT rayQuery;
-    rayQueryInitializeEXT(rayQuery,
-                          as,
-                          gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,
-                          0xff,
-                          world_position,
-                          0.001,
-                          l,
-                          d);
-
-    rayQueryProceedEXT( rayQuery );
-    if ( rayQueryGetIntersectionTypeEXT( rayQuery, true ) == gl_RayQueryCommittedIntersectionNoneEXT ) {
-        shadow = 1.0;
-    }
-#endif // USE_SHADOW_VISIBILITY
-
-#elif 1
+#if 1
     const uint samples = 4;
     float shadow = 0;
     for(uint i = 0; i < samples; ++i) {
@@ -308,9 +495,6 @@ vec3 calculate_point_light_contribution(vec4 albedo, vec3 orm, vec3 normal, vec3
         const vec3 h = normalize(v + l);
         const float NoH = saturate(dot(normal, h));
         const float LoH = saturate(dot(l, h));
-
-        // roughness = perceived roughness ^ 2
-        const float roughness = forced_roughness < 0.0f ? orm.g * orm.g : forced_roughness;
 
         const vec3 diffuse = fd_burley(NoV, NoL, LoH, roughness) * albedo.rgb;
         const float D = d_ggx( roughness, NoH, h );
@@ -384,12 +568,14 @@ uint bit_field_mask( uint mask_width, uint min_bit ) {
     return v;
 }
 
-vec4 calculate_lighting(vec4 base_colour, vec3 orm, vec3 normal, vec3 emissive, vec3 world_position) {
+vec4 calculate_lighting(vec4 base_colour, vec3 orm, vec3 normal, vec3 emissive, vec3 world_position, uvec2 position, vec2 screen_uv, bool transparent) {
 
     vec3 V = normalize( camera_position.xyz - world_position );
     const float NoV = saturate(dot(normal, V));
 
     const float metallic = forced_metalness < 0.0f ? orm.b : forced_metalness;
+    // roughness = perceived roughness ^ 2
+    const float roughness = forced_roughness < 0.0f ? orm.g * orm.g : forced_roughness;
     vec4 albedo = vec4(compute_diffuse_color(base_colour, metallic), base_colour.a);
 
     // TODO: missing IOR for F0 calculations. Get default value.
@@ -406,16 +592,6 @@ vec4 calculate_lighting(vec4 base_colour, vec3 orm, vec3 normal, vec3 emissive, 
 
     uint min_light_id = bin_value & 0xFFFF;
     uint max_light_id = ( bin_value >> 16 ) & 0xFFFF;
-
-#if defined(COMPUTE)
-    uvec2 position = gl_GlobalInvocationID.xy;
-#endif
-
-#if defined(FRAGMENT)
-    // NOTE(marco): integer fragment position and top-left origin
-    uvec2 position = uvec2(gl_FragCoord.x - 0.5, gl_FragCoord.y - 0.5);
-    position.y = uint( resolution.y ) - position.y;
-#endif
 
     uvec2 tile = position / uint( TILE_SIZE );
 
@@ -460,7 +636,7 @@ vec4 calculate_lighting(vec4 base_colour, vec3 orm, vec3 normal, vec3 emissive, 
 
             uint global_light_index = light_indices[ light_index ];
 
-            final_color.rgb += calculate_point_light_contribution( albedo, orm, normal, emissive, world_position, V, F0, NoV, position, global_light_index );
+            final_color.rgb += calculate_point_light_contribution( albedo, roughness, normal, emissive, world_position, V, F0, NoV, position, global_light_index );
         }
     }
 #else
@@ -472,14 +648,23 @@ vec4 calculate_lighting(vec4 base_colour, vec3 orm, vec3 normal, vec3 emissive, 
             if ( ( tiles[ address + word_id ] & ( 1 << bit_id ) ) != 0 ) {
                 uint global_light_index = light_indices[ light_id ];
 
-                final_color.rgb += calculate_point_light_contribution( albedo, orm, normal, emissive, world_position, V, F0, NoV, position, global_light_index );
+                final_color.rgb += calculate_point_light_contribution( albedo, roughness, normal, emissive, world_position, V, F0, NoV, position, global_light_index );
             }
         }
     }
-#endif
+#endif // ENABLE_OPTIMIZATION
 
-    // final_color.rgb = vec3( linear_d );
-    // final_color.rgb = vec3( float(bin_index) / NUM_BINS );
+    if (!transparent) {
+        // Pointlight
+        if ( is_raytrace_shadow_point_light() ) {
+            final_color.rgb += calculate_raytraced_point_light_contribution( albedo, roughness, normal, emissive, world_position, V, F0, NoV, position );
+        }
+        else {
+            // Directional light
+            // NOTE(marco): we compute ray-traced directional lighting only for opaque objects
+            final_color.rgb += calculate_directional_light_contribution( albedo, roughness, normal, emissive, world_position, V, F0, NoV, position, raytraced_shadow_light_position );
+        }
+    }
 
 #if defined(DEBUG_OPTIONS)
 
@@ -502,57 +687,6 @@ vec4 calculate_lighting(vec4 base_colour, vec3 orm, vec3 normal, vec3 emissive, 
     if ( debug_show_bins > 0 ) {
         uint bin_hash = hash( bin_index );
         final_color.rgb = vec3(float(bin_hash & 255), float((bin_hash >> 8) & 255), float((bin_hash >> 16) & 255)) / 255.0;
-    }
-
-    {
-        Light light = lights[ 0 ];
-        vec3 position_to_light = world_position - light.world_position;
-
-        vec3 AbsVec = abs(position_to_light);
-        float LocalZcomp = max(AbsVec.x, max(AbsVec.y, AbsVec.z));
-
-        const float current_depth = vector_to_depth_value(position_to_light, light.radius, light.rcp_n_minus_f);
-        const float closest_depth = texture(global_textures_cubemaps[nonuniformEXT(cubemap_shadows_index)], vec3(position_to_light)).r;
-        const float bias = 0.0003f;
-        float shadow = current_depth - bias < closest_depth ? 1 : 0;
-
-        if (debug_modes == 1) {
-            final_color.rgb = shadow.xxx;
-        }
-        else if (debug_modes == 2) {
-            final_color.rgb = closest_depth.xxx;
-        }
-        else if (debug_modes == 3) {
-            final_color.rgb = current_depth.xxx;
-        }
-        else if (debug_modes == 4) {
-            final_color.rgb = vec3(closest_depth, current_depth, shadow);
-        }
-        else if (debug_modes == 5) {
-            vec4 light_view_position = world_to_camera * vec4( light.world_position.xyz, 1 );
-            vec4 pixel_view_position = world_to_camera * vec4( world_position.xyz, 1 );
-            position_to_light = light_view_position.xyz - pixel_view_position.xyz;
-            //position_to_light.x *= -1;
-            float current_depth = vector_to_depth_value(position_to_light, light.radius, light.rcp_n_minus_f);
-            const float closest_depth = texture(global_textures_cubemaps[nonuniformEXT(cubemap_shadows_index)], vec3(position_to_light)).r;
-            shadow = current_depth + bias < closest_depth ? 1 : 0;
-            final_color.rgb = shadow.xxx;
-        }
-        else if (debug_modes == 6) {
-            vec4 light_view_position = world_to_camera * vec4( light.world_position.xyz, 1 );
-            vec4 pixel_view_position = world_to_camera * vec4( world_position.xyz, 1 );
-            position_to_light = pixel_view_position.xyz - light_view_position.xyz;
-            position_to_light.z *= -1;
-            float current_depth = vector_to_depth_value(position_to_light, light.radius, light.rcp_n_minus_f);
-            const float closest_depth = texture(global_textures_cubemaps[nonuniformEXT(cubemap_shadows_index)], vec3(position_to_light)).r;
-            shadow = current_depth - bias > closest_depth ? 1 : 0;
-            final_color.rgb = shadow.xxx;
-        }
-        else if (debug_modes == 7) {
-            const float closest_depth = texture(global_textures_cubemaps[nonuniformEXT(cubemap_shadows_index)], vec3(world_position.xyz - light.world_position)).r;
-            final_color.rgb = current_depth < 0.145 ? vec3(1) : vec3(0);
-            final_color.rgb = vec3(abs(current_depth - closest_depth) / 4);
-        }
     }
 
 #endif // DEBUG_OPTIONS

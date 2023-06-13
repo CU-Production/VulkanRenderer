@@ -675,29 +675,37 @@ int main( int argc, char** argv ) {
     Directory cwd{ };
     directory_current(&cwd);
 
-    char file_base_path[512]{ };
-    memcpy( file_base_path, argv[ 1 ], strlen( argv[ 1] ) );
-    file_directory_from_path( file_base_path );
-
-    directory_change( file_base_path );
-
-    char file_name[512]{ };
-    memcpy( file_name, argv[ 1 ], strlen( argv[ 1] ) );
-    file_name_from_path( file_name );
-
     RenderScene* scene = nullptr;
+    for ( i32 arg_i = 1; arg_i < argc; ++arg_i ) {
+        cstring scene_path = argv[ arg_i ];
+        sizet scene_path_len = strlen( argv[ arg_i ] );
 
-    char* file_extension = file_extension_from_path( file_name );
+        char file_base_path[ 512 ]{ };
+        memcpy( file_base_path, scene_path, scene_path_len );
+        file_directory_from_path( file_base_path );
 
-    if ( strcmp( file_extension, "gltf" ) == 0 ) {
-        scene = new glTFScene;
-    } else if ( strcmp( file_extension, "obj" ) == 0 ) {
-        scene = new ObjScene;
+        directory_change( file_base_path );
+
+        char file_name[ 512 ]{ };
+        memcpy( file_name, scene_path, scene_path_len );
+        file_name_from_path( file_name );
+
+        char* file_extension = file_extension_from_path( file_name );
+
+        if ( scene == nullptr ) {
+            // TODO(marco): further refactor to allow different formats
+            if ( strcmp( file_extension, "gltf" ) == 0 ) {
+                scene = new glTFScene;
+            } else if ( strcmp( file_extension, "obj" ) == 0 ) {
+                scene = new ObjScene;
+            }
+            scene->init( &scene_graph, allocator, &renderer );
+            scene->use_meshlets = gpu.mesh_shaders_extension_present;
+            scene->use_meshlets_emulation = !scene->use_meshlets;
+        }
+
+        scene->add_mesh( file_name, file_base_path, &scratch_allocator, &async_loader );
     }
-
-    scene->use_meshlets = gpu.mesh_shaders_extension_present;
-    scene->use_meshlets_emulation = !scene->use_meshlets;
-    scene->init( file_name, file_base_path, &scene_graph, allocator, &scratch_allocator, &async_loader );
 
     // NOTE(marco): restore working directory
     directory_change( cwd.path );
@@ -735,7 +743,7 @@ int main( int argc, char** argv ) {
         // TODO: improve
         // Manually add point shadows texture format.
         FrameGraphNode* point_shadows_pass_node = frame_graph.get_node( "point_shadows_pass" );
-        if ( point_shadows_pass_node) {
+        if ( point_shadows_pass_node ) {
             RenderPass* render_pass = gpu.access_render_pass( point_shadows_pass_node->render_pass );
             if ( render_pass ) {
                 render_pass->output.reset().depth( VK_FORMAT_D16_UNORM, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL );
@@ -788,9 +796,9 @@ int main( int argc, char** argv ) {
             render_resources_loader.load_gpu_technique( path, use_shader_cache );
         };
 
-        cstring techniques[] = { "ray_tracing.json", "meshlet.json", "fullscreen.json", "main.json",
+        cstring techniques[] = { "reflections.json", "ddgi.json", "ray_tracing.json", "meshlet.json", "fullscreen.json", "main.json",
                                  "pbr_lighting.json", "dof.json", "cloth.json", "debug.json",
-                                 "culling.json", "volumetric_fog.json" };
+                                 "culling.json", "volumetric_fog.json"};
 
         const sizet num_techniques = ArraySize( techniques );
         for ( sizet t = 0; t < num_techniques; ++t ) {
@@ -1033,6 +1041,12 @@ int main( int argc, char** argv ) {
         static u32 lighting_debug_modes = 0;
         static u32 light_to_debug = 0;
         static vec2s last_clicked_position = vec2s{ 1280 / 2.0f, 800 / 2.0f };
+        static vec3s raytraced_shadow_light_direction = vec3s{ 0, 1, -0.2f };
+        static vec3s raytraced_shadow_light_position = vec3s{ 0, 1, 0 };
+        static float raytraced_shadow_light_intensity = 5.0f;
+        static i32 raytraced_shadow_light_type = 0;
+        static f32 raytraced_shadow_light_radius = 10.f;
+        static vec3s raytraced_shadow_light_color = vec3s{ 1, 1, 1 };
 
         // Jittering update
         static u32 jitter_index = 0;
@@ -1226,7 +1240,34 @@ int main( int argc, char** argv ) {
                     ImGui::SliderFloat( "Exposure", &scene->post_exposure, -4.0f, 4.0f );
                     ImGui::SliderFloat( "Sharpening amount", &scene->post_sharpening_amount, 0.0f, 4.0f );
                     ImGui::Checkbox( "Enable Magnifying Zoom", &scene->post_enable_zoom );
+                    ImGui::Checkbox( "Block Magnifying Zoom Input", &scene->post_block_zoom_input );
                     ImGui::SliderUint( "Magnifying Zoom Scale", &scene->post_zoom_scale, 2, 4 );
+                }
+                if ( ImGui::CollapsingHeader( "Raytraced Shadows" ) ) {
+                    static cstring light_type[] = { "Point", "Directional" };
+                    ImGui::Combo( "RT Light Type", &raytraced_shadow_light_type, light_type, ArraySize( light_type ) );
+
+                    ImGui::SliderFloat( "RT Light intensity", &raytraced_shadow_light_intensity, 0.01f, 10.f, "%2.2f" );
+                    ImGui::ColorEdit3( "RT Light Color", raytraced_shadow_light_color.raw );
+
+                    // If directional light, disable light position and light radius controls
+                    if ( raytraced_shadow_light_type == 1 ) {
+                        ImGui::BeginDisabled();
+                    }
+                    ImGui::SliderFloat( "RT Light Radius", &raytraced_shadow_light_radius, 0.01f, 10.f );
+                    ImGui::SliderFloat3( "RT Light Position", raytraced_shadow_light_position.raw, -10.f, 10.f, "%2.2f" );
+                    if ( raytraced_shadow_light_type == 1 ) {
+                        ImGui::EndDisabled();
+                    }
+
+                    // If type is a pointlight, disable the light direction
+                    if ( raytraced_shadow_light_type == 0 ) {
+                        ImGui::BeginDisabled();
+                    }
+                    ImGui::SliderFloat3( "RT Directional Direction", raytraced_shadow_light_direction.raw, -1.f, 1.f, "%2.2f" );
+                    if ( raytraced_shadow_light_type == 0 ) {
+                        ImGui::EndDisabled();
+                    }
                 }
                 ImGui::Separator();
 
@@ -1296,7 +1337,7 @@ int main( int argc, char** argv ) {
 
                 frame_graph.debug_ui();
 
-                static u32 texture_to_debug = 40;
+                static u32 texture_to_debug = 116;
                 ImVec2 window_size = ImGui::GetWindowSize();
                 window_size.y += 50;
                 ImGui::InputScalar( "Texture ID", ImGuiDataType_U32, &texture_to_debug);
@@ -1433,10 +1474,26 @@ int main( int argc, char** argv ) {
                 gpu_lighting_data->disable_shadows = disable_shadows ? 1 : 0;
                 gpu_lighting_data->debug_modes = (u32)lighting_debug_modes;
                 gpu_lighting_data->debug_texture_index = scene->lighting_debug_texture_index;
+                gpu_lighting_data->gi_intensity = scene->gi_intensity;
 
                 FrameGraphResource* resource = frame_graph.get_resource( "shadow_visibility" );
                 if ( resource ) {
                     gpu_lighting_data->shadow_visibility_texture_index = resource->resource_info.texture.handle.index;
+                }
+
+                resource = ( FrameGraphResource* )frame_graph.get_resource( "indirect_lighting" );
+                if ( resource ) {
+                    gpu_lighting_data->indirect_lighting_texture_index = resource->resource_info.texture.handle.index;
+                }
+
+                resource = ( FrameGraphResource* )frame_graph.get_resource( "bilateral_weights" );
+                if ( resource ) {
+                    gpu_lighting_data->bilateral_weights_texture_index = resource->resource_info.texture.handle.index;
+                }
+
+                resource = ( FrameGraphResource* )frame_graph.get_resource( "svgf_output" );
+                if ( resource ) {
+                    gpu_lighting_data->reflections_texture_index = resource->resource_info.texture.handle.index;
                 }
 
                 // Volumetric fog data
@@ -1449,6 +1506,13 @@ int main( int argc, char** argv ) {
                 const float one_over_log_f_over_n = 1.0f / log2( game_camera.camera.far_plane / game_camera.camera.near_plane );
                 gpu_lighting_data->volumetric_fog_distribution_scale = scene->volumetric_fog_slices * one_over_log_f_over_n;
                 gpu_lighting_data->volumetric_fog_distribution_bias = -( scene->volumetric_fog_slices * log2( game_camera.camera.near_plane ) * one_over_log_f_over_n );
+
+                raptor::Color raytraced_light_color_type_packed;
+                raytraced_light_color_type_packed.set( raytraced_shadow_light_color.x, raytraced_shadow_light_color.y, raytraced_shadow_light_color.z, raytraced_shadow_light_type );
+                gpu_lighting_data->raytraced_shadow_light_color_type = raytraced_light_color_type_packed.abgr;
+                gpu_lighting_data->raytraced_shadow_light_radius = raytraced_shadow_light_radius;
+                gpu_lighting_data->raytraced_shadow_light_position = raytraced_shadow_light_type == 0 ? raytraced_shadow_light_position : raytraced_shadow_light_direction;
+                gpu_lighting_data->raytraced_shadow_light_intensity = raytraced_shadow_light_intensity;
 
                 gpu.unmap_buffer( cb_map );
             }

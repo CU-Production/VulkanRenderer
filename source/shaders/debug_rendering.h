@@ -14,12 +14,12 @@ struct DrawCommand {
     uint            first_instance;
 };
 
-layout(set = MATERIAL_SET, binding = 20) buffer DebugLines
+layout(set = MATERIAL_SET, binding = 50) buffer DebugLines
 {
     DebugLineVertex debug_line_vertices[];
 };
 
-layout(set = MATERIAL_SET, binding = 21) buffer DebugLinesCount
+layout(set = MATERIAL_SET, binding = 51) buffer DebugLinesCount
 {
     uint            debug_line_3d_count;
     uint            debug_line_2d_count;
@@ -27,7 +27,7 @@ layout(set = MATERIAL_SET, binding = 21) buffer DebugLinesCount
     uint            pad002;
 };
 
-layout(set = MATERIAL_SET, binding = 22) buffer DebugLineCommands
+layout(set = MATERIAL_SET, binding = 52) buffer DebugLineCommands
 {
     DrawCommand     debug_draw_commands;
     DrawCommand     debug_draw_commands_2d;

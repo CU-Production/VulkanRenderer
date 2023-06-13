@@ -763,13 +763,19 @@ void CommandBuffer::copy_texture( TextureHandle src_, TextureHandle dst_, Resour
     Texture* src = gpu_device->access_texture( src_ );
     Texture* dst = gpu_device->access_texture( dst_ );
 
+    bool src_is_depth = src->vk_format == VK_FORMAT_D32_SFLOAT;
+    bool dst_is_depth = dst->vk_format == VK_FORMAT_D32_SFLOAT;
+
+    // NOTE(marco): can't copy between depth and color
+    RASSERT( src_is_depth == dst_is_depth );
+
     VkImageCopy region = {};
-    region.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.srcSubresource.aspectMask = src_is_depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
     region.srcSubresource.mipLevel = 0;
     region.srcSubresource.baseArrayLayer = 0;
     region.srcSubresource.layerCount = 1;
 
-    region.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.dstSubresource.aspectMask = dst_is_depth ? VK_IMAGE_ASPECT_DEPTH_BIT : VK_IMAGE_ASPECT_COLOR_BIT;
     region.dstSubresource.mipLevel = 0;
     region.dstSubresource.baseArrayLayer = 0;
     region.dstSubresource.layerCount = 1;
@@ -778,23 +784,24 @@ void CommandBuffer::copy_texture( TextureHandle src_, TextureHandle dst_, Resour
     region.extent = { src->width, src->height, src->depth };
 
     // Copy from the staging buffer to the image
-    util_add_image_barrier( gpu_device, vk_command_buffer, src, RESOURCE_STATE_COPY_SOURCE, 0, 1, false );
+    util_add_image_barrier( gpu_device, vk_command_buffer, src, RESOURCE_STATE_COPY_SOURCE, 0, 1, src_is_depth );
     // TODO(marco): maybe we need a state per mip?
     ResourceState old_state = dst->state;
-    util_add_image_barrier( gpu_device, vk_command_buffer, dst, RESOURCE_STATE_COPY_DEST, 0, 1, false );
+    util_add_image_barrier( gpu_device, vk_command_buffer, dst, RESOURCE_STATE_COPY_DEST, 0, 1, dst_is_depth );
 
     vkCmdCopyImage( vk_command_buffer, src->vk_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst->vk_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region );
 
     // Prepare first mip to create lower mipmaps
     if ( dst->mip_level_count > 1 ) {
-        util_add_image_barrier( gpu_device, vk_command_buffer, dst, RESOURCE_STATE_COPY_SOURCE, 0, 1, false );
+        RASSERT( !dst_is_depth );
+        util_add_image_barrier( gpu_device, vk_command_buffer, dst, RESOURCE_STATE_COPY_SOURCE, 0, 1, dst_is_depth );
     }
 
     i32 w = dst->width;
     i32 h = dst->height;
 
     for ( int mip_index = 1; mip_index < dst->mip_level_count; ++mip_index ) {
-        util_add_image_barrier( gpu_device, vk_command_buffer, dst->vk_image, old_state, RESOURCE_STATE_COPY_DEST, mip_index, 1, false );
+        util_add_image_barrier( gpu_device, vk_command_buffer, dst->vk_image, old_state, RESOURCE_STATE_COPY_DEST, mip_index, 1, dst_is_depth );
 
         VkImageBlit blit_region{ };
         blit_region.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
@@ -819,11 +826,11 @@ void CommandBuffer::copy_texture( TextureHandle src_, TextureHandle dst_, Resour
         vkCmdBlitImage( vk_command_buffer, dst->vk_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, dst->vk_image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit_region, VK_FILTER_LINEAR );
 
         // Prepare current mip for next level
-        util_add_image_barrier( gpu_device, vk_command_buffer, dst->vk_image, RESOURCE_STATE_COPY_DEST, RESOURCE_STATE_COPY_SOURCE, mip_index, 1, false );
+        util_add_image_barrier( gpu_device, vk_command_buffer, dst->vk_image, RESOURCE_STATE_COPY_DEST, RESOURCE_STATE_COPY_SOURCE, mip_index, 1, dst_is_depth );
     }
 
     // Transition
-    util_add_image_barrier( gpu_device, vk_command_buffer, dst, dst_state, 0, dst->mip_level_count, false );
+    util_add_image_barrier( gpu_device, vk_command_buffer, dst, dst_state, 0, dst->mip_level_count, dst_is_depth );
 }
 
 void CommandBuffer::copy_texture( TextureHandle src_, TextureSubResource src_sub, TextureHandle dst_, TextureSubResource dst_sub, ResourceState dst_state ) {
@@ -1061,7 +1068,7 @@ CommandBuffer* CommandBufferManager::get_command_buffer( u32 frame, u32 thread_i
         // Timestamp queries
         GpuThreadFramePools* thread_pools = cb->thread_frame_pool;
         thread_pools->time_queries->reset();
-        vkCmdResetQueryPool( cb->vk_command_buffer, thread_pools->vulkan_timestamp_query_pool, 0, thread_pools->time_queries->time_queries.size );
+        vkCmdResetQueryPool( cb->vk_command_buffer, thread_pools->vulkan_timestamp_query_pool, 0, thread_pools->time_queries->time_queries.size * 2 );
 
         // Pipeline statistics
         vkCmdResetQueryPool( cb->vk_command_buffer, thread_pools->vulkan_pipeline_stats_query_pool, 0, GpuPipelineStatistics::Count );

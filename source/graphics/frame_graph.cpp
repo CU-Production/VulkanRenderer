@@ -608,7 +608,7 @@ void FrameGraph::compile() {
 
                 if ( resource->type == FrameGraphResourceType_Attachment ) {
                     FrameGraphResourceInfo& info = resource->resource_info;
-
+                    
                     // Resolve texture size if needed
                     if ( info.texture.width == 0 || info.texture.height == 0 ) {
                         info.texture.width = builder->device->swapchain_width * info.texture.scale_width;
@@ -617,17 +617,31 @@ void FrameGraph::compile() {
 
                     TextureFlags::Mask texture_creation_flags = info.texture.compute ? ( TextureFlags::Mask )(TextureFlags::RenderTarget_mask | TextureFlags::Compute_mask) : TextureFlags::RenderTarget_mask;
 
+                    bool found_suitable_free_resource = false;
                     if ( free_list.size > 0 ) {
-                        // TODO(marco): find best fit
-                        TextureHandle alias_texture = free_list.back();
-                        free_list.pop();
+                        for ( u32 r = 0; r < free_list.size; ++r ) {
+                            TextureHandle alias_texture_handle = free_list[ r ];
+                            Texture* alias_texture = builder->device->access_texture( alias_texture_handle );
 
-                        TextureCreation texture_creation{ };
-                        texture_creation.set_data( nullptr ).set_alias( alias_texture ).set_name( resource->name ).set_format_type( info.texture.format, TextureType::Enum::Texture2D ).set_size( info.texture.width, info.texture.height, info.texture.depth ).set_flags( texture_creation_flags );
-                        TextureHandle handle = builder->device->create_texture( texture_creation );
+                            if ( alias_texture->width != info.texture.width ||
+                                 alias_texture->height != info.texture.height ||
+                                 alias_texture->vk_format != info.texture.format ) {
+                                continue;
+                            }
 
-                        info.texture.handle = handle;
-                    } else {
+                            TextureCreation texture_creation{ };
+                            texture_creation.set_data( nullptr ).set_alias( alias_texture_handle ).set_name( resource->name ).set_format_type( info.texture.format, TextureType::Enum::Texture2D ).set_size( info.texture.width, info.texture.height, info.texture.depth ).set_flags( texture_creation_flags );
+                            TextureHandle handle = builder->device->create_texture( texture_creation );
+
+                            info.texture.handle = handle;
+
+                            free_list.delete_swap( r );
+                            found_suitable_free_resource = true;
+                            break;
+                        }
+                    }
+
+                    if ( !found_suitable_free_resource ) {
                         TextureCreation texture_creation{ };
                         texture_creation.set_data( nullptr ).set_name( resource->name ).set_format_type( info.texture.format, TextureType::Enum::Texture2D ).set_size( info.texture.width, info.texture.height, info.texture.depth ).set_flags( texture_creation_flags );
                         TextureHandle handle = builder->device->create_texture( texture_creation );
@@ -928,11 +942,11 @@ void FrameGraphResourceCache::shutdown( )
         FrameGraphResource* resource = resources.get( resource_index );
 
         if ( ( resource->type == FrameGraphResourceType_Texture || resource->type == FrameGraphResourceType_Attachment )
-             && ( resource->resource_info.texture.handle.index > 0 ) ) {
+             && ( resource->resource_info.texture.handle.index > 0 && resource->resource_info.texture.handle.index != k_invalid_index ) ) {
             Texture* texture = device->access_texture( resource->resource_info.texture.handle );
             device->destroy_texture( texture->handle );
         } else if ( ( resource->type == FrameGraphResourceType_Buffer )
-                    && ( resource->resource_info.buffer.handle.index > 0 ) ) {
+                    && ( resource->resource_info.buffer.handle.index > 0 && resource->resource_info.buffer.handle.index != k_invalid_index ) ) {
             Buffer* buffer = device->access_buffer( resource->resource_info.buffer.handle );
             device->destroy_buffer( buffer->handle );
         }

@@ -1414,6 +1414,8 @@ static void vulkan_create_texture( GpuDevice& gpu, const TextureCreation& creati
     VmaAllocationCreateInfo memory_info{};
     memory_info.usage = VMA_MEMORY_USAGE_GPU_ONLY;
 
+    rprint( "creating tex %s\n", creation.name );
+
     if ( creation.alias.index == k_invalid_texture.index ) {
         if ( is_sparse_texture ) {
             check( vkCreateImage( gpu.vulkan_device, &image_info, gpu.vulkan_allocation_callbacks, &texture->vk_image ) );
@@ -1430,7 +1432,7 @@ static void vulkan_create_texture( GpuDevice& gpu, const TextureCreation& creati
         RASSERT( alias_texture != nullptr );
         RASSERT( !is_sparse_texture );
 
-        texture->vma_allocation = nullptr;
+        texture->vma_allocation = 0;
         check( vmaCreateAliasingImage( gpu.vma_allocator, alias_texture->vma_allocation, &image_info, &texture->vk_image ) );
     }
 
@@ -2741,6 +2743,11 @@ DescriptorSetHandle GpuDevice::create_descriptor_set( const DescriptorSetCreatio
     descriptor_set->layout = descriptor_set_layout;
 
     RASSERTM( creation.num_resources < k_max_descriptors_per_set, "Overflow in resources, please bump k_max_descriptors_per_set." );
+
+    // TODO: fix gltf problems and enable this. It asserts when creating draws.
+    if ( descriptor_set_layout->set_index != 0 ) {
+        //RASSERTM( creation.num_resources == descriptor_set_layout->num_bindings, "DescriptorSet creation mismatch: passed descriptors %u, layout descriptors %u\n", creation.num_resources, descriptor_set_layout->num_bindings );
+    }
 
     // Update descriptor set
     VkWriteDescriptorSet descriptor_write[ k_max_descriptors_per_set ];
@@ -4633,6 +4640,7 @@ void GpuDevice::frame_counters_advance() {
 
 VkDeviceAddress GpuDevice::get_buffer_device_address( BufferHandle handle ) {
     Buffer* buffer = access_buffer( handle );
+    RASSERT( buffer != nullptr );
 
     VkBufferDeviceAddressInfoKHR device_address_info{ VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO_KHR };
     device_address_info.buffer = buffer->vk_buffer;

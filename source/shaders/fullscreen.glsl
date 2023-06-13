@@ -637,4 +637,125 @@ void main() {
     imageStore( visibility_motion_vectors, pos.xy, vec4(visibility_motion, 0, 0) );
 }
 
-#endif
+#endif // COMPUTE_COMPOSITE_CAMERA_MOTION
+
+#if defined(COMPUTE_BILATERAL_WEIGHTS)
+
+
+layout( push_constant ) uniform PushConstants {
+
+    uint        depth_pyramid_texture_index;
+    uint        output_index;
+};
+
+float gaussian(float sigma, float x) {
+    return exp(-(x*x) / (2.0 * sigma*sigma));
+}
+
+void bilateral_weight_write_output(ivec2 pos, vec2 value) {
+    imageStore( global_images_2d[output_index], pos.xy, vec4(value, 0, 0) );
+}
+
+// Gather layout
+// w z
+// x y
+
+#define GATHER_UOFFSET_X vec2(0, 1)
+#define GATHER_UOFFSET_Y vec2(1, 1)
+#define GATHER_UOFFSET_Z vec2(1, 0)
+#define GATHER_UOFFSET_W vec2(0, 0)
+
+
+#define GATHER_SOFFSET_X vec2(-1, 1)
+#define GATHER_SOFFSET_Y vec2(1, 1)
+#define GATHER_SOFFSET_Z vec2(1, -1)
+#define GATHER_SOFFSET_W vec2(-1,-1)
+
+void ProcessQuad(vec4 lowResSamples, float origDepth, inout vec2 offsets, inout float minDepthDiff) {
+    vec4 depthDiff = abs(lowResSamples - vec4(origDepth));
+
+    if (depthDiff.x < minDepthDiff)
+    {
+        minDepthDiff = depthDiff.x;
+        offsets = GATHER_SOFFSET_X * 0.5f;
+    }
+
+    if (depthDiff.y < minDepthDiff)
+    {
+        minDepthDiff = depthDiff.y;
+        offsets = GATHER_SOFFSET_Y * 0.5f;
+    }
+
+    if (depthDiff.z < minDepthDiff)
+    {
+        minDepthDiff = depthDiff.z;
+        offsets = GATHER_SOFFSET_Z * 0.5f;
+    }
+
+    if (depthDiff.w < minDepthDiff)
+    {
+        minDepthDiff = depthDiff.w;
+        offsets = GATHER_SOFFSET_W * 0.5f;
+    }
+}
+
+layout (local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+void main() {
+    ivec3 pos = ivec3(gl_GlobalInvocationID.xyz);
+
+    vec2 uv = uv_nearest( pos.xy, resolution );
+
+    vec4 low_resolution_depths = textureGather(global_textures[nonuniformEXT(depth_pyramid_texture_index)], uv, 0);
+    float full_resolution_depth = texelFetch(global_textures[nonuniformEXT(depth_texture_index)], pos.xy, 0).r;
+
+    vec4 depth_difference = abs(low_resolution_depths - vec4(full_resolution_depth));
+    vec2 fullResOffsets = vec2((gl_GlobalInvocationID.x & 1) == 1 ? 0.25 : -0.25, (gl_GlobalInvocationID.y & 1) == 1 ? 0.25 : -0.25);
+    vec4 depthDiffNormalized = depth_difference / (max(full_resolution_depth, 0.000001f));
+    const float acceptanceThreshold = 0.03f;
+
+    bvec4 test = bvec4(depthDiffNormalized.x < acceptanceThreshold,
+                       depthDiffNormalized.y < acceptanceThreshold,
+                       depthDiffNormalized.z < acceptanceThreshold,
+                       depthDiffNormalized.w < acceptanceThreshold);
+    // first, check if bilinear is ok
+    if (all(test)) {
+        //return float2(0.0f, 0.0f);
+        bilateral_weight_write_output(pos.xy, vec2(0,0));
+    }
+
+    const float BILAT_PACK = 0.25f;
+    // then check edges if bilinear on 1 edge is ok
+    // w z
+    // x y
+    if (all(test.wz)) {
+        //return float2(0.0f, -0.5f + fullResOffsets.y) * BILAT_PACK;
+        bilateral_weight_write_output(pos.xy, vec2(0, -0.5f + fullResOffsets.y) * BILAT_PACK);
+        return;
+    }
+    if (all(test.xy)) {
+        //return float2(0.0f, 0.5f + fullResOffsets.y) * BILAT_PACK;
+        bilateral_weight_write_output(pos.xy, vec2(0, 0.5f + fullResOffsets.y) * BILAT_PACK);
+        return;
+    }
+    if (all(test.wx)) {
+        //return float2(-0.5f + fullResOffsets.x, 0.0f) * BILAT_PACK;
+        bilateral_weight_write_output(pos.xy, vec2(-0.5f + fullResOffsets.x,0) * BILAT_PACK);
+        return;
+    }
+    if (all(test.zy)) {
+        //return float2(0.5f + fullResOffsets.x, 0.0f) * BILAT_PACK;
+        bilateral_weight_write_output(pos.xy, vec2(0.5f + fullResOffsets.x,0) * BILAT_PACK);
+        return;
+    }
+
+
+    float smallestDepthDiff = 10000.0f;
+    vec2 smallResOffsets = vec2(0.0f);
+
+    // finally, find closest point
+    ProcessQuad(low_resolution_depths, full_resolution_depth, smallResOffsets, smallestDepthDiff);
+
+    bilateral_weight_write_output(pos.xy, (fullResOffsets + smallResOffsets) * BILAT_PACK);
+}
+
+#endif // COMPUTE_BILATERAL_WEIGHTS

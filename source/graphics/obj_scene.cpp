@@ -178,18 +178,27 @@ static void compute_joints( aiMesh* mesh, PhysicsMesh* physics_mesh ) {
     }
 }
 
-void ObjScene::init( cstring filename, cstring path, SceneGraph* scene_graph, Allocator* resident_allocator_, StackAllocator* temp_allocator, AsynchronousLoader* async_loader_ )
-{
-    async_loader = async_loader_;
+void ObjScene::init( SceneGraph* scene_graph_, Allocator* resident_allocator_, Renderer* renderer_ ) {
     resident_allocator = resident_allocator_;
-    renderer = async_loader->renderer;
+    renderer = renderer_;
+    scene_graph = scene_graph_;
 
+    images.init( resident_allocator, 1024 );
+    meshes.init( resident_allocator, 32 );
+
+    animations.init( resident_allocator, 0 );
+    skins.init( resident_allocator, 0 );
+
+    assimp_scenes.init( resident_allocator, 4 );
+}
+
+void ObjScene::add_mesh( cstring filename, cstring path, StackAllocator* temp_allocator, AsynchronousLoader* async_loader ) {
     sizet temp_allocator_initial_marker = temp_allocator->get_marker();
 
     // Time statistics
     i64 start_scene_loading = time_now();
 
-    assimp_scene = aiImportFile( filename,
+    const aiScene* assimp_scene = aiImportFile( filename,
         aiProcess_CalcTangentSpace       |
         aiProcess_GenNormals             |
         aiProcess_Triangulate            |
@@ -204,11 +213,11 @@ void ObjScene::init( cstring filename, cstring path, SceneGraph* scene_graph, Al
         return;
     }
 
+    assimp_scenes.push( assimp_scene );
+
     SamplerCreation sampler_creation{ };
     sampler_creation.set_address_mode_uv( VK_SAMPLER_ADDRESS_MODE_REPEAT, VK_SAMPLER_ADDRESS_MODE_REPEAT ).set_min_mag_mip( VK_FILTER_LINEAR, VK_FILTER_LINEAR, VK_SAMPLER_MIPMAP_MODE_LINEAR);
     sampler = renderer->create_sampler( sampler_creation );
-
-    images.init( resident_allocator, 1024 );
 
     Array<PBRMaterial> materials;
     materials.init( resident_allocator, assimp_scene->mNumMaterials );
@@ -222,14 +231,14 @@ void ObjScene::init( cstring filename, cstring path, SceneGraph* scene_graph, Al
         aiString texture_file;
 
         if( aiGetMaterialString( material, AI_MATKEY_TEXTURE( aiTextureType_DIFFUSE, 0 ), &texture_file ) == AI_SUCCESS ) {
-            raptor_material.diffuse_texture_index = load_texture( texture_file.C_Str(), path, temp_allocator );
+            raptor_material.diffuse_texture_index = load_texture( texture_file.C_Str(), path, async_loader, temp_allocator );
         } else {
             raptor_material.diffuse_texture_index = k_invalid_scene_texture_index;
         }
 
         if( aiGetMaterialString( material, AI_MATKEY_TEXTURE( aiTextureType_NORMALS, 0 ), &texture_file ) == AI_SUCCESS )
         {
-            raptor_material.normal_texture_index = load_texture( texture_file.C_Str(), path, temp_allocator );
+            raptor_material.normal_texture_index = load_texture( texture_file.C_Str(), path, async_loader, temp_allocator );
         } else {
             raptor_material.normal_texture_index = k_invalid_scene_texture_index;
         }
@@ -266,9 +275,6 @@ void ObjScene::init( cstring filename, cstring path, SceneGraph* scene_graph, Al
     const u32 k_num_buffers = 5;
     cpu_buffers.init( resident_allocator, k_num_buffers );
     gpu_buffers.init( resident_allocator, k_num_buffers );
-
-    // Init runtime meshes
-    meshes.init( resident_allocator, assimp_scene->mNumMeshes );
 
     Array<vec3s> positions;
     positions.init( resident_allocator, rkilo( 64 ) );
@@ -564,9 +570,6 @@ void ObjScene::init( cstring filename, cstring path, SceneGraph* scene_graph, Al
 
     temp_allocator->free_marker( temp_allocator_initial_marker );
 
-    animations.init( resident_allocator, 0 );
-    skins.init( resident_allocator, 0 );
-
     i64 end_reading_buffers_data = time_now();
 
     i64 end_creating_buffers = time_now();
@@ -578,7 +581,7 @@ void ObjScene::init( cstring filename, cstring path, SceneGraph* scene_graph, Al
             time_delta_seconds( end_creating_textures, end_reading_buffers_data ), time_delta_seconds( end_reading_buffers_data, end_creating_buffers ) );
 }
 
-u32 ObjScene::load_texture( cstring texture_path, cstring path, StackAllocator* temp_allocator ) {
+u32 ObjScene::load_texture( cstring texture_path, cstring path, AsynchronousLoader* async_loader, StackAllocator* temp_allocator ) {
     using namespace raptor;
 
     int comp, width, height;
@@ -753,8 +756,10 @@ void ObjScene::prepare_draws( Renderer* renderer, StackAllocator* scratch_alloca
     }
 
     // We're done. Release all resources associated with this import
-    aiReleaseImport( assimp_scene );
-    assimp_scene = nullptr;
+    for ( u32 si = 0; si < assimp_scenes.size; ++si ) {
+        aiReleaseImport( assimp_scenes[ si ] );
+    }
+    assimp_scenes.shutdown();
 }
 
 } // namespace raptor

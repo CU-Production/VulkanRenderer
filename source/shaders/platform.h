@@ -39,6 +39,8 @@
 layout ( set = GLOBAL_SET, binding = BINDLESS_BINDING ) uniform sampler2D global_textures[];
 // Alias textures to use the same binding point, as bindless texture is shared
 // between all kind of textures: 1d, 2d, 3d.
+layout ( set = GLOBAL_SET, binding = BINDLESS_BINDING ) uniform usampler2D global_utextures[];
+
 layout ( set = GLOBAL_SET, binding = BINDLESS_BINDING ) uniform sampler3D global_textures_3d[];
 
 layout ( set = GLOBAL_SET, binding = BINDLESS_BINDING ) uniform usampler3D global_utextures_3d[];

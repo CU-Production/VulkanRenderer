@@ -10,10 +10,10 @@
 namespace raptor {
 
 void SceneGraph::init( Allocator* resident_allocator, u32 num_nodes ) {
-    nodes_hierarchy.init( resident_allocator, num_nodes, num_nodes );
-    local_matrices.init( resident_allocator, num_nodes, num_nodes );
-    world_matrices.init( resident_allocator, num_nodes, num_nodes );
-    nodes_debug_data.init( resident_allocator, num_nodes, num_nodes );
+    nodes_hierarchy.init( resident_allocator, num_nodes );
+    local_matrices.init( resident_allocator, num_nodes );
+    world_matrices.init( resident_allocator, num_nodes );
+    nodes_debug_data.init( resident_allocator, num_nodes );
 
     updated_nodes.init( resident_allocator, num_nodes );
 }
@@ -33,10 +33,12 @@ void SceneGraph::resize( u32 num_nodes ) {
     nodes_debug_data.set_size( num_nodes );
 
     updated_nodes.resize( num_nodes );
+}
 
-    memset( nodes_hierarchy.data, 0, num_nodes * 4 );
+void SceneGraph::init_new_nodes( u32 offset, u32 num_nodes ) {
+    memset( nodes_hierarchy.data + offset, 0, num_nodes * sizeof( Hierarchy ) );
 
-    for ( u32 i = 0; i < num_nodes; ++i ) {
+    for ( u32 i = offset; i < offset + num_nodes; ++i ) {
         nodes_hierarchy[ i ].parent = -1;
     }
 }
@@ -117,5 +119,8 @@ void SceneGraph::set_debug_data( u32 node_index, cstring name ) {
     nodes_debug_data[ node_index ].name = name;
 }
 
+u32 SceneGraph::node_count() {
+    return nodes_hierarchy.size;
+}
 
 } // namespace raptor

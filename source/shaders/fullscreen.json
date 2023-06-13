@@ -54,6 +54,17 @@
 					"includes" : ["platform.h", "scene.h"]
 				}
 			]
+		},
+		{
+			"name" : "bilateral_weights",
+			"render_pass" : "depth_pyramid_pass",
+			"shaders" : [
+				{
+					"stage" : "compute",
+					"shader" : "fullscreen.glsl",
+					"includes" : ["platform.h", "scene.h"]
+				}
+			]
 		}
 	]
 }

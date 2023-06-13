@@ -26,12 +26,15 @@ struct SceneGraph {
     void                init( Allocator* resident_allocator, u32 num_nodes );
     void                shutdown();
 
+    void                init_new_nodes( u32 offset, u32 num_nodes );
     void                resize( u32 num_nodes );
     void                update_matrices();
 
     void                set_hierarchy( u32 node_index, u32 parent_index, u32 level );
     void                set_local_matrix( u32 node_index, const mat4s& local_matrix );
     void                set_debug_data( u32 node_index, cstring name );
+
+    u32                 node_count();
 
     Array<mat4s>        local_matrices;
     Array<mat4s>        world_matrices;

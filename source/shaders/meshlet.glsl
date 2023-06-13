@@ -212,7 +212,7 @@ void main()
             //debug_draw_box( world_center.xyz - vec3(radius), world_center.xyz + vec3(radius), vec4(1,1,1,0.5));
             //debug_draw_box( aabb_world.xyz - vec3(radius * 1.1), aabb_world.xyz + vec3(radius * 1.1), vec4(0,depth_sphere - depth,1,0.5));
 
-            debug_draw_2d_box(aabb.xy * 2.0 - 1, aabb.zw * 2 - 1, occlusion_visible ? vec4(0,1,0,1) : vec4(1,0,0,1));
+            // debug_draw_2d_box(aabb.xy * 2.0 - 1, aabb.zw * 2 - 1, occlusion_visible ? vec4(0,1,0,1) : vec4(1,0,0,1));
         }
     }
 
@@ -581,6 +581,8 @@ layout (location = 0) out vec4 color_out;
 layout (location = 1) out vec2 normal_out;
 layout (location = 2) out vec4 occlusion_roughness_metalness_out;
 layout (location = 3) out vec4 emissive_out;
+layout (location = 4) out uint mesh_id;
+layout (location = 5) out vec2 depth_normal_dd;
 
 void main() {
     MeshDraw mesh_draw = mesh_draws[mesh_draw_index];
@@ -616,6 +618,10 @@ void main() {
                                                                       mesh_draw.textures.y, mesh_draw.metallic_roughness_occlusion_factor.z, mesh_draw.textures.w, vTexcoord0.xy );
 
     emissive_out = vec4( calculate_emissive(mesh_draw.emissive.rgb, uint(mesh_draw.emissive.w), vTexcoord0.xy ), 1.0 );
+
+    mesh_id = mesh_draw_index;
+
+    depth_normal_dd = vec2( length( fwidth( world_position ) ), length( fwidth( normal ) ) );
 }
 
 #endif // FRAGMENT
@@ -661,9 +667,14 @@ void main() {
 #if DEBUG
     color_out = vColour;
 #else
-    color_out = calculate_lighting( base_colour, orm, normal, emissive_colour.rgb, world_position );
+    // NOTE(marco): integer fragment position and top-left origin
+    // TODO(marco): refactor into function
+    uvec2 position = uvec2(gl_FragCoord.x - 0.5, gl_FragCoord.y - 0.5);
+    position.y = uint( resolution.y ) - position.y;
 
     const vec2 screen_uv = uv_from_pixels(ivec2( gl_FragCoord.xy ), uint(resolution.x), uint(resolution.y));
+    color_out = calculate_lighting( base_colour, orm, normal, emissive_colour.rgb, world_position, position, screen_uv, true );
+
     color_out.rgb = apply_volumetric_fog( screen_uv, gl_FragCoord.z, color_out.rgb );
 #endif
 }

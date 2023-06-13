@@ -149,8 +149,16 @@ namespace raptor {
 
         f32                     volumetric_fog_distribution_scale;
         f32                     volumetric_fog_distribution_bias;
-        f32                     padding_lc_000;
-        f32                     padding_lc_001;
+        f32                     gi_intensity;
+        u32                     indirect_lighting_texture_index;
+
+        u32                     bilateral_weights_texture_index;
+        u32                     reflections_texture_index;
+        u32                     raytraced_shadow_light_color_type;
+        f32                     raytraced_shadow_light_radius;
+
+        vec3s                   raytraced_shadow_light_position;
+        f32                     raytraced_shadow_light_intensity;
     }; // GpuLightingData
 
     struct glTFScene;
@@ -402,7 +410,8 @@ namespace raptor {
         VkDeviceAddress         position_buffer;
         VkDeviceAddress         uv_buffer;
         VkDeviceAddress         index_buffer;
-        uint64_t                padding2_;
+        VkDeviceAddress         normals_buffer;
+
     }; // struct GpuMaterialData
 
     //
@@ -921,6 +930,7 @@ namespace raptor {
 
         void                    prepare_draws( RenderScene& scene, FrameGraph* frame_graph, Allocator* resident_allocator, StackAllocator* scratch_allocator ) override;
         void                    free_gpu_resources( GpuDevice& gpu ) override;
+        void                    update_dependent_resources( GpuDevice& gpu, FrameGraph* frame_graph, RenderScene* render_scene ) override;
 
         BufferResource*         sphere_mesh_buffer;
         BufferResource*         sphere_mesh_indices;
@@ -952,6 +962,9 @@ namespace raptor {
         BufferHandle            debug_line_commands_sb_cache;
 
         Material*               debug_material;
+
+        PipelineHandle          gi_debug_probes_pipeline;
+        DescriptorSetHandle     gi_debug_probes_descriptor_set;
 
         SceneGraph*             scene_graph;
         Renderer*               renderer;
@@ -1055,7 +1068,7 @@ namespace raptor {
 
     //
     //
-    struct ShadowVisbilityPass : public FrameGraphRenderPass {
+    struct ShadowVisibilityPass : public FrameGraphRenderPass {
         struct GpuShadowVisibilityConstants {
             u32 visibility_cache_texture_index;
             u32 variation_texture_index;
@@ -1068,6 +1081,9 @@ namespace raptor {
             u32 filetered_variation_texture;
 
             u32 frame_index;
+            f32 resolution_scale;
+            f32 resolution_scale_rcp;
+            u32 pad;
         };
 
         void                    render( u32 current_frame_index, CommandBuffer* gpu_commands, RenderScene* render_scene ) override;
@@ -1076,6 +1092,7 @@ namespace raptor {
         void                    prepare_draws( RenderScene& scene, FrameGraph* frame_graph, Allocator* resident_allocator, StackAllocator* scratch_allocator ) override;
         void                    upload_gpu_data( RenderScene& scene ) override;
         void                    free_gpu_resources( GpuDevice& gpu ) override;
+        void                    update_dependent_resources( GpuDevice& gpu, FrameGraph* frame_graph, RenderScene* render_scene );
 
         void                    recreate_textures( GpuDevice& gpu, u32 lights_count );
 
@@ -1103,7 +1120,294 @@ namespace raptor {
         bool                    clear_resources;
         u32                     last_active_lights_count = 0;
 
-    }; // struct RayTracingTestPass
+        f32                     texture_scale;
+
+    }; // struct ShadowVisibilityPass
+
+
+    //
+    //
+    struct IndirectPass : public FrameGraphRenderPass {
+
+        void                    pre_render( u32 current_frame_index, CommandBuffer* gpu_commands, FrameGraph* frame_graph, RenderScene* render_scene ) override;
+        void                    render( u32 current_frame_index, CommandBuffer* gpu_commands, RenderScene* render_scene ) override;
+
+        void                    on_resize( GpuDevice& gpu, FrameGraph* frame_graph, u32 new_width, u32 new_height ) override;
+
+        void                    prepare_draws( RenderScene& scene, FrameGraph* frame_graph, Allocator* resident_allocator, StackAllocator* scratch_allocator ) override;
+        void                    upload_gpu_data( RenderScene& scene ) override;
+        void                    free_gpu_resources( GpuDevice& gpu ) override;
+
+        void                    update_dependent_resources( GpuDevice& gpu, FrameGraph* frame_graph, RenderScene* render_scene ) override;
+
+        u32                     get_total_rays()                    { return probe_rays * probe_count_x * probe_count_y * probe_count_z; }
+
+        Renderer*               renderer;
+
+        BufferHandle            ddgi_constants_buffer;
+        BufferHandle            ddgi_probe_status_buffer;
+
+        PipelineHandle          probe_raytrace_pipeline;
+        DescriptorSetHandle     probe_raytrace_descriptor_set;
+        TextureHandle           probe_raytrace_radiance_texture;
+
+        PipelineHandle          probe_grid_update_irradiance_pipeline;
+        PipelineHandle          probe_grid_update_visibility_pipeline;
+        DescriptorSetHandle     probe_grid_update_descriptor_set;
+        TextureHandle           probe_grid_irradiance_texture;
+        TextureHandle           probe_grid_visibility_texture;
+
+        PipelineHandle          calculate_probe_offset_pipeline;
+        PipelineHandle          calculate_probe_statuses_pipeline;
+        TextureHandle           probe_offsets_texture;
+
+        DescriptorSetHandle     sample_irradiance_descriptor_set;
+        PipelineHandle          sample_irradiance_pipeline;
+
+        TextureHandle           indirect_texture;
+        TextureHandle           normals_texture;
+        TextureHandle           depth_pyramid_texture;
+        TextureHandle           depth_fullscreen_texture;
+
+        u32                     probe_count_x = 20;
+        u32                     probe_count_y = 12;
+        u32                     probe_count_z = 20;
+
+        i32                     probe_rays = 128;
+        i32                     irradiance_atlas_width;
+        i32                     irradiance_atlas_height;
+        i32                     irradiance_probe_size = 6;  // Irradiance is a 6x6 quad with 1 pixel borders for bilinear filtering, total 8x8
+
+        i32                     visibility_atlas_width;
+        i32                     visibility_atlas_height;
+        i32                     visibility_probe_size = 6;
+
+        bool                    half_resolution_output = false;
+
+    }; // struct IndirectPass
+
+    //
+    //
+    struct ReflectionsPass : public FrameGraphRenderPass {
+        struct GpuReflectionsConstants {
+            u32 sbt_offset; // shader binding table offset
+            u32 sbt_stride; // shader binding table stride
+            u32 miss_index;
+            u32 out_image_index;
+
+            u32 gbuffer_texures[4]; // x = roughness, y = normals, z = indirect lighting
+        };
+
+        void                    pre_render( u32 current_frame_index, CommandBuffer* gpu_commands, FrameGraph* frame_graph, RenderScene* render_scene ) override;
+        void                    render( u32 current_frame_index, CommandBuffer* gpu_commands, RenderScene* render_scene ) override;
+
+        void                    on_resize( GpuDevice& gpu, FrameGraph* frame_graph, u32 new_width, u32 new_height ) override;
+
+        void                    prepare_draws( RenderScene& scene, FrameGraph* frame_graph, Allocator* resident_allocator, StackAllocator* scratch_allocator ) override;
+        void                    upload_gpu_data( RenderScene& scene ) override;
+        void                    free_gpu_resources( GpuDevice& gpu ) override;
+
+        void                    update_dependent_resources( GpuDevice& gpu, FrameGraph* frame_graph, RenderScene* render_scene ) override;
+
+        Renderer*               renderer;
+
+        BufferHandle            reflections_constants_buffer;
+
+        TextureHandle           reflections_texture;
+        TextureHandle           indirect_texture;
+        TextureHandle           roughness_texture;
+        TextureHandle           normals_texture;
+
+        DescriptorSetHandle     reflections_descriptor_set;
+        PipelineHandle          reflections_pipeline;
+
+    }; // ReflectionsPass
+
+    //
+    //
+    struct SVGFAccumulationPass : public FrameGraphRenderPass {
+        struct GpuConstants {
+            u32 motion_vectors_texture_index;
+            u32 mesh_id_texture_index;
+            u32 normals_texture_index;
+            u32 depth_normal_dd_texture_index;
+
+            u32 history_mesh_id_texture_index;
+            u32 history_normals_texture_index;
+            u32 history_depth_texture;
+            u32 reflections_texture_index;
+
+            u32 history_reflections_texture_index;
+            u32 history_moments_texture_index;
+            u32 integrated_color_texture_index;
+            u32 integrated_moments_texture_index;
+
+            u32 variance_texture_index;
+            u32 filtered_color_texture_index;
+            u32 updated_variance_texture_index;
+        };
+
+        void                    pre_render( u32 current_frame_index, CommandBuffer* gpu_commands, FrameGraph* frame_graph, RenderScene* render_scene ) override;
+        void                    render( u32 current_frame_index, CommandBuffer* gpu_commands, RenderScene* render_scene ) override;
+
+        void                    on_resize( GpuDevice& gpu, FrameGraph* frame_graph, u32 new_width, u32 new_height ) override;
+
+        void                    prepare_draws( RenderScene& scene, FrameGraph* frame_graph, Allocator* resident_allocator, StackAllocator* scratch_allocator ) override;
+        void                    upload_gpu_data( RenderScene& scene ) override;
+        void                    free_gpu_resources( GpuDevice& gpu ) override;
+
+        void                    update_dependent_resources( GpuDevice& gpu, FrameGraph* frame_graph, RenderScene* render_scene ) override;
+
+        Renderer*               renderer;
+
+        BufferHandle            gpu_constants;
+
+        TextureHandle           reflections_texture;
+        TextureHandle           motion_vectors_texture;
+        TextureHandle           depth_texture;
+        TextureHandle           normals_texture;
+        TextureHandle           mesh_id_texture;
+        TextureHandle           depth_normal_dd_texture;
+        TextureHandle           integrated_color_texture;
+        TextureHandle           integrated_moments_texture;
+
+        TextureHandle           last_frame_normals_texture;
+        TextureHandle           last_frame_depth_texture;
+        TextureHandle           last_frame_mesh_id_texture;
+        TextureHandle           reflections_history_texture;
+        TextureHandle           moments_history_texture;
+
+        DescriptorSetHandle     descriptor_set;
+        PipelineHandle          pipeline;
+
+    }; // SVGFAccumulationPass
+
+    //
+    //
+    struct SVGFVariancePass : public FrameGraphRenderPass {
+        struct GpuConstants {
+            u32 motion_vectors_texture_index;
+            u32 mesh_id_texture_index;
+            u32 normals_texture_index;
+            u32 depth_normal_dd_texture_index;
+
+            u32 history_mesh_id_texture_index;
+            u32 history_normals_texture_index;
+            u32 history_depth_texture;
+            u32 reflections_texture_index;
+
+            u32 history_reflections_texture_index;
+            u32 history_moments_texture_index;
+            u32 integrated_color_texture_index;
+            u32 integrated_moments_texture_index;
+
+            u32 variance_texture_index;
+            u32 filtered_color_texture_index;
+            u32 updated_variance_texture_index;
+        };
+
+        void                    pre_render( u32 current_frame_index, CommandBuffer* gpu_commands, FrameGraph* frame_graph, RenderScene* render_scene ) override;
+        void                    render( u32 current_frame_index, CommandBuffer* gpu_commands, RenderScene* render_scene ) override;
+
+        void                    on_resize( GpuDevice& gpu, FrameGraph* frame_graph, u32 new_width, u32 new_height ) override;
+
+        void                    prepare_draws( RenderScene& scene, FrameGraph* frame_graph, Allocator* resident_allocator, StackAllocator* scratch_allocator ) override;
+        void                    upload_gpu_data( RenderScene& scene ) override;
+        void                    free_gpu_resources( GpuDevice& gpu ) override;
+
+        void                    update_dependent_resources( GpuDevice& gpu, FrameGraph* frame_graph, RenderScene* render_scene ) override;
+
+        Renderer*               renderer;
+
+        BufferHandle            gpu_constants;
+
+        TextureHandle           variance_texture;
+        TextureHandle           reflections_texture;
+        TextureHandle           motion_vectors_texture;
+        TextureHandle           depth_texture;
+        TextureHandle           normals_texture;
+        TextureHandle           mesh_id_texture;
+        TextureHandle           depth_normal_dd_texture;
+        TextureHandle           integrated_color_texture;
+        TextureHandle           integrated_moments_texture;
+
+        TextureHandle           last_frame_normals_texture;
+        TextureHandle           last_frame_depth_texture;
+        TextureHandle           last_frame_mesh_id_texture;
+        TextureHandle           reflections_history_texture;
+        TextureHandle           moments_history_texture;
+
+        DescriptorSetHandle     descriptor_set;
+        PipelineHandle          pipeline;
+
+    }; // SVGFVariancePass
+
+    //
+    //
+    struct SVGFWaveletPass : public FrameGraphRenderPass {
+        static const u32 k_num_passes = 5;
+
+        struct GpuConstants {
+            u32 motion_vectors_texture_index;
+            u32 mesh_id_texture_index;
+            u32 normals_texture_index;
+            u32 depth_normal_dd_texture_index;
+
+            u32 history_mesh_id_texture_index;
+            u32 history_normals_texture_index;
+            u32 history_depth_texture;
+            u32 reflections_texture_index;
+
+            u32 history_reflections_texture_index;
+            u32 history_moments_texture_index;
+            u32 integrated_color_texture_index;
+            u32 integrated_moments_texture_index;
+
+            u32 variance_texture_index;
+            u32 filtered_color_texture_index;
+            u32 updated_variance_texture_index;
+        };
+
+        void                    pre_render( u32 current_frame_index, CommandBuffer* gpu_commands, FrameGraph* frame_graph, RenderScene* render_scene ) override;
+        void                    render( u32 current_frame_index, CommandBuffer* gpu_commands, RenderScene* render_scene ) override;
+
+        void                    on_resize( GpuDevice& gpu, FrameGraph* frame_graph, u32 new_width, u32 new_height ) override;
+
+        void                    prepare_draws( RenderScene& scene, FrameGraph* frame_graph, Allocator* resident_allocator, StackAllocator* scratch_allocator ) override;
+        void                    upload_gpu_data( RenderScene& scene ) override;
+        void                    free_gpu_resources( GpuDevice& gpu ) override;
+
+        void                    update_dependent_resources( GpuDevice& gpu, FrameGraph* frame_graph, RenderScene* render_scene ) override;
+
+        Renderer*               renderer;
+
+        TextureHandle           variance_texture;
+        TextureHandle           reflections_texture;
+        TextureHandle           motion_vectors_texture;
+        TextureHandle           depth_texture;
+        TextureHandle           normals_texture;
+        TextureHandle           mesh_id_texture;
+        TextureHandle           depth_normal_dd_texture;
+        TextureHandle           integrated_color_texture;
+        TextureHandle           integrated_moments_texture;
+
+        TextureHandle           last_frame_normals_texture;
+        TextureHandle           last_frame_depth_texture;
+        TextureHandle           last_frame_mesh_id_texture;
+        TextureHandle           reflections_history_texture;
+        TextureHandle           moments_history_texture;
+
+        TextureHandle           ping_pong_color_texture;
+        TextureHandle           ping_pong_variance_texture;
+
+        TextureHandle           svgf_output_texture;
+
+        BufferHandle            gpu_constants[ k_num_passes ];
+
+        DescriptorSetHandle     descriptor_set[ k_num_passes ];
+        PipelineHandle          pipeline;
+
+    }; // SVGFWaveletPass
 
     //
     //
@@ -1142,7 +1446,8 @@ namespace raptor {
     struct RenderScene {
         virtual                 ~RenderScene() { };
 
-        virtual void            init( cstring filename, cstring path, SceneGraph* scene_graph, Allocator* resident_allocator, StackAllocator* temp_allocator, AsynchronousLoader* async_loader ) { };
+        virtual void            init( SceneGraph* scene_graph, Allocator* resident_allocator, Renderer* renderer_ ) { };
+        virtual void            add_mesh( cstring filename, cstring path, StackAllocator* temp_allocator, AsynchronousLoader* async_loader ) { };
         virtual void            shutdown( Renderer* renderer ) { };
 
         void                    on_resize( GpuDevice& gpu, FrameGraph* frame_graph, u32 new_width, u32 new_height );
@@ -1175,6 +1480,7 @@ namespace raptor {
         Array<GpuMeshletVertexPosition> meshlets_vertex_positions;
         Array<GpuMeshletVertexData> meshlets_vertex_data;
         Array<u32>              meshlets_data;
+        u32                     meshlets_index_count;
 
         // Animation and skinning data
         Array<Animation>        animations;
@@ -1184,7 +1490,7 @@ namespace raptor {
         Array<Light>            lights;
         Array<u32>              lights_lut;
         vec3s                   mesh_aabb[2]; // 0 min, 1 max
-        u32                     active_lights   = 8;
+        u32                     active_lights   = 1;
         bool                    shadow_constants_cpu_update = true;
 
         StringBuffer            names_buffer;   // Buffer containing all names of nodes, resources, etc.
@@ -1231,7 +1537,7 @@ namespace raptor {
 
         BufferHandle            meshlet_instances_indirect_count_sb[ k_max_frames ];
 
-        BufferHandle            geometry_transform_buffer;
+        Array<BufferHandle>     geometry_transform_buffers;
 
         TextureHandle           fragment_shading_rate_image;
         TextureHandle           motion_vector_texture;
@@ -1245,6 +1551,9 @@ namespace raptor {
 
         VkAccelerationStructureKHR tlas;
         BufferHandle            tlas_buffer;
+
+        BufferHandle            ddgi_constants_cache{ k_invalid_buffer };
+        BufferHandle            ddgi_probe_status_cache{ k_invalid_buffer };
 
         GpuMeshDrawCounts       mesh_draw_counts;
 
@@ -1297,7 +1606,7 @@ namespace raptor {
         bool                    volumetric_fog_application_apply_opacity_anti_aliasing = false;
         bool                    volumetric_fog_application_apply_tricubic_filtering = false;
         // Temporal Anti-Aliasing
-        bool                    taa_enabled = false;
+        bool                    taa_enabled = true;
         bool                    taa_jittering_enabled = true;
         i32                     taa_mode = 1;
         bool                    taa_use_inverse_luminance_filtering = true;
@@ -1311,9 +1620,33 @@ namespace raptor {
         // Post process
         i32                     post_tonemap_mode = 0;
         f32                     post_exposure = 1.0f;
-        f32                     post_sharpening_amount = 0.1f;
+        f32                     post_sharpening_amount = 0.2f;
         u32                     post_zoom_scale = 2;
         bool                    post_enable_zoom = false;
+        bool                    post_block_zoom_input = false;
+        // Global illumination
+        bool                    gi_show_probes = false;
+        vec3s                   gi_probe_grid_position{ -10.0,0.5,-10.0 };
+        vec3s                   gi_probe_spacing{ 1.f, 1.f, 1.f };
+        f32                     gi_probe_sphere_scale = 0.1f;
+        f32                     gi_max_probe_offset = 0.4f;
+        f32                     gi_self_shadow_bias = 0.3f;
+        f32                     gi_hysteresis = 0.95f;
+        bool                    gi_debug_border = false;
+        bool                    gi_debug_border_type = false;
+        bool                    gi_debug_border_source = false;
+        u32                     gi_total_probes = 0;
+        f32                     gi_intensity = 1.0f;
+        bool                    gi_use_visibility = true;
+        bool                    gi_use_backface_smoothing = true;
+        bool                    gi_use_perceptual_encoding = true;
+        bool                    gi_use_backface_blending = true;
+        bool                    gi_use_probe_offsetting = true;
+        bool                    gi_recalculate_offsets = false;     // When moving grid or changing spaces, recalculate offsets.
+        bool                    gi_use_probe_status = false;
+        bool                    gi_use_half_resolution = true;
+        bool                    gi_use_infinite_bounces = true;
+        f32                     gi_infinite_bounces_multiplier = 0.75f;
 
         bool                    use_meshlets = true;
         bool                    use_meshlets_emulation = false;
@@ -1369,7 +1702,12 @@ namespace raptor {
         TemporalAntiAliasingPass temporal_anti_aliasing_pass;
         MotionVectorPass        motion_vector_pass;
         RayTracingTestPass      ray_tracing_test_pass;
-        ShadowVisbilityPass     shadow_visiblity_pass;
+        ShadowVisibilityPass    shadow_visiblity_pass;
+        IndirectPass            indirect_pass;
+        ReflectionsPass         reflections_pass;
+        SVGFAccumulationPass    svgf_accumulation_pass;
+        SVGFVariancePass        svgf_variance_pass;
+        SVGFWaveletPass         svgf_wavelet_pass;
 
         // Fullscreen data
         GpuTechnique*           fullscreen_tech = nullptr;

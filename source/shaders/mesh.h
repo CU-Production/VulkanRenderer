@@ -52,7 +52,7 @@ struct MeshDraw {
     uint64_t    position_buffer;
     uint64_t    uv_buffer;
     uint64_t    index_buffer;
-    uint64_t    pad002;
+    uint64_t    normals_buffer;
 };
 
 struct MeshInstanceDraw {

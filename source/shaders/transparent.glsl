@@ -14,7 +14,7 @@ layout (location = 4) out vec3 vPosition;
 layout (location = 5) out flat uint mesh_draw_index;
 
 void main() {
-    
+
     MeshInstanceDraw mesh_draw = mesh_instance_draws[gl_InstanceIndex];
     mesh_draw_index = mesh_draw.mesh_draw_index;
 
@@ -52,7 +52,7 @@ layout (location = 0) out vec4 frag_color;
 
 void main() {
     MeshDraw mesh_draw = mesh_draws[mesh_draw_index];
-    
+
     // Diffuse color
     vec4 base_colour = compute_diffuse_color( mesh_draw.base_color_factor, mesh_draw.textures.x, vTexcoord0 );
 
@@ -66,7 +66,7 @@ void main() {
     vec3 normal = normalize(vNormal);
     vec3 tangent = normalize(vTangent);
     vec3 bitangent = normalize(vBiTangent);
-    
+
     calculate_geometric_TBN( normal, tangent, bitangent, vTexcoord0.xy, world_position, flags );
 
     // Pixel normals
@@ -77,7 +77,10 @@ void main() {
 
     vec3 emissive_colour = calculate_emissive(mesh_draw.emissive.rgb, uint(mesh_draw.emissive.w), vTexcoord0.xy );
 
-    frag_color = calculate_lighting( base_colour, pbr_parameters, normal, emissive_colour, world_position );
+    uvec2 position = uvec2(gl_FragCoord.x - 0.5, gl_FragCoord.y - 0.5);
+    position.y = uint( resolution.y ) - position.y;
+
+    frag_color = calculate_lighting( base_colour, pbr_parameters, normal, emissive_colour, world_position, position, vec2(0,0), true );
 }
 
 #endif // FRAGMENT

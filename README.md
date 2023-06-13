@@ -16,6 +16,10 @@
 
 # Features
 
+## 20230613
+
+- [x] ray tracing shadows
+
 ## 20230611
 
 - [x] basic ray tracing
